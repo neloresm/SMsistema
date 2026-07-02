@@ -1,21 +1,12 @@
-{
-  "name": "sm-sistema",
-  "private": true,
-  "version": "1.0.0",
-  "description": "SM sistema — Gestão de Gado de Elite (animais, prenhezes, aspirações, cotas, parcelas, genealogia)",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "recharts": "^2.12.7"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.1",
-    "vite": "^5.4.0"
-  }
-}
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SM sistema — Gado de Elite</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

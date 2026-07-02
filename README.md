@@ -48,16 +48,20 @@ Qualquer host de site estático funciona:
 - **Netlify**: build command `npm run build`, publish directory `dist`.
 - **GitHub Pages**: adicione `base: "/sm-sistema/"` no `vite.config.js`, rode `npm run build` e publique a pasta `dist` (por exemplo com a action `actions/deploy-pages`).
 
-## ⚠️ Limitação importante: dados locais (sem servidor)
+## Banco de dados na nuvem (Supabase)
 
-Este projeto é **somente front-end**. Fora do ambiente Claude, os dados (animais, parcelas, usuários e senhas) são salvos no **localStorage do navegador** — ou seja:
+O sistema usa o **Supabase** para login (e-mail + senha, gerenciados no servidor) e para o
+banco de dados compartilhado: todos os usuários aprovados veem os mesmos dados, em qualquer
+aparelho, com sincronização automática (a cada 5 s).
 
-- cada navegador/aparelho tem **seus próprios dados**;
-- **não há sincronização** entre usuários/aparelhos diferentes;
-- o login funciona por aparelho, e o hash de senha no navegador **não substitui** a segurança de um servidor;
-- limpar os dados do navegador apaga o banco.
+Configuração (uma única vez):
+1. No Supabase, desative a confirmação de e-mail: **Authentication → Sign In / Providers → Email → "Confirm email" OFF → Save**.
+2. Rode o script `supabase-setup.sql` no **SQL Editor** do projeto.
+3. As credenciais (URL + chave publishable) ficam em `src/supabase.js`.
 
-Para uso real multiusuário (você + outras pessoas, cada um no seu aparelho, mesmo banco em tempo real), conecte um back-end como **Firebase** (Auth + Firestore) ou **Supabase** (Auth + Postgres). A estrutura do código já concentra leitura/escrita na interface `window.storage` (ver `src/main.jsx`), o que facilita trocar o adaptador local por chamadas ao back-end.
+Regras: o **primeiro** cadastro vira Administrador aprovado; os demais entram como Usuário
+pendente até o administrador aprovar (menu **Usuários**). A segurança dos dados é garantida
+pelas políticas RLS criadas pelo script — sem login aprovado, nada é lido nem gravado.
 
 ## Estrutura
 
