@@ -133,6 +133,40 @@ function cronograma(a) {
   return finance(a).list.map((p) => ({ ativoId: a.id, tipo: a.tipo, ativoNome: a.nome, ...p, status: parcStatus(p) }));
 }
 
+/* ----------------------------- motor de vendas ------------------------- */
+const TIPOS_VENDA = ["Venda de participação", "Venda de aspiração", "Venda de prenhez", "Outro"];
+/* cronograma previsto das parcelas de uma venda (apenas registro, sem baixa) */
+function parcelasVenda(v) {
+  v = v || {};
+  const n = Math.max(0, Math.round(num(v.parcelas)));
+  const valor = num(v.valorParcela);
+  const out = [];
+  for (let i = 0; i < n; i++) out.push({ numero: i + 1, venc: addMonths(v.dataInicial, i), valor });
+  return out;
+}
+/* participação atual = porcentagem comprada − soma das participações vendidas */
+function vendasDo(a) { return ((a && a.vendas) || []).filter(Boolean); }
+function pctVendida(a) {
+  return vendasDo(a).filter((v) => v.tipo === "Venda de participação").reduce((s, v) => s + num(v.pctVendida), 0);
+}
+function participacaoAtual(a) {
+  const base = num(a && a.porcentagemComprada);
+  return Math.max(0, Math.round((base - pctVendida(a)) * 100) / 100);
+}
+/* resumo financeiro do animal (investido x vendido) */
+function resumoAnimal(a) {
+  const f = finance(a);
+  const vendas = vendasDo(a);
+  const totalVendido = vendas.reduce((s, v) => s + num(v.valor), 0);
+  return {
+    participacao: participacaoAtual(a),
+    investido: f.total,
+    vendido: totalVendido,
+    qtdVendas: vendas.length,
+    zerado: num(a && a.porcentagemComprada) > 0 && participacaoAtual(a) <= 0,
+  };
+}
+
 /* --------------------------------- vídeo ------------------------------- */
 function toEmbed(url) {
   if (!url) return null;
@@ -535,6 +569,80 @@ function FichaForm({ tipo, initial, animalNames, leilaoNames, localNames, vended
   );
 }
 
+/* ------------------------------ seção Vendas --------------------------- */
+function VendasSecao({ a, vendas, partAtual, onAdd, onDel, canDelete }) {
+  const vazio = { tipo: TIPOS_VENDA[0], comprador: "", data: today(), valor: "", pctVendida: "", valorParcela: "", parcelas: "", dataInicial: today(), obs: "" };
+  const [f, setF] = useState(vazio);
+  const [aberto, setAberto] = useState(false);
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const ehPart = f.tipo === "Venda de participação";
+
+  const salvar = () => {
+    if (!num(f.valor) && !num(f.valorParcela)) return;
+    const v = {
+      id: uid(), tipo: f.tipo, comprador: (f.comprador || "").trim(), data: f.data,
+      valor: num(f.valor) || num(f.valorParcela) * num(f.parcelas),
+      pctVendida: ehPart ? num(f.pctVendida) : 0,
+      valorParcela: num(f.valorParcela), parcelas: Math.max(0, Math.round(num(f.parcelas))),
+      dataInicial: f.dataInicial, obs: (f.obs || "").trim(),
+    };
+    onAdd(v); setF(vazio); setAberto(false);
+  };
+
+  return (
+    <div className="fsec">
+      <div className="fsec-h">Vendas
+        <span className="muted small hint">— participação atual: <b style={{ color: partAtual <= 0 ? "var(--neg)" : "var(--ink)" }}>{partAtual}%</b>{partAtual <= 0 && num(a.porcentagemComprada) > 0 ? " (100% vendido)" : ""}</span>
+      </div>
+
+      {vendas.length > 0 && (
+        <div className="tbl-wrap"><table className="tbl">
+          <thead><tr><th>Data</th><th>Tipo</th><th>Comprador</th><th>%</th><th>Valor</th><th>Parcelas</th><th></th></tr></thead>
+          <tbody>{vendas.slice().sort((x, y) => (y.data || "").localeCompare(x.data || "")).map((v) => {
+            const pv = parcelasVenda(v);
+            return (
+              <tr key={v.id}>
+                <td>{dataBR(v.data)}</td><td>{v.tipo}</td><td>{v.comprador || "—"}</td>
+                <td>{v.pctVendida ? v.pctVendida + "%" : "—"}</td>
+                <td className="pos">{fmt(v.valor)}</td>
+                <td>{pv.length ? `${pv.length}× ${fmt(v.valorParcela)}` : "à vista"}{pv.length ? ` (1º ${dataBR(v.dataInicial)})` : ""}</td>
+                <td>{canDelete && <button className="btn btn-mini" onClick={() => onDel(v.id)}>excluir</button>}</td>
+              </tr>
+            );
+          })}</tbody>
+          <tfoot><tr><td colSpan={4}><b>Total vendido</b></td><td className="pos"><b>{fmt(vendas.reduce((s, v) => s + num(v.valor), 0))}</b></td><td colSpan={2}></td></tr></tfoot>
+        </table></div>
+      )}
+      {vendas.length === 0 && <p className="muted small">Nenhuma venda registrada.</p>}
+
+      {!aberto ? (
+        <button className="btn btn-ghost" style={{ marginTop: 12 }} onClick={() => setAberto(true)}>+ Registrar venda</button>
+      ) : (
+        <div className="venda-form">
+          <div className="grid">
+            <label className="field"><span>Tipo de venda</span>
+              <select value={f.tipo} onChange={(e) => set("tipo", e.target.value)}>{TIPOS_VENDA.map((t) => <option key={t}>{t}</option>)}</select></label>
+            <label className="field"><span>Comprador</span><input value={f.comprador} onChange={(e) => set("comprador", e.target.value)} /></label>
+            <label className="field"><span>Data da venda</span><input type="date" value={f.data} onChange={(e) => set("data", e.target.value)} /></label>
+            {ehPart && <label className="field"><span>% vendida</span><input type="number" step="any" placeholder="ex.: 25" value={f.pctVendida} onChange={(e) => set("pctVendida", e.target.value)} /></label>}
+            <label className="field"><span>Valor total da venda</span><input type="number" step="any" placeholder="R$ 0" value={f.valor} onChange={(e) => set("valor", e.target.value)} /></label>
+            <label className="field"><span>Valor da parcela (se parcelado)</span><input type="number" step="any" placeholder="R$ 0" value={f.valorParcela} onChange={(e) => set("valorParcela", e.target.value)} /></label>
+            <label className="field"><span>Qtd. de parcelas</span><input type="number" step="any" placeholder="0" value={f.parcelas} onChange={(e) => set("parcelas", e.target.value)} /></label>
+            <label className="field"><span>1º vencimento</span><input type="date" value={f.dataInicial} onChange={(e) => set("dataInicial", e.target.value)} /></label>
+            <label className="field wide"><span>Observações</span><textarea rows={2} value={f.obs} onChange={(e) => set("obs", e.target.value)} /></label>
+          </div>
+          {ehPart && num(f.pctVendida) > partAtual && <div className="auth-erro">Você está vendendo {num(f.pctVendida)}%, mas só possui {partAtual}% disponível.</div>}
+          <div className="rep-tools">
+            <button className="btn btn-gold" onClick={salvar}>Salvar venda</button>
+            <button className="btn btn-ghost" onClick={() => { setF(vazio); setAberto(false); }}>Cancelar</button>
+          </div>
+          <p className="muted small">Dica: preencha "valor total" para venda à vista, ou "valor da parcela" + "qtd" para parcelado (o total é calculado).</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------ ficha detalhe -------------------------- */
 function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete }) {
   if (!a) return null;
@@ -548,6 +656,14 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete }) 
 
   const setPago = (i, vp) => onUpdate({ ...a, parcelasList: f.list.map((p, idx) => idx === i ? { ...p, valorPago: vp, auto: false, dataPagamento: vp > 0 ? today() : "" } : p) });
   const setParcela = (i, k, v) => onUpdate({ ...a, parcelasList: f.list.map((p, idx) => idx === i ? { ...p, [k]: v } : p) });
+
+  const vendas = vendasDo(a);
+  const partAtual = participacaoAtual(a);
+  const addVenda = (v) => {
+    const hist = { id: uid(), data: today(), tipo: "Venda registrada", desc: `${v.tipo}${v.pctVendida ? " — " + v.pctVendida + "%" : ""} por ${fmt(v.valor)} (comprador: ${v.comprador || "—"})`, responsavel: "" };
+    onUpdate({ ...a, vendas: [...vendas, v], historico: [...(a.historico || []), hist] });
+  };
+  const delVenda = (id) => onUpdate({ ...a, vendas: vendas.filter((v) => v.id !== id) });
 
   return (
     <div className="modal-bg" onClick={onClose}>
@@ -650,6 +766,10 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete }) 
 
           {(a.videos || []).length > 0 && (
             <div className="fsec"><div className="fsec-h">Vídeos</div><div className="videos-grid">{a.videos.map((v) => <VideoBlock key={v.id} v={v} />)}</div></div>
+          )}
+
+          {a.tipo === "animal" && a.origem !== "genealogia" && (
+            <VendasSecao a={a} vendas={vendas} partAtual={partAtual} onAdd={addVenda} onDel={delVenda} canDelete={canDelete} />
           )}
 
           <div className="fsec"><div className="fsec-h">Histórico</div>
@@ -1005,6 +1125,11 @@ export default function App() {
   const reais = (ativos || []).filter((a) => a && a.origem !== "genealogia");
   const kpis = useMemo(() => { const acc = { total: 0, pago: 0, aberto: 0, patrimonio: 0 }; reais.forEach((a) => { const f = finance(a); acc.total += f.total; acc.pago += f.pago; acc.aberto += f.aberto; acc.patrimonio += f.totalEstimado; }); return acc; }, [ativos]);
   const vencidas = parcelas.filter((p) => p.status === "vencido");
+  const parcelasMes = useMemo(() => {
+    const now = new Date(); const ym = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+    const doMes = parcelas.filter((p) => (p.venc || "").slice(0, 7) === ym);
+    return { qtd: doMes.length, total: doMes.reduce((s, p) => s + num(p.valor), 0), pagas: doMes.filter((p) => p.status === "pago").length };
+  }, [parcelas]);
   const proximas = parcelas.filter((p) => p.status === "aberto" || p.status === "parcial").sort((a, b) => (a.venc || "").localeCompare(b.venc || "")).slice(0, 6);
   const count = (t) => (ativos || []).filter((a) => a && a.tipo === t && a.origem !== "genealogia").length;
 
@@ -1086,7 +1211,7 @@ export default function App() {
         {view === "dashboard" && (
           <section className="wrap">
             <div className="kpi-row"><KPI label="Animais" value={count("animal")} /><KPI label="Prenhezes" value={count("prenhez")} /><KPI label="Aspirações" value={count("aspiracao")} /><KPI label="Patrimônio estimado" value={fmt(kpis.patrimonio)} tone="gold" /></div>
-            <div className="kpi-row"><KPI label="Total investido" value={fmt(kpis.total)} /><KPI label="Já pago" value={fmt(kpis.pago)} tone="pos" /><KPI label="Em aberto" value={fmt(kpis.aberto)} tone="neg" /><KPI label="Parcelas vencidas" value={vencidas.length} tone={vencidas.length ? "neg" : ""} /></div>
+            <div className="kpi-row"><KPI label="Total investido" value={fmt(kpis.total)} /><KPI label="Já pago" value={fmt(kpis.pago)} tone="pos" /><KPI label="Em aberto" value={fmt(kpis.aberto)} tone="neg" /><KPI label="Parcelas do mês" value={fmt(parcelasMes.total)} tone="gold" sub={`${parcelasMes.qtd} parcela(s) · ${parcelasMes.pagas} paga(s)`} /></div>
             <div className="cols-2">
               <div className="card"><div className="card-h">Investimento por tipo de ativo</div>
                 <ResponsiveContainer width="100%" height={230}><BarChart data={invTipo} margin={{ left: 10, right: 10 }}>
@@ -1254,7 +1379,7 @@ html{-webkit-text-size-adjust:100%}
 .hint{font-weight:400;text-transform:none;letter-spacing:0;margin-left:8px}
 .new-hint{color:var(--gold);font-style:normal;font-size:11px}
 
-.side{width:250px;min-height:100vh;background:linear-gradient(180deg,var(--forest),var(--forest2));color:#e9e5d6;display:flex;flex-direction:column;position:sticky;top:0;height:100vh}
+.side{width:250px;min-height:100vh;background:linear-gradient(180deg,var(--forest),var(--forest2));color:#e9e5d6;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;overflow-y:auto}
 .brand{display:flex;gap:12px;align-items:center;padding:22px 20px;border-bottom:1px solid rgba(255,255,255,.08)}
 .brand-mark{width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,var(--gold2),var(--gold));color:#20180a;display:grid;place-items:center;font-family:Fraunces,serif;font-weight:600;font-size:22px}
 .brand-name{font-size:22px;color:#fff;line-height:1}.brand-sub{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--gold2)}
@@ -1405,7 +1530,8 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .choose{display:flex;flex-direction:column;gap:8px;align-items:flex-start;text-align:left;background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px;cursor:pointer;transition:.16s}
 .choose:hover{border-color:var(--gold);transform:translateY(-3px);box-shadow:0 12px 26px rgba(29,58,43,.12)}
 .choose-ic{font-size:26px;color:var(--gold)}.choose-t{font-size:19px;color:var(--ink)}.choose-d{font-size:12.5px;color:var(--muted)}
-.rep-tools{display:flex;gap:10px;margin-bottom:14px}
+.rep-tools{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.venda-form{margin-top:14px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px}
 
 /* usuário logado / login */
 .user-box{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:10px 12px}
