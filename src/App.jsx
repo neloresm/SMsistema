@@ -569,14 +569,101 @@ function FichaForm({ tipo, initial, animalNames, leilaoNames, localNames, vended
   );
 }
 
+/* --------- editor reutilizável de linhas de sócios (nome/%/obs) -------- */
+function LinhasSocios({ linhas, setLinhas, socioNames, onQuickSocio }) {
+  const set = (id, k, v) => setLinhas(linhas.map((l) => (l.id === id ? { ...l, [k]: v } : l)));
+  const add = () => setLinhas([...linhas, { id: uid(), nome: "", pct: "", obs: "" }]);
+  const del = (id) => setLinhas(linhas.filter((l) => l.id !== id));
+  const soma = linhas.reduce((s, l) => s + num(l.pct), 0);
+  return (
+    <div>
+      {linhas.map((l) => (
+        <div className="socio-row" key={l.id}>
+          <div className="socio-auto"><AutoField value={l.nome} onChange={(v) => set(l.id, "nome", v)} suggestions={socioNames} onCreate={onQuickSocio} placeholder="nome do sócio" /></div>
+          <input type="number" step="any" placeholder="%" value={l.pct} onChange={(e) => set(l.id, "pct", e.target.value)} style={{ maxWidth: 90 }} />
+          <input placeholder="observações (opcional)" value={l.obs || ""} onChange={(e) => set(l.id, "obs", e.target.value)} style={{ flex: 1, minWidth: 120 }} />
+          <button className="btn btn-mini" onClick={() => del(l.id)}>remover</button>
+        </div>
+      ))}
+      <div className="rep-tools" style={{ marginBottom: 4 }}>
+        <button className="btn btn-ghost" onClick={add}>+ Adicionar sócio</button>
+        {linhas.length > 0 && <span className="muted small" style={{ alignSelf: "center" }}>soma: <b style={{ color: soma === 100 ? "var(--pos)" : "var(--muted)" }}>{soma}%</b></span>}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------- área "Sociedade atual" (editável) + histórico -------- */
+function SociedadeAtual({ socios, hist, socioNames, onQuickSocio, onSave, canDelete }) {
+  const [editando, setEditando] = useState(false);
+  const [linhas, setLinhas] = useState([]);
+  const [verHist, setVerHist] = useState(false);
+  const abrir = () => { setLinhas((socios || []).map((s) => ({ id: s.id || uid(), nome: s.nome || "", pct: s.pct ?? "", obs: s.obs || "" }))); setEditando(true); };
+  const salvar = () => { onSave(linhas); setEditando(false); };
+
+  return (
+    <div className="fsec">
+      <div className="fsec-h">Sociedade atual <span className="muted small hint">— informativo (composição societária do animal)</span></div>
+
+      {!editando ? (
+        <>
+          {(socios || []).length > 0 ? (
+            <table className="tbl">
+              <thead><tr><th>Sócio</th><th>Porcentagem</th><th>Observações</th></tr></thead>
+              <tbody>{socios.map((s, i) => (<tr key={s.id || i}><td>{s.nome}</td><td>{num(s.pct)}%</td><td className="muted">{s.obs || "—"}</td></tr>))}</tbody>
+              <tfoot><tr><td><b>Total</b></td><td colSpan={2}><b>{socios.reduce((x, s) => x + num(s.pct), 0)}%</b></td></tr></tfoot>
+            </table>
+          ) : <p className="muted small">Nenhuma sociedade registrada ainda.</p>}
+          <div className="rep-tools" style={{ marginTop: 12 }}>
+            <button className="btn btn-ghost" onClick={abrir}>{(socios || []).length ? "Editar sociedade atual" : "Registrar sociedade atual"}</button>
+            {(hist || []).length > 0 && <button className="btn btn-ghost" onClick={() => setVerHist((v) => !v)}>{verHist ? "Ocultar histórico" : `Histórico de sociedade (${hist.length})`}</button>}
+          </div>
+        </>
+      ) : (
+        <div className="venda-form">
+          <LinhasSocios linhas={linhas} setLinhas={setLinhas} socioNames={socioNames} onQuickSocio={onQuickSocio} />
+          <div className="rep-tools">
+            <button className="btn btn-gold" onClick={salvar}>Salvar sociedade</button>
+            <button className="btn btn-ghost" onClick={() => setEditando(false)}>Cancelar</button>
+          </div>
+          <p className="muted small">Edição informativa: não gera boletos nem cobranças. A composição anterior permanece no histórico.</p>
+        </div>
+      )}
+
+      {verHist && (hist || []).length > 0 && (
+        <div className="timeline" style={{ marginTop: 14 }}>
+          {hist.slice().reverse().map((h) => (
+            <div className="tl-item" key={h.id}><div className="tl-dot" /><div className="tl-body">
+              <div className="tl-top"><Badge tone="gold">Alteração de sociedade</Badge><span className="tl-date">{dataBR(h.data)}</span></div>
+              {h.vendaDesc && <div className="small">Venda: {h.vendaDesc}</div>}
+              <div className="soc-hist">
+                <div><div className="muted small">Antes</div>{(h.antes || []).length ? (h.antes || []).map((s, i) => <div key={i} className="small">{s.nome} — {num(s.pct)}%</div>) : <div className="small muted">—</div>}</div>
+                <div><div className="muted small">Depois</div>{(h.depois || []).length ? (h.depois || []).map((s, i) => <div key={i} className="small">{s.nome} — {num(s.pct)}%</div>) : <div className="small muted">—</div>}</div>
+              </div>
+              {h.obs && <div className="muted small">Obs.: {h.obs}</div>}
+            </div></div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------ seção Vendas --------------------------- */
-function VendasSecao({ a, vendas, partAtual, onAdd, onDel, canDelete }) {
+function VendasSecao({ a, vendas, partAtual, socAtual, socioNames, onQuickSocio, onAdd, onDel, canDelete }) {
   const vazio = { tipo: TIPOS_VENDA[0], comprador: "", data: today(), valor: "", pctVendida: "", valorParcela: "", parcelas: "", dataInicial: today(), obs: "" };
   const [f, setF] = useState(vazio);
   const [aberto, setAberto] = useState(false);
+  const [socLinhas, setSocLinhas] = useState([]);
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const ehPart = f.tipo === "Venda de participação";
 
+  const abrirForm = () => {
+    setF(vazio);
+    // pré-carrega a sociedade atual para o usuário ajustar
+    setSocLinhas((socAtual || []).map((s) => ({ id: uid(), nome: s.nome || "", pct: s.pct ?? "", obs: s.obs || "" })));
+    setAberto(true);
+  };
   const salvar = () => {
     if (!num(f.valor) && !num(f.valorParcela)) return;
     const v = {
@@ -586,7 +673,8 @@ function VendasSecao({ a, vendas, partAtual, onAdd, onDel, canDelete }) {
       valorParcela: num(f.valorParcela), parcelas: Math.max(0, Math.round(num(f.parcelas))),
       dataInicial: f.dataInicial, obs: (f.obs || "").trim(),
     };
-    onAdd(v); setF(vazio); setAberto(false);
+    onAdd(v, ehPart ? socLinhas : null);
+    setF(vazio); setSocLinhas([]); setAberto(false);
   };
 
   return (
@@ -616,7 +704,7 @@ function VendasSecao({ a, vendas, partAtual, onAdd, onDel, canDelete }) {
       {vendas.length === 0 && <p className="muted small">Nenhuma venda registrada.</p>}
 
       {!aberto ? (
-        <button className="btn btn-ghost" style={{ marginTop: 12 }} onClick={() => setAberto(true)}>+ Registrar venda</button>
+        <button className="btn btn-ghost" style={{ marginTop: 12 }} onClick={abrirForm}>+ Registrar venda</button>
       ) : (
         <div className="venda-form">
           <div className="grid">
@@ -632,9 +720,17 @@ function VendasSecao({ a, vendas, partAtual, onAdd, onDel, canDelete }) {
             <label className="field wide"><span>Observações</span><textarea rows={2} value={f.obs} onChange={(e) => set("obs", e.target.value)} /></label>
           </div>
           {ehPart && num(f.pctVendida) > partAtual && <div className="auth-erro">Você está vendendo {num(f.pctVendida)}%, mas só possui {partAtual}% disponível.</div>}
+
+          {ehPart && (
+            <div style={{ marginTop: 8 }}>
+              <div className="fsec-h" style={{ fontSize: 14 }}>Sociedade atual após a venda <span className="muted small hint">— preencha como ficou (informativo)</span></div>
+              <LinhasSocios linhas={socLinhas} setLinhas={setSocLinhas} socioNames={socioNames} onQuickSocio={onQuickSocio} />
+            </div>
+          )}
+
           <div className="rep-tools">
             <button className="btn btn-gold" onClick={salvar}>Salvar venda</button>
-            <button className="btn btn-ghost" onClick={() => { setF(vazio); setAberto(false); }}>Cancelar</button>
+            <button className="btn btn-ghost" onClick={() => { setF(vazio); setSocLinhas([]); setAberto(false); }}>Cancelar</button>
           </div>
           <p className="muted small">Dica: preencha "valor total" para venda à vista, ou "valor da parcela" + "qtd" para parcelado (o total é calculado).</p>
         </div>
@@ -644,7 +740,7 @@ function VendasSecao({ a, vendas, partAtual, onAdd, onDel, canDelete }) {
 }
 
 /* ------------------------------ ficha detalhe -------------------------- */
-function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete }) {
+function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, socioNamesGlobais, onQuickSocio }) {
   if (!a) return null;
   const f = finance(a);
   const fase = faseAnimal(a, ativos);
@@ -659,11 +755,26 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete }) 
 
   const vendas = vendasDo(a);
   const partAtual = participacaoAtual(a);
-  const addVenda = (v) => {
+  const socAtual = (a.sociedadeAtual || a.socios || []).filter(Boolean);
+
+  /* addVenda recebe a venda + a sociedade nova (linhas preenchidas manualmente) */
+  const addVenda = (v, novaSociedade) => {
     const hist = { id: uid(), data: today(), tipo: "Venda registrada", desc: `${v.tipo}${v.pctVendida ? " — " + v.pctVendida + "%" : ""} por ${fmt(v.valor)} (comprador: ${v.comprador || "—"})`, responsavel: "" };
-    onUpdate({ ...a, vendas: [...vendas, v], historico: [...(a.historico || []), hist] });
+    const patch = { ...a, vendas: [...vendas, v], historico: [...(a.historico || []), hist] };
+    if (v.tipo === "Venda de participação") {
+      const antes = socAtual;
+      const depois = (novaSociedade || []).filter((s) => s && (s.nome || s.pct));
+      patch.sociedadeAtual = depois;
+      patch.sociedadeHist = [...(a.sociedadeHist || []), {
+        id: uid(), data: today(), vendaId: v.id,
+        vendaDesc: `${v.tipo}${v.pctVendida ? " — " + v.pctVendida + "%" : ""} · ${v.comprador || "—"}`,
+        antes, depois, obs: v.obs || "",
+      }];
+    }
+    onUpdate(patch);
   };
   const delVenda = (id) => onUpdate({ ...a, vendas: vendas.filter((v) => v.id !== id) });
+  const setSociedadeAtual = (linhas) => onUpdate({ ...a, sociedadeAtual: (linhas || []).filter((s) => s && (s.nome || s.pct)) });
 
   return (
     <div className="modal-bg" onClick={onClose}>
@@ -753,8 +864,11 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete }) 
               </table></div></div>
           )}
 
-          {(a.socios || []).length > 0 && (
-            <div className="fsec"><div className="fsec-h">Sociedade <span className="muted small hint">— apenas informativo</span>{pctSocios !== 100 && <span className="warn">⚠ soma {pctSocios}%</span>}</div>
+          {a.tipo === "animal" && a.origem !== "genealogia" && (
+            <SociedadeAtual socios={socAtual} hist={a.sociedadeHist || []} socioNames={socioNamesGlobais || []} onQuickSocio={onQuickSocio} onSave={setSociedadeAtual} canDelete={canDelete} />
+          )}
+          {a.tipo !== "animal" && (a.socios || []).length > 0 && (
+            <div className="fsec"><div className="fsec-h">Sociedade <span className="muted small hint">— apenas informativo</span></div>
               <table className="tbl">
                 <thead><tr><th>Sócio</th><th>Porcentagem</th></tr></thead>
                 <tbody>{a.socios.map((s) => (
@@ -769,7 +883,7 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete }) 
           )}
 
           {a.tipo === "animal" && a.origem !== "genealogia" && (
-            <VendasSecao a={a} vendas={vendas} partAtual={partAtual} onAdd={addVenda} onDel={delVenda} canDelete={canDelete} />
+            <VendasSecao a={a} vendas={vendas} partAtual={partAtual} socAtual={socAtual} socioNames={socioNamesGlobais || []} onQuickSocio={onQuickSocio} onAdd={addVenda} onDel={delVenda} canDelete={canDelete} />
           )}
 
           <div className="fsec"><div className="fsec-h">Histórico</div>
@@ -1357,7 +1471,7 @@ export default function App() {
         animalNames={animalNames} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
         onSave={salvar} onClose={() => setForm(null)} />}
-      {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} onClose={() => setAberto(null)} onUpdate={updateAtivo}
+      {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onClose={() => setAberto(null)} onUpdate={updateAtivo}
         onEdit={() => { setForm({ tipo: aberto.tipo, initial: aberto }); setAberto(null); }} onDelete={() => excluir(aberto.id)} />}
       {navOpen && <div className="scrim" onClick={() => setNavOpen(false)} />}
     </div>
@@ -1532,6 +1646,8 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .choose-ic{font-size:26px;color:var(--gold)}.choose-t{font-size:19px;color:var(--ink)}.choose-d{font-size:12.5px;color:var(--muted)}
 .rep-tools{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
 .venda-form{margin-top:14px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px}
+.soc-hist{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:6px 0}
+.soc-hist>div{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
 
 /* usuário logado / login */
 .user-box{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:10px 12px}
