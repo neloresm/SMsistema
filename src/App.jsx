@@ -147,11 +147,60 @@ function parcelasVenda(v) {
 /* participação atual = porcentagem comprada − soma das participações vendidas */
 function vendasDo(a) { return ((a && a.vendas) || []).filter(Boolean); }
 function pctVendida(a) {
-  return vendasDo(a).filter((v) => v.tipo === "Venda de participação").reduce((s, v) => s + num(v.pctVendida), 0);
+  return vendasDo(a).filter((v) => v.tipo === "Venda de participação").reduce((s, v) => {
+    // soma das linhas onde EU (dono) sou o vendedor; retrocompat: venda antiga usa v.pctVendida
+    if (Array.isArray(v.linhas) && v.linhas.length) {
+      return s + v.linhas.filter((l) => lc(l.vendedor) === "eu" || lc(l.vendedor) === "eu (dono)").reduce((x, l) => x + num(l.pct), 0);
+    }
+    return s + num(v.pctVendida);
+  }, 0);
 }
 function participacaoAtual(a) {
   const base = num(a && a.porcentagemComprada);
   return Math.max(0, Math.round((base - pctVendida(a)) * 100) / 100);
+}
+/* normaliza uma lista de sócios em mapa {nomeLower: {nome, pct}} preservando nome original */
+function socMap(lista) {
+  const m = {};
+  (lista || []).filter(Boolean).forEach((s) => {
+    const k = lc(s.nome); if (!k) return;
+    if (!m[k]) m[k] = { nome: s.nome, pct: 0, obs: s.obs || "" };
+    m[k].pct += num(s.pct);
+  });
+  return m;
+}
+/* aplica as linhas de venda (vendedor→comprador) sobre a sociedade atual e devolve a nova */
+function aplicarVendaSociedade(socAtual, linhas) {
+  const m = socMap(socAtual);
+  (linhas || []).forEach((l) => {
+    const kv = lc(l.vendedor), kc = lc(l.comprador), p = num(l.pct);
+    if (!kv || !kc || p <= 0) return;
+    if (m[kv]) m[kv].pct = Math.round((m[kv].pct - p) * 100) / 100;
+    if (!m[kc]) m[kc] = { nome: (l.comprador || "").trim(), pct: 0, obs: "" };
+    m[kc].pct = Math.round((m[kc].pct + p) * 100) / 100;
+  });
+  return Object.values(m).filter((s) => num(s.pct) > 0.0001).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct, obs: s.obs || "" }));
+}
+/* valida linhas contra a sociedade atual; retorna string de erro ou "" */
+function validarVendaLinhas(socAtual, linhas) {
+  const m = socMap(socAtual);
+  const vendidoPor = {};
+  for (const l of linhas || []) {
+    const kv = lc(l.vendedor), p = num(l.pct);
+    if (!kv && !p && !l.comprador) continue;               // linha vazia, ignora
+    if (!kv) return "Selecione o sócio vendedor em todas as linhas.";
+    if (!l.comprador || !l.comprador.trim()) return "Informe o comprador em todas as linhas.";
+    if (p <= 0) return "A porcentagem vendida deve ser maior que zero.";
+    vendidoPor[kv] = (vendidoPor[kv] || 0) + p;
+  }
+  for (const kv in vendidoPor) {
+    const tem = m[kv] ? m[kv].pct : 0;
+    if (vendidoPor[kv] > tem + 0.0001) {
+      const nome = m[kv] ? m[kv].nome : kv;
+      return `${nome} está vendendo ${vendidoPor[kv]}%, mas possui apenas ${tem}%.`;
+    }
+  }
+  return "";
 }
 /* resumo financeiro do animal (investido x vendido) */
 function resumoAnimal(a) {
@@ -651,30 +700,48 @@ function SociedadeAtual({ socios, hist, socioNames, onQuickSocio, onSave, canDel
 
 /* ------------------------------ seção Vendas --------------------------- */
 function VendasSecao({ a, vendas, partAtual, socAtual, socioNames, onQuickSocio, onAdd, onDel, canDelete }) {
-  const vazio = { tipo: TIPOS_VENDA[0], comprador: "", data: today(), valor: "", pctVendida: "", valorParcela: "", parcelas: "", dataInicial: today(), obs: "" };
+  const vazio = { tipo: TIPOS_VENDA[0], comprador: "", data: today(), valor: "", valorParcela: "", parcelas: "", dataInicial: today(), obs: "" };
   const [f, setF] = useState(vazio);
   const [aberto, setAberto] = useState(false);
-  const [socLinhas, setSocLinhas] = useState([]);
+  const [linhas, setLinhas] = useState([]);
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   const ehPart = f.tipo === "Venda de participação";
 
+  // nomes para autocomplete: vendedores = sócios da sociedade atual + banco global; compradores = banco global
+  const nomesSociedade = (socAtual || []).map((s) => s.nome).filter(Boolean);
+  const nomesVendedor = [...new Set([...nomesSociedade, ...(socioNames || [])])];
+  const nomesComprador = [...new Set(socioNames || [])];
+
+  const setLinha = (id, k, v) => setLinhas(linhas.map((l) => (l.id === id ? { ...l, [k]: v } : l)));
+  const addLinha = () => setLinhas([...linhas, { id: uid(), vendedor: "", pct: "", comprador: "" }]);
+  const delLinha = (id) => setLinhas(linhas.filter((l) => l.id !== id));
+
+  const previa = ehPart ? aplicarVendaSociedade(socAtual, linhas) : [];
+  const erroLinhas = ehPart ? validarVendaLinhas(socAtual, linhas) : "";
+  const somaPrevia = previa.reduce((s, x) => s + num(x.pct), 0);
+
   const abrirForm = () => {
     setF(vazio);
-    // pré-carrega a sociedade atual para o usuário ajustar
-    setSocLinhas((socAtual || []).map((s) => ({ id: uid(), nome: s.nome || "", pct: s.pct ?? "", obs: s.obs || "" })));
+    setLinhas([{ id: uid(), vendedor: nomesSociedade[0] || "", pct: "", comprador: "" }]);
     setAberto(true);
   };
   const salvar = () => {
     if (!num(f.valor) && !num(f.valorParcela)) return;
+    if (ehPart && erroLinhas) return;
+    const linhasLimpa = ehPart ? linhas.filter((l) => l.vendedor && l.comprador && num(l.pct) > 0)
+      .map((l) => ({ vendedor: l.vendedor.trim(), pct: num(l.pct), comprador: l.comprador.trim() })) : [];
+    const totalPct = linhasLimpa.reduce((s, l) => s + l.pct, 0);
     const v = {
-      id: uid(), tipo: f.tipo, comprador: (f.comprador || "").trim(), data: f.data,
+      id: uid(), tipo: f.tipo, data: f.data,
+      comprador: ehPart ? [...new Set(linhasLimpa.map((l) => l.comprador))].join(", ") : (f.comprador || "").trim(),
       valor: num(f.valor) || num(f.valorParcela) * num(f.parcelas),
-      pctVendida: ehPart ? num(f.pctVendida) : 0,
+      pctVendida: ehPart ? totalPct : 0,
+      linhas: linhasLimpa,
       valorParcela: num(f.valorParcela), parcelas: Math.max(0, Math.round(num(f.parcelas))),
       dataInicial: f.dataInicial, obs: (f.obs || "").trim(),
     };
-    onAdd(v, ehPart ? socLinhas : null);
-    setF(vazio); setSocLinhas([]); setAberto(false);
+    onAdd(v);
+    setF(vazio); setLinhas([]); setAberto(false);
   };
 
   return (
@@ -710,29 +777,47 @@ function VendasSecao({ a, vendas, partAtual, socAtual, socioNames, onQuickSocio,
           <div className="grid">
             <label className="field"><span>Tipo de venda</span>
               <select value={f.tipo} onChange={(e) => set("tipo", e.target.value)}>{TIPOS_VENDA.map((t) => <option key={t}>{t}</option>)}</select></label>
-            <label className="field"><span>Comprador</span><input value={f.comprador} onChange={(e) => set("comprador", e.target.value)} /></label>
+            {!ehPart && <label className="field"><span>Comprador</span><input value={f.comprador} onChange={(e) => set("comprador", e.target.value)} /></label>}
             <label className="field"><span>Data da venda</span><input type="date" value={f.data} onChange={(e) => set("data", e.target.value)} /></label>
-            {ehPart && <label className="field"><span>% vendida</span><input type="number" step="any" placeholder="ex.: 25" value={f.pctVendida} onChange={(e) => set("pctVendida", e.target.value)} /></label>}
             <label className="field"><span>Valor total da venda</span><input type="number" step="any" placeholder="R$ 0" value={f.valor} onChange={(e) => set("valor", e.target.value)} /></label>
             <label className="field"><span>Valor da parcela (se parcelado)</span><input type="number" step="any" placeholder="R$ 0" value={f.valorParcela} onChange={(e) => set("valorParcela", e.target.value)} /></label>
             <label className="field"><span>Qtd. de parcelas</span><input type="number" step="any" placeholder="0" value={f.parcelas} onChange={(e) => set("parcelas", e.target.value)} /></label>
             <label className="field"><span>1º vencimento</span><input type="date" value={f.dataInicial} onChange={(e) => set("dataInicial", e.target.value)} /></label>
             <label className="field wide"><span>Observações</span><textarea rows={2} value={f.obs} onChange={(e) => set("obs", e.target.value)} /></label>
           </div>
-          {ehPart && num(f.pctVendida) > partAtual && <div className="auth-erro">Você está vendendo {num(f.pctVendida)}%, mas só possui {partAtual}% disponível.</div>}
 
           {ehPart && (
             <div style={{ marginTop: 8 }}>
-              <div className="fsec-h" style={{ fontSize: 14 }}>Sociedade atual após a venda <span className="muted small hint">— preencha como ficou (informativo)</span></div>
-              <LinhasSocios linhas={socLinhas} setLinhas={setSocLinhas} socioNames={socioNames} onQuickSocio={onQuickSocio} />
+              <div className="fsec-h" style={{ fontSize: 14 }}>Participação vendida por sócio <span className="muted small hint">— quem vende, quanto, e para quem</span></div>
+              {linhas.map((l) => (
+                <div className="socio-row venda-linha" key={l.id}>
+                  <div className="socio-auto"><AutoField value={l.vendedor} onChange={(v) => setLinha(l.id, "vendedor", v)} suggestions={nomesVendedor} onCreate={onQuickSocio} placeholder="sócio vendedor" /></div>
+                  <input type="number" step="any" placeholder="%" value={l.pct} onChange={(e) => setLinha(l.id, "pct", e.target.value)} style={{ maxWidth: 80 }} />
+                  <div className="socio-auto"><AutoField value={l.comprador} onChange={(v) => setLinha(l.id, "comprador", v)} suggestions={nomesComprador} onCreate={onQuickSocio} placeholder="comprador" /></div>
+                  <button className="btn btn-mini" onClick={() => delLinha(l.id)}>remover</button>
+                </div>
+              ))}
+              <div className="rep-tools" style={{ marginBottom: 4 }}>
+                <button className="btn btn-ghost" onClick={addLinha}>+ Adicionar linha</button>
+              </div>
+
+              {erroLinhas && <div className="auth-erro">{erroLinhas}</div>}
+
+              <div className="previa-soc">
+                <div className="muted small" style={{ marginBottom: 4 }}>Sociedade após a venda (calculada automaticamente):</div>
+                {previa.length ? previa.map((s, i) => (
+                  <div key={i} className="small">• {s.nome} — <b>{num(s.pct)}%</b></div>
+                )) : <div className="small muted">— preencha as linhas acima —</div>}
+                {previa.length > 0 && <div className="small" style={{ marginTop: 4 }}>Total: <b style={{ color: somaPrevia === 100 ? "var(--pos)" : "var(--muted)" }}>{somaPrevia}%</b></div>}
+              </div>
             </div>
           )}
 
           <div className="rep-tools">
-            <button className="btn btn-gold" onClick={salvar}>Salvar venda</button>
-            <button className="btn btn-ghost" onClick={() => { setF(vazio); setSocLinhas([]); setAberto(false); }}>Cancelar</button>
+            <button className="btn btn-gold" onClick={salvar} disabled={ehPart && !!erroLinhas}>Salvar venda</button>
+            <button className="btn btn-ghost" onClick={() => { setF(vazio); setLinhas([]); setAberto(false); }}>Cancelar</button>
           </div>
-          <p className="muted small">Dica: preencha "valor total" para venda à vista, ou "valor da parcela" + "qtd" para parcelado (o total é calculado).</p>
+          <p className="muted small">Dica: preencha "valor total" para venda à vista, ou "valor da parcela" + "qtd" para parcelado. A sociedade é recalculada sozinha a partir das linhas.</p>
         </div>
       )}
     </div>
@@ -756,24 +841,46 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
   const vendas = vendasDo(a);
   const partAtual = participacaoAtual(a);
   const socAtual = (a.sociedadeAtual || a.socios || []).filter(Boolean);
+  const socBase = (a.sociedadeBase && a.sociedadeBase.length) ? a.sociedadeBase : socAtual;
 
-  /* addVenda recebe a venda + a sociedade nova (linhas preenchidas manualmente) */
-  const addVenda = (v, novaSociedade) => {
-    const hist = { id: uid(), data: today(), tipo: "Venda registrada", desc: `${v.tipo}${v.pctVendida ? " — " + v.pctVendida + "%" : ""} por ${fmt(v.valor)} (comprador: ${v.comprador || "—"})`, responsavel: "" };
+  const recomputeSoc = (base, lista) => {
+    const parts = (lista || []).filter((v) => v.tipo === "Venda de participação" && Array.isArray(v.linhas))
+      .slice().sort((x, y) => (x.data || "").localeCompare(y.data || ""));
+    let cur = (base || []).map((s) => ({ ...s }));
+    parts.forEach((v) => { cur = aplicarVendaSociedade(cur, v.linhas); });
+    return cur;
+  };
+
+  const addVenda = (v) => {
+    const hist = { id: uid(), data: today(), tipo: "Venda registrada", desc: `${v.tipo}${v.pctVendida ? " — " + v.pctVendida + "%" : ""} por ${fmt(v.valor)}`, responsavel: "" };
     const patch = { ...a, vendas: [...vendas, v], historico: [...(a.historico || []), hist] };
     if (v.tipo === "Venda de participação") {
       const antes = socAtual;
-      const depois = (novaSociedade || []).filter((s) => s && (s.nome || s.pct));
+      if (!(a.sociedadeBase && a.sociedadeBase.length)) {
+        patch.sociedadeBase = antes.map((s) => ({ id: uid(), nome: s.nome, pct: num(s.pct), obs: s.obs || "" }));
+      }
+      const depois = aplicarVendaSociedade(antes, v.linhas);
       patch.sociedadeAtual = depois;
+      const compradores = [...new Set((v.linhas || []).map((l) => (l.comprador || "").trim()).filter(Boolean))];
       patch.sociedadeHist = [...(a.sociedadeHist || []), {
-        id: uid(), data: today(), vendaId: v.id,
-        vendaDesc: `${v.tipo}${v.pctVendida ? " — " + v.pctVendida + "%" : ""} · ${v.comprador || "—"}`,
-        antes, depois, obs: v.obs || "",
+        id: uid(), data: v.data || today(), vendaId: v.id,
+        vendaDesc: `Venda de participação · ${fmt(v.valor)}`,
+        antes, depois, linhas: v.linhas || [], comprador: compradores.join(", "), obs: v.obs || "",
       }];
+      // cria compradores novos no banco global de sócios
+      (v.linhas || []).forEach((l) => { if (l.comprador && onQuickSocio) onQuickSocio(l.comprador.trim()); });
     }
     onUpdate(patch);
   };
-  const delVenda = (id) => onUpdate({ ...a, vendas: vendas.filter((v) => v.id !== id) });
+
+  const delVenda = (id) => {
+    const restantes = vendas.filter((v) => v.id !== id);
+    const patch = { ...a, vendas: restantes };
+    const base = (a.sociedadeBase && a.sociedadeBase.length) ? a.sociedadeBase : socAtual;
+    patch.sociedadeAtual = recomputeSoc(base, restantes);
+    patch.sociedadeHist = (a.sociedadeHist || []).filter((h) => h.vendaId !== id);
+    onUpdate(patch);
+  };
   const setSociedadeAtual = (linhas) => onUpdate({ ...a, sociedadeAtual: (linhas || []).filter((s) => s && (s.nome || s.pct)) });
 
   return (
@@ -1648,6 +1755,9 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .venda-form{margin-top:14px;background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px}
 .soc-hist{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:6px 0}
 .soc-hist>div{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.venda-linha{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+.venda-linha .socio-auto{flex:1;min-width:140px}
+.previa-soc{margin-top:10px;background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
 
 /* usuário logado / login */
 .user-box{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:10px 12px}
