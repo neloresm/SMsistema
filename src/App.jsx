@@ -411,21 +411,33 @@ const KPI = ({ label, value, sub, tone }) => (
 function AutoField({ value, onChange, suggestions, onCreate, placeholder }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState(value || "");
+  const [hi, setHi] = useState(-1);
   useEffect(() => setQ(value || ""), [value]);
   const ql = lc(q);
   const sugs = (suggestions || []).filter((s) => typeof s === "string" && s);
   const matches = sugs.filter((s) => lc(s).includes(ql)).slice(0, 6);
   const exact = sugs.some((s) => lc(s) === ql);
+  const podeCriar = q && !exact && onCreate;
+  const opts = [...matches, ...(podeCriar ? ["__create__"] : [])];
+  const escolher = (m) => { if (m === "__create__") { onCreate(q); setQ(q); onChange(q); } else { setQ(m); onChange(m); } setOpen(false); setHi(-1); };
+  const onKey = (e) => {
+    if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) { setOpen(true); return; }
+    if (e.key === "ArrowDown") { e.preventDefault(); setHi((h) => Math.min(opts.length - 1, h + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setHi((h) => Math.max(0, h - 1)); }
+    else if (e.key === "Enter") { if (open && hi >= 0 && opts[hi]) { e.preventDefault(); escolher(opts[hi]); } }
+    else if (e.key === "Escape") { if (open) { e.stopPropagation(); setOpen(false); setHi(-1); } }
+  };
   return (
     <div className="auto">
       <input value={q} placeholder={placeholder || "digite para buscar…"}
-        onChange={(e) => { setQ(e.target.value); onChange(e.target.value); setOpen(true); }}
+        onChange={(e) => { setQ(e.target.value); onChange(e.target.value); setOpen(true); setHi(-1); }}
+        onKeyDown={onKey}
         onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 160)} />
-      {open && (matches.length > 0 || (q && !exact)) && (
+      {open && opts.length > 0 && (
         <div className="auto-menu">
-          {matches.map((m) => <button type="button" key={m} className="auto-item" onMouseDown={() => { setQ(m); onChange(m); setOpen(false); }}>{m}</button>)}
-          {q && !exact && onCreate && (
-            <button type="button" className="auto-item create" onMouseDown={() => { onCreate(q); setQ(q); onChange(q); setOpen(false); }}>＋ Cadastrar “{q}”</button>
+          {matches.map((m, i) => <button type="button" key={m} className={`auto-item ${hi === i ? "hi" : ""}`} onMouseDown={() => escolher(m)} onMouseEnter={() => setHi(i)}>{m}</button>)}
+          {podeCriar && (
+            <button type="button" className={`auto-item create ${hi === matches.length ? "hi" : ""}`} onMouseDown={() => escolher("__create__")} onMouseEnter={() => setHi(matches.length)}>＋ Cadastrar “{q}”</button>
           )}
         </div>
       )}
@@ -511,11 +523,20 @@ function Genealogia({ a }) {
 }
 
 function VideoBlock({ v }) {
+  const [aberto, setAberto] = useState(false);
   const emb = toEmbed(v.url);
+  if (!v.url) return null;
   return (
-    <div className="video"><div className="video-h"><Badge tone="gold">{v.tipo || "Vídeo"}</Badge>{v.obs && <span className="video-obs">{v.obs}</span>}</div>
-      {emb ? <div className="video-frame"><iframe src={emb} title={v.tipo} frameBorder="0" allowFullScreen /></div>
-        : <a className="btn btn-ghost" href={v.url} target="_blank" rel="noreferrer">▶ Abrir vídeo</a>}</div>
+    <div className="video-item">
+      {!aberto ? (
+        <button className="btn btn-ghost btn-video" onClick={() => (emb ? setAberto(true) : window.open(v.url, "_blank"))}>
+          ▶ Ver vídeo{v.tipo ? ` — ${v.tipo}` : ""}
+        </button>
+      ) : (
+        <div className="video-frame"><iframe src={emb} title={v.tipo || "vídeo"} frameBorder="0" allowFullScreen /></div>
+      )}
+      {v.obs && <span className="video-obs">{v.obs}</span>}
+    </div>
   );
 }
 
@@ -523,6 +544,11 @@ function VideoBlock({ v }) {
 function FichaForm({ tipo, initial, animalNames, leilaoNames, localNames, vendedorNames, socioNames,
   onQuickAnimal, onQuickLeilao, onQuickLocal, onQuickVendedor, onQuickSocio, onSave, onClose }) {
   const [d, setD] = useState(() => initial || { id: uid(), tipo, socios: [], videos: [], historico: [], comissaoPct: 8 });
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
   const set = (k, v) => setD((p) => ({ ...p, [k]: v }));
   const f = finance(d);
   const pctSocios = (d.socios || []).filter(Boolean).reduce((s, x) => s + num(x.pct), 0);
@@ -597,11 +623,9 @@ function FichaForm({ tipo, initial, animalNames, leilaoNames, localNames, vended
             <button className="btn btn-ghost" onClick={addSocio}>+ Adicionar sócio</button>
           </div>
 
-          {/* mídia */}
+          {/* vídeos */}
           <div className="fsec">
-            <div className="fsec-h">Fotos e vídeos</div>
-            <label className="field wide"><span>Foto principal (URL)</span>
-              <input value={d.fotoPrincipal || ""} onChange={(e) => set("fotoPrincipal", e.target.value)} placeholder="https://..." /></label>
+            <div className="fsec-h">Vídeos</div>
             {(d.videos || []).map((v) => (
               <div className="socio-row" key={v.id}>
                 <input placeholder="Tipo (pista, apresentação, avaliação…)" value={v.tipo} onChange={(e) => setVideo(v.id, "tipo", e.target.value)} />
@@ -826,6 +850,11 @@ function VendasSecao({ a, vendas, partAtual, socAtual, socioNames, onQuickSocio,
 
 /* ------------------------------ ficha detalhe -------------------------- */
 function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, socioNamesGlobais, onQuickSocio }) {
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
   if (!a) return null;
   const f = finance(a);
   const fase = faseAnimal(a, ativos);
@@ -886,10 +915,7 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal ficha" onClick={(e) => e.stopPropagation()}>
-        <div className="ficha-hero">
-          <div className="ficha-hero-media">
-            {a.fotoPrincipal ? <img src={a.fotoPrincipal} alt={a.nome} onError={(e) => (e.target.style.display = "none")} /> : <div className="media-ph"><span>{titulo}</span></div>}
-          </div>
+        <div className="ficha-hero no-media">
           <div className="ficha-hero-info">
             <div className="eyebrow">{titulo}{a.raca ? ` · ${a.raca}` : ""}{a.origem === "genealogia" ? " · ancestral" : ""}</div>
             <h2 className="serif">{a.nome}</h2>
@@ -985,8 +1011,8 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
             </div>
           )}
 
-          {(a.videos || []).length > 0 && (
-            <div className="fsec"><div className="fsec-h">Vídeos</div><div className="videos-grid">{a.videos.map((v) => <VideoBlock key={v.id} v={v} />)}</div></div>
+          {(a.videos || []).some((v) => v && v.url) && (
+            <div className="fsec"><div className="fsec-h">Vídeos</div><div className="videos-list">{a.videos.filter((v) => v && v.url).map((v) => <VideoBlock key={v.id} v={v} />)}</div></div>
           )}
 
           {a.tipo === "animal" && a.origem !== "genealogia" && (
@@ -1462,15 +1488,26 @@ export default function App() {
             <div className="cards-grid">
               {visiveis.filter((a) => a.tipo === view && (view !== "animal" || showAncestrais || a.origem !== "genealogia")).map((a) => {
                 const f = finance(a);
+                const ehAnimal = a.tipo === "animal";
+                const part = ehAnimal ? participacaoAtual(a) : null;
+                const sexoLbl = a.sexo ? (lc(a.sexo).startsWith("f") ? "Fêmea" : lc(a.sexo).startsWith("m") ? "Macho" : a.sexo) : "";
+                const temVideo = (a.videos || []).some((v) => v && v.url);
                 return (
-                  <div className="asset-card" key={a.id} onClick={() => setAberto(a)}>
-                    <div className="asset-media">
-                      {a.fotoPrincipal ? <img src={a.fotoPrincipal} alt="" onError={(e) => (e.target.style.opacity = 0)} /> : <div className="media-ph small"><span>{view}</span></div>}
-                      {a.origem === "genealogia" ? <div className="asset-status"><Badge tone="gold">ancestral</Badge></div> : a.status && <div className="asset-status"><Badge tone={statusTone(a.status)}>{a.status}</Badge></div>}
+                  <div className="asset-card" key={a.id} onClick={() => setAberto(a)} onKeyDown={(e) => { if (e.key === "Enter") setAberto(a); }} tabIndex={0} role="button" aria-label={`Abrir ${a.nome}`}>
+                    <div className="asset-head">
+                      <div className="asset-name serif">{a.nome || "—"}</div>
+                      {a.origem === "genealogia" ? <Badge tone="gold">ancestral</Badge> : a.status ? <Badge tone={statusTone(a.status)}>{a.status}</Badge> : null}
                     </div>
-                    <div className="asset-body"><div className="asset-name serif">{a.nome}</div>
-                      <div className="asset-meta">{a.raca || a.doadora || "—"}{a.registro ? ` · ${a.registro}` : ""}</div>
-                      <div className="asset-fin"><span>{fmt(f.totalEstimado || f.cota)}</span>{f.aberto > 0 ? <em className="neg">{fmt(f.aberto)} em aberto</em> : <em className="pos">quitado</em>}</div></div>
+                    <div className="asset-tags">
+                      {a.registro && <span className="tag">Reg. {a.registro}</span>}
+                      {sexoLbl && <span className={`tag ${lc(a.sexo).startsWith("f") ? "tag-f" : "tag-m"}`}>{sexoLbl}</span>}
+                      {(a.raca || a.categoria) && <span className="tag">{a.categoria || a.raca}</span>}
+                      {temVideo && <span className="tag tag-video">▶ vídeo</span>}
+                    </div>
+                    {ehAnimal && a.origem !== "genealogia" && (
+                      <div className="asset-part">Sua participação: <b className={part <= 0 ? "neg" : "pos"}>{part}%</b></div>
+                    )}
+                    <div className="asset-fin"><span>{fmt(f.totalEstimado || f.cota)}</span>{f.aberto > 0 ? <em className="neg">{fmt(f.aberto)} em aberto</em> : <em className="pos">quitado</em>}</div>
                   </div>
                 );
               })}
@@ -1641,14 +1678,18 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .cards-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:18px}
 .cards-grid.wide{grid-template-columns:repeat(auto-fill,minmax(320px,1fr))}
 
-.asset-card{background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden;cursor:pointer;transition:.18s}
+.asset-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px 18px;cursor:pointer;transition:.18s;display:flex;flex-direction:column;gap:10px}
 .asset-card:hover{transform:translateY(-3px);box-shadow:0 12px 26px rgba(29,58,43,.13);border-color:var(--gold)}
-.asset-media{position:relative;aspect-ratio:16/10;background:var(--bege)}.asset-media img{width:100%;height:100%;object-fit:cover}.asset-status{position:absolute;top:10px;left:10px}
-.media-ph{width:100%;height:100%;display:grid;place-items:center;background:radial-gradient(circle at 30% 20%,rgba(198,161,91,.18),transparent 60%),linear-gradient(135deg,#eee6d4,#e3d8bf)}
-.media-ph span{font-family:Fraunces,serif;font-size:15px;text-transform:capitalize;color:#9c8a5f;letter-spacing:.1em}.media-ph.small span{font-size:13px}
-.asset-body{padding:14px 16px 16px}.asset-name{font-size:16.5px;line-height:1.2;color:var(--ink)}
-.asset-meta{font-size:12.5px;color:var(--muted);margin:4px 0 10px}
-.asset-fin{display:flex;justify-content:space-between;align-items:baseline;font-family:Fraunces,serif;font-size:16px}.asset-fin em{font-family:Inter;font-size:12px;font-style:normal}
+.asset-card:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.asset-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.asset-name{font-size:17px;line-height:1.2;color:var(--ink)}
+.asset-tags{display:flex;flex-wrap:wrap;gap:6px}
+.tag{font-size:11.5px;padding:3px 9px;border-radius:999px;background:var(--paper);border:1px solid var(--line);color:var(--muted)}
+.tag-m{background:#e8f0fb;border-color:#bcd3f0;color:#274a86}
+.tag-f{background:#fbe9f1;border-color:#f0c2d8;color:#8a3a66}
+.tag-video{background:#f3ecdd;border-color:var(--gold);color:#8a6a2c}
+.asset-part{font-size:13px;color:var(--muted)}.asset-part b{font-size:14px}
+.asset-fin{display:flex;justify-content:space-between;align-items:baseline;font-family:Fraunces,serif;font-size:16px;border-top:1px solid var(--line);padding-top:10px;margin-top:auto}.asset-fin em{font-family:Inter;font-size:12px;font-style:normal}
 .empty{grid-column:1/-1;text-align:center;color:var(--muted);padding:50px;border:1px dashed var(--line);border-radius:16px}
 
 .badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:11.5px;font-weight:600}
@@ -1697,7 +1738,7 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .auto-item:hover{background:#faf5e8}.auto-item.create{color:#8a6a2c;font-weight:600;border-top:1px solid var(--line)}
 
 .ficha .ficha-hero{display:flex;background:#fff;border-bottom:1px solid var(--line)}
-.ficha-hero-media{width:300px;min-height:220px;background:var(--bege);flex-shrink:0}.ficha-hero-media img{width:100%;height:100%;object-fit:cover}
+.ficha .ficha-hero.no-media .ficha-hero-info{width:100%}
 .ficha-hero-info{padding:26px 28px;position:relative;flex:1}
 .ficha-hero-info h2{margin:6px 0 12px;font-size:30px;font-weight:600;color:var(--ink);line-height:1.05}
 .chips{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}.ficha-actions{display:flex;gap:10px}
@@ -1726,10 +1767,12 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .asp-col{display:flex;flex-direction:column;gap:12px;align-items:center}.asp-head{font-family:Fraunces,serif;font-weight:600;color:var(--ink)}.asp-pair{display:flex;gap:12px}
 .asp-x{font-family:Fraunces,serif;font-size:30px;color:var(--gold)}
 
-.videos-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
-.video{background:#fff;border:1px solid var(--line);border-radius:12px;padding:12px}
-.video-h{display:flex;gap:10px;align-items:center;margin-bottom:8px}.video-obs{font-size:12px;color:var(--muted)}
-.video-frame{aspect-ratio:16/9;border-radius:8px;overflow:hidden;background:#000}.video-frame iframe{width:100%;height:100%;border:0}
+.videos-list{display:flex;flex-direction:column;gap:12px}
+.btn-video{align-self:flex-start}
+.video-item{display:flex;flex-direction:column;gap:6px}
+.video-obs{font-size:12px;color:var(--muted)}
+.video-frame{aspect-ratio:16/9;border-radius:8px;overflow:hidden;background:#000;max-width:480px}.video-frame iframe{width:100%;height:100%;border:0}
+.auto-item.hi{background:var(--paper)}
 
 .timeline{display:flex;flex-direction:column;padding-left:8px}
 .tl-item{display:flex;gap:14px;padding:12px 0;border-left:2px solid var(--line);margin-left:6px;padding-left:18px;position:relative}
@@ -1803,7 +1846,7 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
   .side.open{transform:translateX(0)}
   .scrim{display:block;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:55}
   .main{padding:16px 16px 56px}.head h1{font-size:27px}
-  .ficha .ficha-hero{flex-direction:column}.ficha-hero-media{width:100%;min-height:180px}
+  .ficha .ficha-hero{flex-direction:column}
   /* toque confortável e sem zoom automático no iOS (fontes >=16px) */
   .field input,.field select,.field textarea,.socio-row input,.socio-row select,.search,.auto input,.mini-inp,.mini-sel{font-size:16px}
   .btn{padding:12px 18px}.btn-mini{padding:9px 12px}
@@ -1823,7 +1866,7 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
   .ficha-hero-info{padding:20px}
   .fin-live{gap:8px 14px}
   .socio-row{gap:8px}.socio-row input{min-width:0}
-  .videos-grid{grid-template-columns:1fr}
+  .previa-soc,.venda-linha{width:100%}
   .tbl{font-size:13px}.tbl th,.tbl td{padding:8px}
 }
 @media print{.side,.topbar,.head-tools,.rep-tools,.btn{display:none!important}.main{padding:0}}
