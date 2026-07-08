@@ -181,6 +181,32 @@ function parcelasPorMes(a) {
   return Object.values(byMonth).sort((x, y) => x.ym.localeCompare(y.ym));
 }
 const mesLabel = (ym) => { const [y, m] = (ym || "").split("-"); return m ? `${m}/${y}` : ym; };
+/* unifica parcelas da compra original + adicionais em UMA lista, somando por mês */
+function parcelasUnificadas(a) {
+  a = a || {};
+  const meses = {};
+  const garante = (ym) => (meses[ym] = meses[ym] || { ym, venc: "", baseIdx: -1, valorBase: 0, valorPagoBase: 0, autoBase: false, valorAdic: 0, valorPagoAdic: 0, autoAdic: false, obs: "" });
+  // base (compra original) — mantém índice para permitir pagar/estornar manualmente
+  ensureParcelas(a).forEach((p, idx) => {
+    const ym = (p.venc || "").slice(0, 7); if (!ym) return;
+    const m = garante(ym); m.baseIdx = idx; m.venc = p.venc;
+    m.valorBase += num(p.valor); m.valorPagoBase += num(p.valorPago);
+    m.autoBase = p.auto; if (p.obs) m.obs = p.obs;
+  });
+  // compras adicionais — pagas automaticamente pela data
+  (a.comprasAdic || []).filter(Boolean).forEach((c) => {
+    parcelasCompraAdic(c).forEach((p) => {
+      const ym = (p.venc || "").slice(0, 7); if (!ym) return;
+      const m = garante(ym); if (!m.venc || p.venc < m.venc) m.venc = m.venc || p.venc;
+      if (!m.venc) m.venc = p.venc;
+      m.valorAdic += num(p.valor); m.valorPagoAdic += num(p.valorPago);
+      if (p.auto) m.autoAdic = true;
+    });
+  });
+  const rows = Object.values(meses).sort((x, y) => (x.venc || "").localeCompare(y.venc || ""));
+  rows.forEach((r, i) => { r.numero = i + 1; r.valor = r.valorBase + r.valorAdic; r.valorPago = r.valorPagoBase + r.valorPagoAdic; });
+  return rows;
+}
 
 /* ----------------------------- motor de vendas ------------------------- */
 const TIPOS_VENDA = ["Venda de participação", "Venda de aspiração", "Venda de prenhez", "Outro"];
@@ -1135,48 +1161,39 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
             {a.obs && <p className="obs">{a.obs}</p>}
           </div>
 
-          {f.qtd > 0 && (
-            <div className="fsec"><div className="fsec-h">Parcelas <span className="muted small">— clique no status para pagar/estornar; use “valor pago” para pagamento parcial</span></div>
+          {(f.qtd > 0 || comprasAdic.length > 0) && (() => {
+            const linhas = parcelasUnificadas(a);
+            const temAdic = comprasAdic.length > 0;
+            return (
+            <div className="fsec"><div className="fsec-h">Parcelas <span className="muted small">— clique no status para pagar/estornar{temAdic ? "; meses com compra adicional aparecem somados" : ""}</span></div>
               <div className="tbl-wrap"><table className="tbl">
                 <thead><tr><th>Nº</th><th>Vencimento</th><th>Valor</th><th>Status</th><th>Valor pago</th><th>Pago em</th><th>Observações</th></tr></thead>
                 <tbody>
-                  {f.list.map((p, i) => {
-                    const st = parcStatus(p);
+                  {linhas.map((r) => {
+                    const st = parcStatus({ valorPago: r.valorPago, valor: r.valor, venc: r.venc });
+                    const temBase = r.baseIdx >= 0;
+                    const baseQuitada = r.valorPagoBase >= r.valorBase && r.valorBase > 0;
                     return (
-                      <tr key={i} className={st === "vencido" ? "row-late" : ""}>
-                        <td>{p.numero}</td><td>{dataBR(p.venc)}</td><td>{fmt(p.valor)}</td>
-                        <td><button className={`pstatus ${st}`} onClick={() => setPago(i, num(p.valorPago) >= p.valor ? 0 : p.valor)}>{st}</button></td>
-                        <td><input className="mini-inp pay-inp" type="number" step="any" value={p.valorPago || ""} onChange={(e) => setPago(i, num(e.target.value))} /></td>
-                        <td>{num(p.valorPago) > 0 ? dataBR(p.dataPagamento) : "—"}{p.auto ? " (auto)" : ""}</td>
-                        <td><input className="mini-inp obs-inp" placeholder="observações" value={p.obs || ""} onChange={(e) => setParcela(i, "obs", e.target.value)} /></td>
+                      <tr key={r.ym} className={st === "vencido" ? "row-late" : ""}>
+                        <td>{r.numero}</td><td>{dataBR(r.venc)}</td>
+                        <td>{fmt(r.valor)}{r.valorAdic > 0 && r.valorBase > 0 ? <div className="muted small">orig {fmt(r.valorBase)} + adic {fmt(r.valorAdic)}</div> : r.valorAdic > 0 ? <div className="muted small">compra adicional</div> : null}</td>
+                        <td><button className={`pstatus ${st}`} disabled={!temBase} title={temBase ? "" : "parcela de compra adicional — paga automaticamente pela data"} onClick={() => temBase && setPago(r.baseIdx, baseQuitada ? 0 : r.valorBase)}>{st}</button></td>
+                        <td>{temBase
+                          ? <input className="mini-inp pay-inp" type="number" step="any" value={r.valorPagoBase || ""} onChange={(e) => setPago(r.baseIdx, num(e.target.value))} title="valor pago da compra original (a adicional é automática)" />
+                          : <span className="muted">{fmt(r.valorPago)}</span>}</td>
+                        <td>{r.valorPago > 0 ? "pago" : "—"}{(r.autoBase || r.autoAdic) ? " (auto)" : ""}</td>
+                        <td>{temBase
+                          ? <input className="mini-inp obs-inp" placeholder="observações" value={r.obs || ""} onChange={(e) => setParcela(r.baseIdx, "obs", e.target.value)} />
+                          : <span className="muted small">—</span>}</td>
                       </tr>
                     );
                   })}
                 </tbody>
+                {linhas.length > 0 && <tfoot><tr><td colSpan={2}><b>Total</b></td><td colSpan={5}><b>{fmt(linhas.reduce((s, r) => s + r.valor, 0))}</b> em {linhas.length} parcela(s){temAdic ? " (compra original + adicionais)" : ""}</td></tr></tfoot>}
               </table></div></div>
-          )}
-
-          {comprasAdic.length > 0 && (() => {
-            const meses = parcelasPorMes(a).filter((m) => m.total > 0);
-            const mesAtual = today().slice(0, 7);
-            return (
-              <div className="fsec"><div className="fsec-h">Parcelas por mês (todas as compras) <span className="muted small hint">— soma automática de compra original + adicionais</span></div>
-                <div className="tbl-wrap"><table className="tbl">
-                  <thead><tr><th>Mês</th><th>Detalhe por compra</th><th>Total do mês</th></tr></thead>
-                  <tbody>{meses.map((m) => (
-                    <tr key={m.ym} className={m.ym === mesAtual ? "row-now" : ""}>
-                      <td><b>{mesLabel(m.ym)}</b>{m.ym === mesAtual ? <span className="muted small"> (atual)</span> : ""}</td>
-                      <td>{Object.entries(m.fontes).map(([nome, val]) => (
-                        <div key={nome} className="small">{nome}: <b>{fmt(val)}</b></div>
-                      ))}</td>
-                      <td className="neg"><b>{fmt(m.total)}</b></td>
-                    </tr>
-                  ))}</tbody>
-                </table></div>
-                <p className="muted small">Cada compra permanece separada no histórico; aqui elas apenas são somadas por mês de vencimento.</p>
-              </div>
             );
           })()}
+
           {a.tipo === "animal" && a.origem !== "genealogia" && (
             <SociedadeAtual socios={socAtual} hist={a.sociedadeHist || []} socioNames={socioNamesGlobais || []} onQuickSocio={onQuickSocio} onSave={setSociedadeAtual} canDelete={canDelete} />
           )}
