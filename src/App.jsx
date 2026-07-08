@@ -150,7 +150,7 @@ function finance(a) {
     const cVal = (num(c.valorParcela) * cQtd) || num(c.valor);
     adicTotal += cVal;
     adicPago += l.reduce((s, p) => s + Math.min(num(p.valorPago), p.valor), 0);
-    adicList = adicList.concat(l.map((p) => ({ ...p, compraId: c.id })));
+    adicList = adicList.concat(l.map((p) => ({ ...p, compraId: c.id, compraData: c.data, origem: "adicional", origemLabel: "Compra adicional" + (c.data ? ` (${dataBR(c.data)})` : "") })));
   });
   return {
     valor, qtd, pct, cota, totalEstimado, com, custos, finalEstimado, list, adicList,
@@ -161,10 +161,26 @@ function finance(a) {
 function cronograma(a) {
   a = a || {};
   const f = finance(a);
-  const base = f.list.map((p) => ({ ativoId: a.id, tipo: a.tipo, ativoNome: a.nome, ...p, status: parcStatus(p) }));
+  const base = f.list.map((p) => ({ ativoId: a.id, tipo: a.tipo, ativoNome: a.nome, origem: "original", origemLabel: "Compra original", ...p, status: parcStatus(p) }));
   const adic = (f.adicList || []).map((p) => ({ ativoId: a.id, tipo: a.tipo, ativoNome: a.nome, ...p, status: parcStatus(p) }));
   return base.concat(adic);
 }
+/* agrupa todas as parcelas do animal (original + adicionais) por mês de vencimento */
+function parcelasPorMes(a) {
+  const byMonth = {};
+  cronograma(a).forEach((p) => {
+    const ym = (p.venc || "").slice(0, 7);
+    if (!ym) return;
+    if (!byMonth[ym]) byMonth[ym] = { ym, total: 0, pago: 0, fontes: {} };
+    const v = num(p.valor);
+    byMonth[ym].total += v;
+    byMonth[ym].pago += Math.min(num(p.valorPago), v);
+    const key = p.origemLabel || (p.origem === "adicional" ? "Compra adicional" : "Compra original");
+    byMonth[ym].fontes[key] = (byMonth[ym].fontes[key] || 0) + v;
+  });
+  return Object.values(byMonth).sort((x, y) => x.ym.localeCompare(y.ym));
+}
+const mesLabel = (ym) => { const [y, m] = (ym || "").split("-"); return m ? `${m}/${y}` : ym; };
 
 /* ----------------------------- motor de vendas ------------------------- */
 const TIPOS_VENDA = ["Venda de participação", "Venda de aspiração", "Venda de prenhez", "Outro"];
@@ -1140,6 +1156,27 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
               </table></div></div>
           )}
 
+          {comprasAdic.length > 0 && (() => {
+            const meses = parcelasPorMes(a).filter((m) => m.total > 0);
+            const mesAtual = today().slice(0, 7);
+            return (
+              <div className="fsec"><div className="fsec-h">Parcelas por mês (todas as compras) <span className="muted small hint">— soma automática de compra original + adicionais</span></div>
+                <div className="tbl-wrap"><table className="tbl">
+                  <thead><tr><th>Mês</th><th>Detalhe por compra</th><th>Total do mês</th></tr></thead>
+                  <tbody>{meses.map((m) => (
+                    <tr key={m.ym} className={m.ym === mesAtual ? "row-now" : ""}>
+                      <td><b>{mesLabel(m.ym)}</b>{m.ym === mesAtual ? <span className="muted small"> (atual)</span> : ""}</td>
+                      <td>{Object.entries(m.fontes).map(([nome, val]) => (
+                        <div key={nome} className="small">{nome}: <b>{fmt(val)}</b></div>
+                      ))}</td>
+                      <td className="neg"><b>{fmt(m.total)}</b></td>
+                    </tr>
+                  ))}</tbody>
+                </table></div>
+                <p className="muted small">Cada compra permanece separada no histórico; aqui elas apenas são somadas por mês de vencimento.</p>
+              </div>
+            );
+          })()}
           {a.tipo === "animal" && a.origem !== "genealogia" && (
             <SociedadeAtual socios={socAtual} hist={a.sociedadeHist || []} socioNames={socioNamesGlobais || []} onQuickSocio={onQuickSocio} onSave={setSociedadeAtual} canDelete={canDelete} />
           )}
@@ -1920,6 +1957,7 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .video-obs{font-size:12px;color:var(--muted)}
 .video-frame{aspect-ratio:16/9;border-radius:10px;overflow:hidden;background:#000;width:100%}.video-frame iframe{width:100%;height:100%;border:0}
 .auto-item.hi{background:var(--paper)}
+.row-now{background:rgba(198,161,91,.10)}
 
 .timeline{display:flex;flex-direction:column;padding-left:8px}
 .tl-item{display:flex;gap:14px;padding:12px 0;border-left:2px solid var(--line);margin-left:6px;padding-left:18px;position:relative}
