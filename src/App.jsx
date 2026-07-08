@@ -102,6 +102,25 @@ function ensureParcelas(a) {
   return list;
 }
 const parcStatus = (p) => (num(p.valorPago) >= p.valor && p.valor > 0 ? "pago" : num(p.valorPago) > 0 ? "parcial" : p.venc && p.venc < today() ? "vencido" : "aberto");
+/* parcelas de uma compra de participação adicional (não mexe nas parcelas originais) */
+function parcelasCompraAdic(c) {
+  c = c || {};
+  const qtd = Math.max(0, Math.round(num(c.parcelas)));
+  const valor = num(c.valorParcela);
+  const prev = c.parcelasList || [];
+  const hoje = today();
+  const list = [];
+  for (let i = 0; i < qtd; i++) {
+    const p = prev[i] || {};
+    const venc = addMonths(c.dataInicial, i);
+    let valorPago = p.valorPago != null ? num(p.valorPago) : 0;
+    let isAuto = false; let dataPagamento = p.dataPagamento || "";
+    if (venc && venc <= hoje) { valorPago = valor; isAuto = true; dataPagamento = venc; }
+    if (valorPago === 0) dataPagamento = "";
+    list.push({ numero: i + 1, venc, valor, valorPago, auto: isAuto, dataPagamento, obs: p.obs || "", origem: "adicional" });
+  }
+  return list;
+}
 function finance(a) {
   a = a || {};
   const valor = num(a.valorParcela);
@@ -122,15 +141,29 @@ function finance(a) {
   const ultimoVenc = qtd > 0 ? addMonths(a.primeiroVenc, qtd - 1) : "";
   const prox = list.find((p) => num(p.valorPago) < p.valor);
   const vencidas = list.filter((p) => num(p.valorPago) < p.valor && p.venc && p.venc < hoje);
+  // compras de participação adicional: geram novas parcelas e somam ao investido, sem tocar nas parcelas originais
+  const adic = (a.comprasAdic || []).filter(Boolean);
+  let adicList = []; let adicTotal = 0; let adicPago = 0;
+  adic.forEach((c) => {
+    const l = parcelasCompraAdic(c);
+    const cQtd = Math.max(0, Math.round(num(c.parcelas)));
+    const cVal = (num(c.valorParcela) * cQtd) || num(c.valor);
+    adicTotal += cVal;
+    adicPago += l.reduce((s, p) => s + Math.min(num(p.valorPago), p.valor), 0);
+    adicList = adicList.concat(l.map((p) => ({ ...p, compraId: c.id })));
+  });
   return {
-    valor, qtd, pct, cota, totalEstimado, com, custos, finalEstimado, list,
+    valor, qtd, pct, cota, totalEstimado, com, custos, finalEstimado, list, adicList,
     pagas, restantes, jaPago, emAberto, devidas, ultimoVenc, proxima: prox ? prox.venc : "", vencidas,
-    total: cota + custos, pago: jaPago, aberto: emAberto, patrimonio: totalEstimado,
+    total: cota + custos + adicTotal, pago: jaPago + adicPago, aberto: emAberto + (adicTotal - adicPago), patrimonio: totalEstimado,
   };
 }
 function cronograma(a) {
   a = a || {};
-  return finance(a).list.map((p) => ({ ativoId: a.id, tipo: a.tipo, ativoNome: a.nome, ...p, status: parcStatus(p) }));
+  const f = finance(a);
+  const base = f.list.map((p) => ({ ativoId: a.id, tipo: a.tipo, ativoNome: a.nome, ...p, status: parcStatus(p) }));
+  const adic = (f.adicList || []).map((p) => ({ ativoId: a.id, tipo: a.tipo, ativoNome: a.nome, ...p, status: parcStatus(p) }));
+  return base.concat(adic);
 }
 
 /* ----------------------------- motor de vendas ------------------------- */
@@ -157,7 +190,8 @@ function pctVendida(a) {
 }
 function participacaoAtual(a) {
   const base = num(a && a.porcentagemComprada);
-  return Math.max(0, Math.round((base - pctVendida(a)) * 100) / 100);
+  const adic = ((a && a.comprasAdic) || []).reduce((s, c) => s + num(c && c.pctAdicional), 0);
+  return Math.max(0, Math.round((base + adic - pctVendida(a)) * 100) / 100);
 }
 /* normaliza uma lista de sócios em mapa {nomeLower: {nome, pct}} preservando nome original */
 function socMap(lista) {
@@ -523,17 +557,14 @@ function Genealogia({ a }) {
 }
 
 function VideoBlock({ v }) {
-  const [aberto, setAberto] = useState(false);
   const emb = toEmbed(v.url);
   if (!v.url) return null;
   return (
     <div className="video-item">
-      {!aberto ? (
-        <button className="btn btn-ghost btn-video" onClick={() => (emb ? setAberto(true) : window.open(v.url, "_blank"))}>
-          ▶ Ver vídeo{v.tipo ? ` — ${v.tipo}` : ""}
-        </button>
+      {emb ? (
+        <div className="video-frame"><iframe src={emb} title={v.tipo || "vídeo"} frameBorder="0" allowFullScreen loading="lazy" /></div>
       ) : (
-        <div className="video-frame"><iframe src={emb} title={v.tipo || "vídeo"} frameBorder="0" allowFullScreen /></div>
+        <a className="btn btn-ghost btn-video" href={v.url} target="_blank" rel="noreferrer">▶ Abrir vídeo{v.tipo ? ` — ${v.tipo}` : ""}</a>
       )}
       {v.obs && <span className="video-obs">{v.obs}</span>}
     </div>
@@ -848,6 +879,89 @@ function VendasSecao({ a, vendas, partAtual, socAtual, socioNames, onQuickSocio,
   );
 }
 
+/* -------------------- seção Compra de participação adicional ----------- */
+function ComprasAdicSecao({ a, compras, partAtual, socAtual, socioNames, onQuickSocio, onAdd, onDel, canDelete }) {
+  const vazio = { data: today(), pctAdicional: "", valor: "", valorParcela: "", parcelas: "", dataInicial: today(), forma: "", obs: "" };
+  const [f, setF] = useState(vazio);
+  const [aberto, setAberto] = useState(false);
+  const [socLinhas, setSocLinhas] = useState([]);
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+
+  const abrirForm = () => {
+    setF(vazio);
+    setSocLinhas((socAtual || []).map((s) => ({ id: uid(), nome: s.nome || "", pct: s.pct ?? "", obs: s.obs || "" })));
+    setAberto(true);
+  };
+  const salvar = () => {
+    if (!num(f.pctAdicional)) return;
+    const c = {
+      id: uid(), data: f.data, pctAdicional: num(f.pctAdicional),
+      valor: num(f.valor) || num(f.valorParcela) * Math.max(0, Math.round(num(f.parcelas))),
+      valorParcela: num(f.valorParcela), parcelas: Math.max(0, Math.round(num(f.parcelas))),
+      dataInicial: f.dataInicial, forma: (f.forma || "").trim(), obs: (f.obs || "").trim(),
+    };
+    onAdd(c, socLinhas);
+    setF(vazio); setSocLinhas([]); setAberto(false);
+  };
+  const depoisPreview = Math.round((partAtual + num(f.pctAdicional)) * 100) / 100;
+
+  return (
+    <div className="fsec">
+      <div className="fsec-h">Compras de participação adicional <span className="muted small hint">— quando você adquire mais uma parte do animal</span></div>
+
+      {compras.length > 0 && (
+        <div className="tbl-wrap"><table className="tbl">
+          <thead><tr><th>Data</th><th>% adicional</th><th>Valor</th><th>Parcelas</th><th></th></tr></thead>
+          <tbody>{compras.slice().sort((x, y) => (y.data || "").localeCompare(x.data || "")).map((c) => {
+            const pv = parcelasCompraAdic(c);
+            return (
+              <tr key={c.id}>
+                <td>{dataBR(c.data)}</td><td>+{num(c.pctAdicional)}%</td>
+                <td className="neg">{fmt(num(c.valor) || num(c.valorParcela) * num(c.parcelas))}</td>
+                <td>{pv.length ? `${pv.length}× ${fmt(c.valorParcela)}` : "à vista"}{pv.length ? ` (1º ${dataBR(c.dataInicial)})` : ""}</td>
+                <td>{canDelete && <button className="btn btn-mini" onClick={() => onDel(c.id)}>excluir</button>}</td>
+              </tr>
+            );
+          })}</tbody>
+        </table></div>
+      )}
+      {compras.length === 0 && <p className="muted small">Nenhuma compra adicional registrada.</p>}
+
+      {!aberto ? (
+        <button className="btn btn-ghost" style={{ marginTop: 12 }} onClick={abrirForm}>+ Registrar compra adicional</button>
+      ) : (
+        <div className="venda-form">
+          <div className="grid">
+            <label className="field"><span>Data da compra</span><input type="date" value={f.data} onChange={(e) => set("data", e.target.value)} /></label>
+            <label className="field"><span>% adicional comprada</span><input type="number" step="any" placeholder="ex.: 16,67" value={f.pctAdicional} onChange={(e) => set("pctAdicional", e.target.value)} /></label>
+            <label className="field"><span>Valor negociado</span><input type="number" step="any" placeholder="R$ 0" value={f.valor} onChange={(e) => set("valor", e.target.value)} /></label>
+            <label className="field"><span>Valor da parcela (se parcelado)</span><input type="number" step="any" placeholder="R$ 0" value={f.valorParcela} onChange={(e) => set("valorParcela", e.target.value)} /></label>
+            <label className="field"><span>Qtd. de parcelas</span><input type="number" step="any" placeholder="0" value={f.parcelas} onChange={(e) => set("parcelas", e.target.value)} /></label>
+            <label className="field"><span>1º vencimento</span><input type="date" value={f.dataInicial} onChange={(e) => set("dataInicial", e.target.value)} /></label>
+            <label className="field"><span>Forma de pagamento</span><input value={f.forma} onChange={(e) => set("forma", e.target.value)} placeholder="à vista, boleto, etc." /></label>
+            <label className="field wide"><span>Observações</span><textarea rows={2} value={f.obs} onChange={(e) => set("obs", e.target.value)} /></label>
+          </div>
+
+          <div className="previa-soc" style={{ marginBottom: 10 }}>
+            Participação: <b>{partAtual}%</b> → <b className="pos">{depoisPreview}%</b> após a compra
+          </div>
+
+          <div style={{ marginTop: 4 }}>
+            <div className="fsec-h" style={{ fontSize: 14 }}>Sociedade atual após a compra <span className="muted small hint">— preencha como ficou (informativo)</span></div>
+            <LinhasSocios linhas={socLinhas} setLinhas={setSocLinhas} socioNames={socioNames} onQuickSocio={onQuickSocio} />
+          </div>
+
+          <div className="rep-tools">
+            <button className="btn btn-gold" onClick={salvar}>Salvar compra</button>
+            <button className="btn btn-ghost" onClick={() => { setF(vazio); setSocLinhas([]); setAberto(false); }}>Cancelar</button>
+          </div>
+          <p className="muted small">As parcelas antigas não são alteradas — esta compra gera apenas novas parcelas. O total investido, as parcelas do mês e o resumo são atualizados automaticamente.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------ ficha detalhe -------------------------- */
 function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, socioNamesGlobais, onQuickSocio }) {
   useEffect(() => {
@@ -911,6 +1025,31 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
     onUpdate(patch);
   };
   const setSociedadeAtual = (linhas) => onUpdate({ ...a, sociedadeAtual: (linhas || []).filter((s) => s && (s.nome || s.pct)) });
+
+  const addCompraAdic = (c, socLinhas) => {
+    const antes = partAtual;
+    const depois = Math.round((antes + num(c.pctAdicional)) * 100) / 100;
+    const valorTotal = num(c.valor) || num(c.valorParcela) * Math.max(0, Math.round(num(c.parcelas)));
+    const hist = { id: uid(), data: c.data || today(), tipo: "Compra adicional", desc: `+${num(c.pctAdicional)}% por ${fmt(valorTotal)}`, responsavel: "" };
+    const antesSoc = socAtual;
+    const depoisSoc = (socLinhas || []).filter((s) => s && (s.nome || s.pct)).map((s) => ({ id: uid(), nome: (s.nome || "").trim(), pct: num(s.pct), obs: s.obs || "" }));
+    const patch = { ...a, comprasAdic: [...(a.comprasAdic || []), c], historico: [...(a.historico || []), hist] };
+    if (depoisSoc.length) patch.sociedadeAtual = depoisSoc;
+    patch.sociedadeHist = [...(a.sociedadeHist || []), {
+      id: uid(), data: c.data || today(), compraId: c.id, tipoMov: "compra",
+      vendaDesc: `Compra adicional +${num(c.pctAdicional)}% · ${fmt(valorTotal)}`,
+      participacaoAntes: antes, participacaoDepois: depois, pctAdicional: num(c.pctAdicional),
+      antes: antesSoc, depois: depoisSoc.length ? depoisSoc : antesSoc, obs: c.obs || "",
+    }];
+    (socLinhas || []).forEach((s) => { if (s.nome && onQuickSocio) onQuickSocio(s.nome.trim()); });
+    onUpdate(patch);
+  };
+  const delCompraAdic = (id) => {
+    const patch = { ...a, comprasAdic: (a.comprasAdic || []).filter((c) => c.id !== id) };
+    patch.sociedadeHist = (a.sociedadeHist || []).filter((h) => h.compraId !== id);
+    onUpdate(patch);
+  };
+  const comprasAdic = (a.comprasAdic || []).filter(Boolean);
 
   return (
     <div className="modal-bg" onClick={onClose}>
@@ -1017,6 +1156,10 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
 
           {a.tipo === "animal" && a.origem !== "genealogia" && (
             <VendasSecao a={a} vendas={vendas} partAtual={partAtual} socAtual={socAtual} socioNames={socioNamesGlobais || []} onQuickSocio={onQuickSocio} onAdd={addVenda} onDel={delVenda} canDelete={canDelete} />
+          )}
+
+          {a.tipo === "animal" && a.origem !== "genealogia" && (
+            <ComprasAdicSecao a={a} compras={comprasAdic} partAtual={partAtual} socAtual={socAtual} socioNames={socioNamesGlobais || []} onQuickSocio={onQuickSocio} onAdd={addCompraAdic} onDel={delCompraAdic} canDelete={canDelete} />
           )}
 
           <div className="fsec"><div className="fsec-h">Histórico</div>
@@ -1767,11 +1910,11 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .asp-col{display:flex;flex-direction:column;gap:12px;align-items:center}.asp-head{font-family:Fraunces,serif;font-weight:600;color:var(--ink)}.asp-pair{display:flex;gap:12px}
 .asp-x{font-family:Fraunces,serif;font-size:30px;color:var(--gold)}
 
-.videos-list{display:flex;flex-direction:column;gap:12px}
+.videos-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
 .btn-video{align-self:flex-start}
 .video-item{display:flex;flex-direction:column;gap:6px}
 .video-obs{font-size:12px;color:var(--muted)}
-.video-frame{aspect-ratio:16/9;border-radius:8px;overflow:hidden;background:#000;max-width:480px}.video-frame iframe{width:100%;height:100%;border:0}
+.video-frame{aspect-ratio:16/9;border-radius:10px;overflow:hidden;background:#000;width:100%}.video-frame iframe{width:100%;height:100%;border:0}
 .auto-item.hi{background:var(--paper)}
 
 .timeline{display:flex;flex-direction:column;padding-left:8px}
