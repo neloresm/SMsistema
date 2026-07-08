@@ -881,11 +881,15 @@ function VendasSecao({ a, vendas, partAtual, socAtual, socioNames, onQuickSocio,
 
 /* -------------------- seção Compra de participação adicional ----------- */
 function ComprasAdicSecao({ a, compras, partAtual, socAtual, socioNames, onQuickSocio, onAdd, onDel, canDelete }) {
-  const vazio = { data: today(), pctAdicional: "", valor: "", valorParcela: "", parcelas: "", dataInicial: today(), forma: "", obs: "" };
+  const vazio = { data: today(), partFinal: "", valor: "", valorParcela: "", parcelas: "", dataInicial: today(), obs: "" };
   const [f, setF] = useState(vazio);
   const [aberto, setAberto] = useState(false);
   const [socLinhas, setSocLinhas] = useState([]);
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+
+  // participação adquirida = participação final informada − participação atual
+  const adquirida = Math.round((num(f.partFinal) - partAtual) * 100) / 100;
+  const partInvalida = f.partFinal !== "" && adquirida <= 0;
 
   const abrirForm = () => {
     setF(vazio);
@@ -893,17 +897,16 @@ function ComprasAdicSecao({ a, compras, partAtual, socAtual, socioNames, onQuick
     setAberto(true);
   };
   const salvar = () => {
-    if (!num(f.pctAdicional)) return;
+    if (adquirida <= 0) return;
     const c = {
-      id: uid(), data: f.data, pctAdicional: num(f.pctAdicional),
+      id: uid(), data: f.data, pctAdicional: adquirida, partFinal: num(f.partFinal),
       valor: num(f.valor) || num(f.valorParcela) * Math.max(0, Math.round(num(f.parcelas))),
       valorParcela: num(f.valorParcela), parcelas: Math.max(0, Math.round(num(f.parcelas))),
-      dataInicial: f.dataInicial, forma: (f.forma || "").trim(), obs: (f.obs || "").trim(),
+      dataInicial: f.dataInicial, obs: (f.obs || "").trim(),
     };
     onAdd(c, socLinhas);
     setF(vazio); setSocLinhas([]); setAberto(false);
   };
-  const depoisPreview = Math.round((partAtual + num(f.pctAdicional)) * 100) / 100;
 
   return (
     <div className="fsec">
@@ -911,12 +914,12 @@ function ComprasAdicSecao({ a, compras, partAtual, socAtual, socioNames, onQuick
 
       {compras.length > 0 && (
         <div className="tbl-wrap"><table className="tbl">
-          <thead><tr><th>Data</th><th>% adicional</th><th>Valor</th><th>Parcelas</th><th></th></tr></thead>
+          <thead><tr><th>Data</th><th>% adquirida</th><th>Valor</th><th>Parcelas</th><th></th></tr></thead>
           <tbody>{compras.slice().sort((x, y) => (y.data || "").localeCompare(x.data || "")).map((c) => {
             const pv = parcelasCompraAdic(c);
             return (
               <tr key={c.id}>
-                <td>{dataBR(c.data)}</td><td>+{num(c.pctAdicional)}%</td>
+                <td>{dataBR(c.data)}</td><td>+{num(c.pctAdicional)}%{c.partFinal ? ` → ${num(c.partFinal)}%` : ""}</td>
                 <td className="neg">{fmt(num(c.valor) || num(c.valorParcela) * num(c.parcelas))}</td>
                 <td>{pv.length ? `${pv.length}× ${fmt(c.valorParcela)}` : "à vista"}{pv.length ? ` (1º ${dataBR(c.dataInicial)})` : ""}</td>
                 <td>{canDelete && <button className="btn btn-mini" onClick={() => onDel(c.id)}>excluir</button>}</td>
@@ -933,18 +936,19 @@ function ComprasAdicSecao({ a, compras, partAtual, socAtual, socioNames, onQuick
         <div className="venda-form">
           <div className="grid">
             <label className="field"><span>Data da compra</span><input type="date" value={f.data} onChange={(e) => set("data", e.target.value)} /></label>
-            <label className="field"><span>% adicional comprada</span><input type="number" step="any" placeholder="ex.: 16,67" value={f.pctAdicional} onChange={(e) => set("pctAdicional", e.target.value)} /></label>
+            <label className="field"><span>Participação atual após a compra (%)</span><input type="number" step="any" placeholder="ex.: 33,33" value={f.partFinal} onChange={(e) => set("partFinal", e.target.value)} /></label>
             <label className="field"><span>Valor negociado</span><input type="number" step="any" placeholder="R$ 0" value={f.valor} onChange={(e) => set("valor", e.target.value)} /></label>
-            <label className="field"><span>Valor da parcela (se parcelado)</span><input type="number" step="any" placeholder="R$ 0" value={f.valorParcela} onChange={(e) => set("valorParcela", e.target.value)} /></label>
+            <label className="field"><span>Valor da parcela</span><input type="number" step="any" placeholder="R$ 0" value={f.valorParcela} onChange={(e) => set("valorParcela", e.target.value)} /></label>
             <label className="field"><span>Qtd. de parcelas</span><input type="number" step="any" placeholder="0" value={f.parcelas} onChange={(e) => set("parcelas", e.target.value)} /></label>
             <label className="field"><span>1º vencimento</span><input type="date" value={f.dataInicial} onChange={(e) => set("dataInicial", e.target.value)} /></label>
-            <label className="field"><span>Forma de pagamento</span><input value={f.forma} onChange={(e) => set("forma", e.target.value)} placeholder="à vista, boleto, etc." /></label>
             <label className="field wide"><span>Observações</span><textarea rows={2} value={f.obs} onChange={(e) => set("obs", e.target.value)} /></label>
           </div>
 
           <div className="previa-soc" style={{ marginBottom: 10 }}>
-            Participação: <b>{partAtual}%</b> → <b className="pos">{depoisPreview}%</b> após a compra
+            Participação anterior: <b>{partAtual}%</b>
+            {f.partFinal !== "" && !partInvalida && <> · adquirida nesta compra: <b className="pos">{adquirida}%</b> · final: <b>{num(f.partFinal)}%</b></>}
           </div>
+          {partInvalida && <div className="auth-erro">A participação final ({num(f.partFinal)}%) deve ser maior que a atual ({partAtual}%).</div>}
 
           <div style={{ marginTop: 4 }}>
             <div className="fsec-h" style={{ fontSize: 14 }}>Sociedade atual após a compra <span className="muted small hint">— preencha como ficou (informativo)</span></div>
@@ -952,10 +956,10 @@ function ComprasAdicSecao({ a, compras, partAtual, socAtual, socioNames, onQuick
           </div>
 
           <div className="rep-tools">
-            <button className="btn btn-gold" onClick={salvar}>Salvar compra</button>
+            <button className="btn btn-gold" onClick={salvar} disabled={partInvalida || adquirida <= 0}>Salvar compra</button>
             <button className="btn btn-ghost" onClick={() => { setF(vazio); setSocLinhas([]); setAberto(false); }}>Cancelar</button>
           </div>
-          <p className="muted small">As parcelas antigas não são alteradas — esta compra gera apenas novas parcelas. O total investido, as parcelas do mês e o resumo são atualizados automaticamente.</p>
+          <p className="muted small">Você informa só a participação final; o sistema calcula quanto foi adquirido. As parcelas antigas não mudam — esta compra gera apenas novas parcelas, e o total investido, as parcelas do mês e o resumo são atualizados automaticamente.</p>
         </div>
       )}
     </div>
