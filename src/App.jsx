@@ -351,18 +351,14 @@ const SCHEMAS = {
   ],
   prenhez: [
     { g: "Identificação", f: [
-      ["nome", "Identificação da prenhez", "text"],
-      ["doadora", "Doadora (mãe genética)", "link"], ["receptora", "Receptora", "link"],
-      ["touro", "Touro / pai", "link"], ["dataInsem", "Data insem./TE", "date"],
-      ["dataParto", "Data prevista de parto", "date"], ["sexoPrev", "Sexo previsto", "select", ["Indefinido", "Fêmea", "Macho"]],
-      ["status", "Status", "select", STATUS_PRENHEZ], ["raca", "Raça", "select", RACAS],
-      ["ondeEsta", "Onde está (receptora)", "local"],
-      ["veterinario", "Veterinário", "text"], ["laboratorio", "Laboratório", "text"],
+      ["doadora", "Mãe doadora", "link"], ["pai", "Pai", "link"],
+      ["qtd", "Quantidade de prenhezes", "number"],
+      ["status", "Status", "select", STATUS_PRENHEZ], ["ondeEsta", "Onde está", "local"],
     ]},
-    { g: "Genealogia esperada", gen: true, f: [
-      ["avoPaterno", "Avô paterno", "link"], ["avoPaterna", "Avó paterna", "link"],
+    { g: "Genealogia", gen: true, f: [
       ["avoMaterno", "Avô materno", "link"], ["avoMaterna", "Avó materna", "link"],
-      ["obsGen", "Observações sobre a genética", "textarea"],
+      ["avoPaterno", "Avô paterno", "link"], ["avoPaterna", "Avó paterna", "link"],
+      ["obsGen", "Observações genealógicas", "textarea"],
     ]},
     { g: "Compra", f: COMPRA },
     { g: "Pagamento", pay: true, f: PAGAMENTO },
@@ -370,20 +366,14 @@ const SCHEMAS = {
   ],
   aspiracao: [
     { g: "Identificação", f: [
-      ["nome", "Identificação da aspiração", "text"], ["doadora", "Doadora aspirada", "link"],
-      ["dataAsp", "Data da aspiração", "date"], ["touro", "Touro / sêmen", "link"],
-      ["laboratorio", "Laboratório", "text"], ["veterinario", "Veterinário", "text"],
+      ["doadora", "Mãe doadora", "link"], ["pai", "Pai (se houver)", "link"],
+      ["qtd", "Quantidade", "number"],
       ["status", "Status", "select", STATUS_ASP], ["ondeEsta", "Onde está", "local"],
     ]},
-    { g: "Produção de embriões", f: [
-      ["oocitos", "Oócitos coletados", "number"], ["embrioes", "Embriões produzidos", "number"],
-      ["viaveis", "Embriões viáveis", "number"], ["congelados", "Embriões congelados", "number"],
-      ["transferidos", "Embriões transferidos", "number"], ["prenhezes", "Prenhezes confirmadas", "number"],
-    ]},
-    { g: "Genealogia da combinação", gen: true, f: [
-      ["paiDoadora", "Pai da doadora", "link"], ["maeDoadora", "Mãe da doadora", "link"],
-      ["paiTouro", "Pai do touro", "link"], ["maeTouro", "Mãe do touro", "link"],
-      ["obsGen", "Observações sobre a genética", "textarea"],
+    { g: "Genealogia", gen: true, f: [
+      ["avoMaterno", "Avô materno", "link"], ["avoMaterna", "Avó materna", "link"],
+      ["avoPaterno", "Avô paterno", "link"], ["avoPaterna", "Avó paterna", "link"],
+      ["obsGen", "Observações genealógicas", "textarea"],
     ]},
     { g: "Compra", f: COMPRA },
     { g: "Pagamento", pay: true, f: PAGAMENTO },
@@ -391,6 +381,23 @@ const SCHEMAS = {
   ],
 };
 const linkKeysOf = (tipo) => (SCHEMAS[tipo] || []).flatMap((s) => s.f).filter(([, , t]) => t === "link").map(([k]) => k);
+/* identificação automática de prenhez/aspiração: "Tipo: Doadora x Pai" */
+function rotuloReprod(a) {
+  a = a || {};
+  const pre = a.tipo === "prenhez" ? "Prenhez" : a.tipo === "aspiracao" ? "Aspiração" : "";
+  const d = (a.doadora || "").trim();
+  const p = (a.pai || a.touro || "").trim();
+  if (!pre) return a.nome || "";
+  if (!d && !p) return a.nome || pre;
+  return `${pre}: ${d}${p ? ` x ${p}` : ""}`;
+}
+const qtdTotal = (a) => Math.max(1, Math.round(num(a && a.qtd) || 1));
+const qtdConvertidos = (a) => Math.max(0, Math.round(num(a && a.convertidos) || 0));
+const qtdRest = (a) => Math.max(0, qtdTotal(a) - qtdConvertidos(a));
+function qtdRestante(a) {
+  const t = qtdTotal(a), c = qtdConvertidos(a), r = qtdRest(a);
+  return `${r} de ${t}${c ? ` (${c} nascida${c > 1 ? "s" : ""})` : ""}`;
+}
 
 /* -------------------------------- seed --------------------------------- */
 function markPaid(list, n) { return list.map((p, i) => (i < n ? { ...p, valorPago: p.valor, dataPagamento: p.venc } : p)); }
@@ -545,13 +552,16 @@ const linkD = (l) => { const pe = l.x1 + l.sign * NW / 2, ce = l.x2 - l.sign * N
 
 function Genealogia({ a }) {
   let center, leftGens, rightGens;
-  if (a.tipo === "aspiracao") {
-    center = { label: "Combinação", name: a.nome, sex: "N" };
-    leftGens = [[{ label: "Touro", name: a.touro, sex: "M" }], [{ label: "Pai", name: a.paiTouro, sex: "M" }, { label: "Mãe", name: a.maeTouro, sex: "F" }]];
-    rightGens = [[{ label: "Doadora", name: a.doadora, sex: "F" }], [{ label: "Pai", name: a.paiDoadora, sex: "M" }, { label: "Mãe", name: a.maeDoadora, sex: "F" }]];
-  } else {
+  if (a.tipo === "aspiracao" || a.tipo === "prenhez") {
     const isPren = a.tipo === "prenhez";
-    center = { label: isPren ? "Cria" : "Animal", name: a.nome, sex: isPren ? sexNorm(a.sexoPrev) : sexNorm(a.sexo) };
+    center = { label: isPren ? "Prenhez" : "Aspiração", name: a.nome, sex: isPren ? "F" : "N" };
+    leftGens = [[{ label: "Pai", name: a.pai || a.touro, sex: "M" }],
+      [{ label: "Avô paterno", name: a.avoPaterno, sex: "M" }, { label: "Avó paterna", name: a.avoPaterna, sex: "F" }]];
+    rightGens = [[{ label: "Mãe doadora", name: a.doadora, sex: "F" }],
+      [{ label: "Avô materno", name: a.avoMaterno, sex: "M" }, { label: "Avó materna", name: a.avoMaterna, sex: "F" }]];
+  } else {
+    const isPren = false;
+    center = { label: "Animal", name: a.nome, sex: sexNorm(a.sexo) };
     leftGens = [[{ label: isPren ? "Pai (touro)" : "Pai", name: isPren ? a.touro : a.pai, sex: "M" }],
       [{ label: "Avô paterno", name: a.avoPaterno, sex: "M" }, { label: "Avó paterna", name: a.avoPaterna, sex: "F" }]];
     rightGens = [[{ label: isPren ? "Mãe (doadora)" : "Mãe", name: isPren ? a.doadora : a.mae, sex: "F" }],
@@ -660,8 +670,9 @@ function FichaForm({ tipo, initial, animalNames, leilaoNames, localNames, vended
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head"><h2>{initial ? "Editar" : "Novo cadastro"} — <span className="serif">{titulo}</span></h2><button className="x" onClick={onClose}>✕</button></div>
+        <div className="modal-head"><h2>{initial && !initial.__fromOrigem ? "Editar" : "Novo cadastro"} — <span className="serif">{titulo}</span></h2><button className="x" onClick={onClose}>✕</button></div>
         <div className="modal-body">
+          {initial && initial.__fromOrigem && <div className="aviso" style={{ margin: "0 0 14px" }}>Nascimento de <b>{initial.origemLabel}</b> — genealogia e sociedade já preenchidas. Complete os dados do animal{initial.origemTipo === "prenhez" ? " (sexo já definido como Fêmea)" : " e escolha o sexo"}.</div>}
           {SCHEMAS[tipo].map((sec) => (
             <div className="fsec" key={sec.g}>
               <div className="fsec-h">{sec.g}{sec.gen && <span className="muted small hint">— digite para buscar animais já cadastrados</span>}</div>
@@ -689,7 +700,8 @@ function FichaForm({ tipo, initial, animalNames, leilaoNames, localNames, vended
             {(d.socios || []).map((s) => (
               <div className="socio-row" key={s.id}>
                 <div className="socio-auto"><AutoField value={s.nome} onChange={(v) => setSocio(s.id, "nome", v)} suggestions={socioNames} onCreate={onQuickSocio} placeholder="buscar ou cadastrar sócio" /></div>
-                <input type="number" step="any" placeholder="%" value={s.pct} onChange={(e) => setSocio(s.id, "pct", e.target.value)} style={{ maxWidth: 90 }} />
+                <input type="number" step="any" placeholder="%" value={s.pct} onChange={(e) => setSocio(s.id, "pct", e.target.value)} style={{ maxWidth: 80 }} />
+                <input placeholder="observações (opcional)" value={s.obs || ""} onChange={(e) => setSocio(s.id, "obs", e.target.value)} style={{ flex: 1, minWidth: 120 }} />
                 <button className="btn btn-mini" onClick={() => delSocio(s.id)}>remover</button>
               </div>
             ))}
@@ -1009,7 +1021,7 @@ function ComprasAdicSecao({ a, compras, partAtual, socAtual, socioNames, onQuick
 }
 
 /* ------------------------------ ficha detalhe -------------------------- */
-function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, socioNamesGlobais, onQuickSocio }) {
+function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, socioNamesGlobais, onQuickSocio, onNascer }) {
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", h);
@@ -1110,8 +1122,11 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
               {a.registro && <Badge tone="gold">Reg. {a.registro}</Badge>}
               {a.tipo === "animal" && a.nascimento && <Badge tone="gold">{idade(a.nascimento)}</Badge>}
               {a.ondeEsta && <Badge tone="gold">📍 {a.ondeEsta}</Badge>}
+              {(a.tipo === "prenhez" || a.tipo === "aspiracao") && <Badge tone="gold">Restam {qtdRest(a)} de {qtdTotal(a)}</Badge>}
+              {a.origemLabel && <Badge tone="gold">Origem: {a.origemLabel}</Badge>}
             </div>
             <div className="ficha-actions"><button className="btn btn-gold" onClick={onEdit}>Editar</button>
+              {(a.tipo === "prenhez" || a.tipo === "aspiracao") && a.origem !== "genealogia" && qtdRest(a) > 0 && onNascer && <button className="btn btn-gold" onClick={() => onNascer(a)}>🐣 Nasceu</button>}
               {canDelete && <button className="btn btn-ghost" onClick={onDelete}>Excluir</button>}<button className="x abs" onClick={onClose}>✕</button></div>
           </div>
         </div>
@@ -1150,12 +1165,10 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
           <div className="fsec"><div className="fsec-h">Dados</div>
             <div className="info-grid">
               {a.tipo === "animal" && <><Info l="Onde está" v={a.ondeEsta} /><Info l="Sexo" v={a.sexo} /><Info l="Nascimento" v={dataBR(a.nascimento)} /></>}
-              {a.tipo === "prenhez" && <><Info l="Doadora" v={a.doadora} /><Info l="Receptora" v={a.receptora} /><Info l="Touro" v={a.touro} />
-                <Info l="Insem./TE" v={dataBR(a.dataInsem)} /><Info l="Parto previsto" v={dataBR(a.dataParto)} /><Info l="Sexo previsto" v={a.sexoPrev} />
-                <Info l="Veterinário" v={a.veterinario} /><Info l="Laboratório" v={a.laboratorio} /></>}
-              {a.tipo === "aspiracao" && <><Info l="Doadora" v={a.doadora} /><Info l="Touro/sêmen" v={a.touro} /><Info l="Data" v={dataBR(a.dataAsp)} />
-                <Info l="Oócitos" v={a.oocitos} /><Info l="Embriões" v={a.embrioes} /><Info l="Viáveis" v={a.viaveis} />
-                <Info l="Congelados" v={a.congelados} /><Info l="Transferidos" v={a.transferidos} /><Info l="Prenhezes" v={a.prenhezes} /></>}
+              {a.tipo === "prenhez" && <><Info l="Mãe doadora" v={a.doadora} /><Info l="Pai" v={a.pai} />
+                <Info l="Quantidade" v={qtdRestante(a)} /><Info l="Onde está" v={a.ondeEsta} /></>}
+              {a.tipo === "aspiracao" && <><Info l="Mãe doadora" v={a.doadora} /><Info l="Pai" v={a.pai} />
+                <Info l="Quantidade" v={qtdRestante(a)} /><Info l="Onde está" v={a.ondeEsta} /></>}
               <Info l="Leilão / origem" v={a.leilao} /><Info l="Vendedor" v={a.vendedor} /><Info l="Data da compra" v={dataBR(a.dataCompra)} />
             </div>
             {a.obs && <p className="obs">{a.obs}</p>}
@@ -1579,9 +1592,12 @@ export default function App() {
     return { qtd: doMes.length, total: doMes.reduce((s, p) => s + num(p.valor), 0), pagas: doMes.filter((p) => p.status === "pago").length };
   }, [parcelas]);
   const proximas = parcelas.filter((p) => p.status === "aberto" || p.status === "parcial").sort((a, b) => (a.venc || "").localeCompare(b.venc || "")).slice(0, 6);
-  const count = (t) => (ativos || []).filter((a) => a && a.tipo === t && a.origem !== "genealogia").length;
+  const count = (t) => (ativos || []).filter((a) => a && a.tipo === t && a.origem !== "genealogia" && !a.arquivada).length;
 
   const salvar = (d) => {
+    if (d.tipo === "prenhez" || d.tipo === "aspiracao") d = { ...d, nome: rotuloReprod(d) };
+    const origemId = d.origemId; const veioDeOrigem = d.__fromOrigem;
+    d = { ...d }; delete d.__fromOrigem;
     d = { ...d, parcelasList: ensureParcelas(d) };
     setDb((p) => {
       let list = [...p.ativos];
@@ -1589,7 +1605,21 @@ export default function App() {
       linkKeysOf(d.tipo).forEach((k) => { const nm = (d[k] ?? "").toString().trim(); if (nm && !nameSet.has(lc(nm)) && lc(nm) !== lc(d.nome)) { list.push(stubAnimal(nm, profile && profile.nome)); nameSet.add(lc(nm)); } });
       const exists = list.some((a) => a.id === d.id);
       if (exists) list = list.map((a) => (a.id === d.id ? d : a));
-      else list = [{ ...d, historico: [{ id: uid(), data: today(), tipo: "Cadastro criado", desc: "Ficha criada", responsavel: profile && profile.nome }, ...(d.historico || [])] }, ...list];
+      else {
+        const histIni = [{ id: uid(), data: today(), tipo: "Cadastro criado", desc: "Ficha criada", responsavel: profile && profile.nome }];
+        if (veioDeOrigem && d.origemLabel) histIni.unshift({ id: uid(), data: today(), tipo: "Origem", desc: `Nascido de ${d.origemLabel}`, responsavel: profile && profile.nome });
+        list = [{ ...d, historico: [...histIni, ...(d.historico || [])] }, ...list];
+      }
+      // reduz a quantidade da prenhez/aspiração de origem e arquiva quando esgotar
+      if (veioDeOrigem && origemId) {
+        list = list.map((a) => {
+          if (a.id !== origemId) return a;
+          const conv = qtdConvertidos(a) + 1;
+          const arquivada = conv >= qtdTotal(a);
+          const h = { id: uid(), data: today(), tipo: "Nascimento", desc: `Nasceu 1 (${d.nome || "animal"}). Restam ${Math.max(0, qtdTotal(a) - conv)} de ${qtdTotal(a)}.`, responsavel: profile && profile.nome };
+          return { ...a, convertidos: conv, arquivada, historico: [...(a.historico || []), h] };
+        });
+      }
       let leiloes = [...(p.leiloes || [])]; if (d.leilao && !leiloes.some((l) => l && lc(l.nome) === lc(d.leilao))) leiloes = [...leiloes, { id: uid(), nome: d.leilao }];
       let locais = [...(p.locais || [])]; if (d.ondeEsta && !locais.some((l) => lc(l) === lc(d.ondeEsta))) locais = [...locais, d.ondeEsta];
       let vendedores = [...(p.vendedores || [])]; if (d.vendedor && !vendedores.some((v) => v && lc(v.nome) === lc(d.vendedor))) vendedores = [...vendedores, { id: uid(), nome: d.vendedor, tipo: "Outro", doc: "", tel: "", email: "", obs: "" }];
@@ -1598,7 +1628,31 @@ export default function App() {
     });
     setForm(null); setAberto(d);
   };
-  const updateAtivo = (d) => { setDb((p) => ({ ...p, ativos: p.ativos.map((a) => (a.id === d.id ? d : a)) })); setAberto(d); };
+  const updateAtivo = (d) => { if (d.tipo === "prenhez" || d.tipo === "aspiracao") d = { ...d, nome: rotuloReprod(d) }; setDb((p) => ({ ...p, ativos: p.ativos.map((a) => (a.id === d.id ? d : a)) })); setAberto(d); };
+
+  /* botão "Nasceu": monta um novo animal já preenchido com genealogia + sociedade + origem */
+  const nascer = (src) => {
+    const ehPren = src.tipo === "prenhez";
+    const novo = {
+      id: uid(), tipo: "animal", origem: "nascimento",
+      origemTipo: src.tipo, origemId: src.id, origemLabel: rotuloReprod(src),
+      __fromOrigem: true,
+      nome: "", registro: "", raca: src.raca || "Nelore",
+      sexo: ehPren ? "Fêmea" : "",                 // prenhez sempre fêmea; aspiração o usuário escolhe
+      nascimento: "", status: "", ondeEsta: src.ondeEsta || "",
+      // genealogia herdada
+      pai: src.pai || src.touro || "", mae: src.doadora || "",
+      avoPaterno: src.avoPaterno || "", avoPaterna: src.avoPaterna || "",
+      avoMaterno: src.avoMaterno || "", avoMaterna: src.avoMaterna || "",
+      obsGen: src.obsGen || "",
+      // sociedade transferida (informativa) — revisável antes de salvar
+      socios: (src.socios || []).filter(Boolean).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct, obs: s.obs || "" })),
+      // sem financeiro duplicado: a compra continua na origem
+      videos: [], historico: [], comissaoPct: 8, obs: src.obs || "",
+    };
+    setAberto(null);
+    setForm({ tipo: "animal", initial: novo });
+  };
   const excluir = (id) => { setDb((p) => ({ ...p, ativos: p.ativos.filter((a) => a.id !== id) })); setAberto(null); };
   const quickAnimal = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => (p.ativos.some((a) => a && a.tipo === "animal" && lc(a.nome) === lc(nm)) ? p : { ...p, ativos: [...p.ativos, stubAnimal(nm, profile && profile.nome)] })); };
   const quickLeilao = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => ((p.leiloes || []).some((l) => l && lc(l.nome) === lc(nm)) ? p : { ...p, leiloes: [...(p.leiloes || []), { id: uid(), nome: nm }] })); };
@@ -1687,7 +1741,7 @@ export default function App() {
           <section className="wrap">
             {view === "animal" && <label className="toggle"><input type="checkbox" checked={showAncestrais} onChange={(e) => setShowAncestrais(e.target.checked)} /> Mostrar ancestrais cadastrados via genealogia</label>}
             <div className="cards-grid">
-              {visiveis.filter((a) => a.tipo === view && (view !== "animal" || showAncestrais || a.origem !== "genealogia")).map((a) => {
+              {visiveis.filter((a) => a.tipo === view && !a.arquivada && (view !== "animal" || showAncestrais || a.origem !== "genealogia")).map((a) => {
                 const f = finance(a);
                 const ehAnimal = a.tipo === "animal";
                 const part = ehAnimal ? participacaoAtual(a) : null;
@@ -1703,6 +1757,8 @@ export default function App() {
                       {a.registro && <span className="tag">Reg. {a.registro}</span>}
                       {sexoLbl && <span className={`tag ${lc(a.sexo).startsWith("f") ? "tag-f" : "tag-m"}`}>{sexoLbl}</span>}
                       {(a.raca || a.categoria) && <span className="tag">{a.categoria || a.raca}</span>}
+                      {(a.tipo === "prenhez" || a.tipo === "aspiracao") && <span className="tag">qtd: {qtdRest(a)} de {qtdTotal(a)}</span>}
+                      {a.origemLabel && <span className="tag tag-video">origem</span>}
                       {temVideo && <span className="tag tag-video">▶ vídeo</span>}
                     </div>
                     {ehAnimal && a.origem !== "genealogia" && (
@@ -1712,7 +1768,7 @@ export default function App() {
                   </div>
                 );
               })}
-              {visiveis.filter((a) => a.tipo === view && (view !== "animal" || showAncestrais || a.origem !== "genealogia")).length === 0 && (
+              {visiveis.filter((a) => a.tipo === view && !a.arquivada && (view !== "animal" || showAncestrais || a.origem !== "genealogia")).length === 0 && (
                 <div className="empty">Nenhum registro. {soSocio ? "Você não participa de ativos deste tipo." : "Use “+ Novo cadastro”."}</div>
               )}
             </div>
@@ -1816,7 +1872,7 @@ export default function App() {
         animalNames={animalNames} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
         onSave={salvar} onClose={() => setForm(null)} />}
-      {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onClose={() => setAberto(null)} onUpdate={updateAtivo}
+      {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onClose={() => setAberto(null)} onUpdate={updateAtivo}
         onEdit={() => { setForm({ tipo: aberto.tipo, initial: aberto }); setAberto(null); }} onDelete={() => excluir(aberto.id)} />}
       {navOpen && <div className="scrim" onClick={() => setNavOpen(false)} />}
     </div>
