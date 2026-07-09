@@ -1499,6 +1499,49 @@ const socioStr = (a) => ((a.sociedadeAtual || a.socios || []).filter(Boolean)).m
 const prenhezVinculadas = (a, ativos) => (ativos || []).filter((x) => x && x.tipo === "prenhez" && lc(x.doadora) === lc(a.nome));
 const aspVinculadas = (a, ativos) => (ativos || []).filter((x) => x && x.tipo === "aspiracao" && lc(x.doadora) === lc(a.nome));
 
+/* gera o MESMO pedigree da ficha (SVG, 3 gerações + bisavós) como string, para o PDF */
+function svgGenealogiaStr(a) {
+  let center, leftGens, rightGens;
+  if (a.tipo === "aspiracao" || a.tipo === "prenhez") {
+    const isPren = a.tipo === "prenhez";
+    center = { label: isPren ? "Prenhez" : "Aspiração", name: a.nome, sex: isPren ? "F" : "N" };
+    leftGens = [[{ label: "Pai", name: a.pai || a.touro, sex: "M" }],
+      [{ label: "Avô paterno", name: a.avoPaterno, sex: "M" }, { label: "Avó paterna", name: a.avoPaterna, sex: "F" }]];
+    rightGens = [[{ label: "Mãe doadora", name: a.doadora, sex: "F" }],
+      [{ label: "Avô materno", name: a.avoMaterno, sex: "M" }, { label: "Avó materna", name: a.avoMaterna, sex: "F" }]];
+  } else {
+    center = { label: "Animal", name: a.nome, sex: sexNorm(a.sexo) };
+    leftGens = [[{ label: "Pai", name: a.pai, sex: "M" }],
+      [{ label: "Avô paterno", name: a.avoPaterno, sex: "M" }, { label: "Avó paterna", name: a.avoPaterna, sex: "F" }]];
+    rightGens = [[{ label: "Mãe", name: a.mae, sex: "F" }],
+      [{ label: "Avô materno", name: a.avoMaterno, sex: "M" }, { label: "Avó materna", name: a.avoMaterna, sex: "F" }]];
+    const bis = ["bis_pp_p", "bis_pp_m", "bis_pm_p", "bis_pm_m", "bis_mp_p", "bis_mp_m", "bis_mm_p", "bis_mm_m"];
+    if (bis.some((k) => a[k])) {
+      leftGens.push([{ label: "Bisavô", name: a.bis_pp_p, sex: "M" }, { label: "Bisavó", name: a.bis_pp_m, sex: "F" },
+        { label: "Bisavô", name: a.bis_pm_p, sex: "M" }, { label: "Bisavó", name: a.bis_pm_m, sex: "F" }]);
+      rightGens.push([{ label: "Bisavô", name: a.bis_mp_p, sex: "M" }, { label: "Bisavó", name: a.bis_mp_m, sex: "F" },
+        { label: "Bisavô", name: a.bis_mm_p, sex: "M" }, { label: "Bisavó", name: a.bis_mm_m, sex: "F" }]);
+    }
+  }
+  const temAlgo = [...leftGens.flat(), ...rightGens.flat()].some((n) => n.name);
+  if (!temAlgo) return "";
+  const L = ladoLayout(leftGens, -1), R = ladoLayout(rightGens, 1);
+  const d = Math.max(L.d, R.d);
+  const nodes = [{ ...center, x: 0, y: 0 }, ...L.nodes, ...R.nodes];
+  const links = [...L.links, ...R.links, { x1: 0, y1: 0, x2: -COL, y2: 0, sign: -1 }, { x1: 0, y1: 0, x2: COL, y2: 0, sign: 1 }];
+  const maxX = d * COL + NW / 2 + 18;
+  const maxY = (Math.max(L.leaves, R.leaves) / 2) * ROW + NH / 2 + 18;
+  const esc = (v) => String(v ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  const paths = links.map((l) => `<path d="${linkD(l)}" fill="none" stroke="#d8cfba" stroke-width="1.6"/>`).join("");
+  const gs = nodes.map((n) => {
+    const main = n.x === 0 && n.y === 0;
+    return `<g><rect x="${n.x - NW / 2}" y="${n.y - NH / 2}" width="${NW}" height="${NH}" rx="9" fill="${sexFill(n.sex)}" stroke="${sexStroke(n.sex)}" stroke-width="${main ? 2.6 : 1.4}"/>`
+      + `<text x="${n.x}" y="${n.y - NH / 2 + 15}" text-anchor="middle" font-size="9" font-weight="700" fill="${sexStroke(n.sex)}">${esc((n.label || "").toUpperCase())}</text>`
+      + `<text x="${n.x}" y="${n.y + 9}" text-anchor="middle" font-size="13" font-family="Georgia,serif" fill="${sexText(n.sex)}">${esc(truncNome(n.name))}</text></g>`;
+  }).join("");
+  return `<svg viewBox="${-maxX} ${-maxY} ${2 * maxX} ${2 * maxY}" style="width:100%;height:auto;max-width:${2 * maxX}px" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">${paths}${gs}</svg>`;
+}
+
 function RelatoriosView({ lista, ativos }) {
   const [sel, setSel] = useState(() => new Set(lista.map((a) => a.id)));
   const [campos, setCampos] = useState({ basico: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, obs: false });
@@ -1563,36 +1606,17 @@ function RelatoriosView({ lista, ativos }) {
   const exportarPDF = () => {
     if (!selecionados.length) return;
     const esc = (v) => String(v ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-    // caixa de um indivíduo na árvore (azul=macho, rosa=fêmea, neutro)
-    const box = (label, nome, sx) => {
-      const cls = sx === "M" ? "m" : sx === "F" ? "f" : "n";
-      return `<div class="gbox ${cls}"><span class="glabel">${esc(label)}</span><span class="gname">${esc(nome || "—")}</span></div>`;
-    };
-    // quadro genealógico: pai (azul) à esquerda, mãe (rosa) à direita, avós nas pontas
-    const arvore = (a) => {
-      const pai = a.pai || a.touro || "", mae = a.mae || a.doadora || "";
-      const temAlgo = pai || mae || a.avoPaterno || a.avoPaterna || a.avoMaterno || a.avoMaterna;
-      if (!temAlgo) return "";
-      return `<div class="genwrap">
-        <div class="gcol">
-          <div class="gside pai">${box("Pai", pai, "M")}</div>
-          <div class="gavos">${box("Avô paterno", a.avoPaterno, "M")}${box("Avó paterna", a.avoPaterna, "F")}</div>
-        </div>
-        <div class="gcenter">${box(a.tipo === "prenhez" ? "Prenhez" : a.tipo === "aspiracao" ? "Aspiração" : "Animal", a.nome, sexNorm(a.sexo))}</div>
-        <div class="gcol">
-          <div class="gside mae">${box("Mãe doadora", mae, "F")}${a.maeRegistro || a.regDoadora ? `<div class="greg">Registro: ${esc(a.maeRegistro || a.regDoadora)}</div>` : ""}</div>
-          <div class="gavos">${box("Avô materno", a.avoMaterno, "M")}${box("Avó materna", a.avoMaterna, "F")}</div>
-        </div>
-        ${a.obsGen ? `<div class="gobs">Obs. genealógicas: ${esc(a.obsGen)}</div>` : ""}
-      </div>`;
-    };
     const blocos = selecionados.map((a) => {
       const row = linhaDe(a);
-      // no PDF, a genealogia vira quadro visual (não linhas de texto)
+      // no PDF, a genealogia vira o MESMO pedigree visual da ficha (SVG)
       const genKeys = ["Pai", "Mãe", "Registro da mãe", "Avô paterno", "Avó paterna", "Avô materno", "Avó materna", "Obs. genealógicas"];
       const linhas = Object.entries(row).filter(([k]) => k !== "Nome" && !(campos.genealogia && genKeys.includes(k))).map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td>${esc(typeof v === "number" && /valor|investido|estimado|comiss|pago|aberto|parcela/i.test(k) ? fmt(v) : v)}</td></tr>`).join("");
-      const genBloco = campos.genealogia ? arvore(a) : "";
-      return `<div class="animal"><h2>${esc(a.nome)} <small>${esc(a.tipo)}</small></h2>${linhas ? `<table>${linhas}</table>` : ""}${genBloco ? `<div class="gtit">Genealogia</div>${genBloco}` : ""}</div>`;
+      let genBloco = "";
+      if (campos.genealogia) {
+        const svg = svgGenealogiaStr(a);
+        if (svg) genBloco = `<div class="gtit">Genealogia</div><div class="ped">${svg}<div class="ped-legend"><span><i class="sw m"></i> Macho</span><span><i class="sw f"></i> Fêmea</span><span class="side">◀ Paterno</span><span class="side">Materno ▶</span></div>${a.obsGen ? `<div class="gobs">Obs. genealógicas: ${esc(a.obsGen)}</div>` : ""}</div>`;
+      }
+      return `<div class="animal"><h2>${esc(a.nome)} <small>${esc(a.tipo)}</small></h2>${linhas ? `<table>${linhas}</table>` : ""}${genBloco}</div>`;
     }).join("");
     const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório SM sistema</title>
       <style>
@@ -1604,19 +1628,14 @@ function RelatoriosView({ lista, ativos }) {
         table{width:100%;border-collapse:collapse;font-family:Arial,sans-serif;font-size:12.5px}
         td{padding:5px 8px;border-bottom:1px solid #f0ead9;vertical-align:top} td.k{color:#666;width:38%;font-weight:600}
         .gtit{font-family:Arial,sans-serif;font-size:12px;font-weight:700;color:#9a7b3a;text-transform:uppercase;letter-spacing:.08em;margin:14px 0 8px}
-        .genwrap{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:center;font-family:Arial,sans-serif;break-inside:avoid}
-        .gcol{display:flex;flex-direction:column;gap:8px}
-        .gavos{display:flex;flex-direction:column;gap:6px;padding-left:10px;border-left:2px solid #ece3cf;margin-left:6px}
-        .gcenter{display:flex;justify-content:center}
-        .gbox{border:1px solid #e0d9c6;border-radius:8px;padding:6px 10px;display:flex;flex-direction:column;min-width:120px}
-        .gbox.m{background:#e8f0fb;border-color:#bcd3f0} .gbox.f{background:#fbe9f1;border-color:#f0c2d8} .gbox.n{background:#f4efe4;border-color:#e2d9c2}
-        .glabel{font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;color:#8a8471}
-        .gname{font-size:13px;font-weight:700;color:#22201a}
-        .gbox.m .gname{color:#274a86} .gbox.f .gname{color:#8a3a66}
-        .gcenter .gbox{min-width:150px;border-width:2px;box-shadow:0 2px 6px rgba(0,0,0,.06)}
-        .greg{font-size:10px;color:#666;margin-top:2px;padding-left:2px}
-        .gobs{grid-column:1/-1;font-size:11px;color:#555;background:#faf7f0;border:1px solid #ece3cf;border-radius:6px;padding:6px 8px;margin-top:4px}
-        @media print{body{margin:12mm} .animal{page-break-inside:avoid}}
+        .ped{break-inside:avoid;border:1px solid #ece3cf;border-radius:10px;padding:12px;background:#fffdf8}
+        .ped svg{display:block;margin:0 auto}
+        .ped-legend{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;font-family:Arial,sans-serif;font-size:11px;color:#666;margin-top:10px}
+        .ped-legend .sw{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-1px;margin-right:4px;border:1px solid #ccc}
+        .ped-legend .sw.m{background:#e8f0fb;border-color:#5b86cf} .ped-legend .sw.f{background:#fbe9f1;border-color:#cf7aa3}
+        .ped-legend .side{color:#9a7b3a;font-weight:600}
+        .gobs{font-size:11px;color:#555;background:#faf7f0;border:1px solid #ece3cf;border-radius:6px;padding:6px 8px;margin-top:10px}
+        @media print{body{margin:12mm} .animal{page-break-inside:avoid} .ped{page-break-inside:avoid}}
       </style></head><body>
       <h1>Relatório — SM sistema · Gado de Elite</h1>
       <div class="meta">Gerado em ${new Date().toLocaleDateString("pt-BR")} · ${selecionados.length} animal(is)</div>
