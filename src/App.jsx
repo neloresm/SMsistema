@@ -280,6 +280,14 @@ function validarVendaLinhas(socAtual, linhas) {
   }
   return "";
 }
+/* sociedade usada na venda: inclui o DONO ("Eu") como participante normal,
+   com a participação atual dele, se ainda não estiver listado por nome */
+function sociedadeComDono(a) {
+  const soc = ((a && (a.sociedadeAtual || a.socios)) || []).filter(Boolean).map((s) => ({ ...s }));
+  const temEu = soc.some((s) => lc(s.nome) === "eu" || lc(s.nome) === "eu (dono)");
+  if (temEu) return soc;
+  return [{ id: "eu", nome: "Eu", pct: participacaoAtual(a), obs: "" }, ...soc];
+}
 /* resumo financeiro do animal (investido x vendido) */
 function resumoAnimal(a) {
   const f = finance(a);
@@ -1061,7 +1069,8 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
   const vendas = vendasDo(a);
   const partAtual = participacaoAtual(a);
   const socAtual = (a.sociedadeAtual || a.socios || []).filter(Boolean);
-  const socBase = (a.sociedadeBase && a.sociedadeBase.length) ? a.sociedadeBase : socAtual;
+  const socVenda = sociedadeComDono(a);
+  const socBase = (a.sociedadeBase && a.sociedadeBase.length) ? a.sociedadeBase : socVenda;
 
   const recomputeSoc = (base, lista) => {
     const parts = (lista || []).filter((v) => v.tipo === "Venda de participação" && Array.isArray(v.linhas))
@@ -1075,7 +1084,7 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
     const hist = { id: uid(), data: today(), tipo: "Venda registrada", desc: `${v.tipo}${v.pctVendida ? " — " + v.pctVendida + "%" : ""} por ${fmt(v.valor)}`, responsavel: "" };
     const patch = { ...a, vendas: [...vendas, v], historico: [...(a.historico || []), hist] };
     if (v.tipo === "Venda de participação") {
-      const antes = socAtual;
+      const antes = socVenda;
       if (!(a.sociedadeBase && a.sociedadeBase.length)) {
         patch.sociedadeBase = antes.map((s) => ({ id: uid(), nome: s.nome, pct: num(s.pct), obs: s.obs || "" }));
       }
@@ -1245,7 +1254,7 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
           )}
 
           {a.tipo === "animal" && a.origem !== "genealogia" && (
-            <VendasSecao a={a} vendas={vendas} partAtual={partAtual} socAtual={socAtual} socioNames={socioNamesGlobais || []} onQuickSocio={onQuickSocio} onAdd={addVenda} onDel={delVenda} canDelete={canDelete} />
+            <VendasSecao a={a} vendas={vendas} partAtual={partAtual} socAtual={socVenda} socioNames={socioNamesGlobais || []} onQuickSocio={onQuickSocio} onAdd={addVenda} onDel={delVenda} canDelete={canDelete} />
           )}
 
           {a.tipo === "animal" && a.origem !== "genealogia" && (
