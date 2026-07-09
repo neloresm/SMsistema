@@ -21,6 +21,7 @@ function num(v) {
   return isNaN(n) ? 0 : n;
 }
 const lc = (v) => (v ?? "").toString().toLowerCase();
+const norm = (v) => (v ?? "").toString().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 const dataBR = (s) => (s ? new Date(s + "T00:00:00").toLocaleDateString("pt-BR") : "—");
 
 /* Tradução de erros comuns do Supabase Auth */
@@ -1615,7 +1616,7 @@ export default function App() {
 
   const visiveis = useMemo(() => {
     let list = (ativos || []).filter(Boolean);
-    if (lc(busca).trim()) { const q = lc(busca); list = list.filter((a) => { try { return lc(JSON.stringify(a)).includes(q); } catch (e) { return false; } }); }
+    if (norm(busca).trim()) { const q = norm(busca); list = list.filter((a) => { try { return norm(JSON.stringify(a)).includes(q); } catch (e) { return false; } }); }
     return list;
   }, [ativos, busca]);
 
@@ -1716,6 +1717,19 @@ export default function App() {
     const url = URL.createObjectURL(blob); const el = document.createElement("a"); el.href = url; el.download = "relatorio-gado-elite.csv"; el.click(); URL.revokeObjectURL(url);
   };
 
+  const qBusca = norm(busca).trim();
+  const buscaGlobal = useMemo(() => {
+    if (!qBusca) return null;
+    const m = (a) => { try { return norm(JSON.stringify(a)).includes(qBusca); } catch (e) { return false; } };
+    return {
+      animal: (ativos || []).filter((a) => a && a.tipo === "animal" && !a.arquivada && a.origem !== "genealogia" && m(a)),
+      prenhez: (ativos || []).filter((a) => a && a.tipo === "prenhez" && !a.arquivada && m(a)),
+      aspiracao: (ativos || []).filter((a) => a && a.tipo === "aspiracao" && !a.arquivada && m(a)),
+      socios: (db.socios || []).filter((s) => s && norm([s.nome, s.obs, s.doc, s.tel, s.email].join(" ")).includes(qBusca)),
+      leiloes: (db.leiloes || []).filter((l) => l && norm(l.nome).includes(qBusca)),
+    };
+  }, [qBusca, ativos, db.socios, db.leiloes]);
+
   const nav = [["dashboard", "◆", "Painel"], ["animal", "❖", "Animais"], ["prenhez", "◗", "Prenhezes"], ["aspiracao", "✧", "Aspirações"],
     ["socios", "◎", "Sócios"], ["parcelas", "▤", "Parcelas"], ["leiloes", "⚑", "Leilões"], ["relatorios", "▦", "Relatórios"],
     ...(isAdmin ? [["usuarios", "◐", "Usuários"]] : [])];
@@ -1754,7 +1768,27 @@ export default function App() {
           </div>
         </header>
 
-        {view === "dashboard" && (
+        {view === "dashboard" && qBusca && buscaGlobal && (() => {
+          const total = buscaGlobal.animal.length + buscaGlobal.prenhez.length + buscaGlobal.aspiracao.length + buscaGlobal.socios.length + buscaGlobal.leiloes.length;
+          const grupo = (titulo, itens, render) => itens.length > 0 && (
+            <div className="busca-grupo"><div className="busca-cat">{titulo} ({itens.length})</div><div className="socio-parts">{itens.map(render)}</div></div>
+          );
+          return (
+            <section className="wrap">
+              <div className="card">
+                <div className="card-h">Resultados para “{busca}” — {total} encontrado(s)</div>
+                {total === 0 && <p className="muted small">Nada encontrado. Tente outro termo.</p>}
+                {grupo("Animais", buscaGlobal.animal, (a) => <span className="tag" key={a.id} onClick={() => setAberto(a)}>{a.nome}</span>)}
+                {grupo("Prenhezes", buscaGlobal.prenhez, (a) => <span className="tag" key={a.id} onClick={() => setAberto(a)}>{a.nome}</span>)}
+                {grupo("Aspirações", buscaGlobal.aspiracao, (a) => <span className="tag" key={a.id} onClick={() => setAberto(a)}>{a.nome}</span>)}
+                {grupo("Sócios", buscaGlobal.socios, (s) => <span className="tag" key={s.id} onClick={() => setView("socios")}>{s.nome}</span>)}
+                {grupo("Leilões", buscaGlobal.leiloes, (l) => <span className="tag" key={l.id} onClick={() => setView("leiloes")}>{l.nome}</span>)}
+              </div>
+            </section>
+          );
+        })()}
+
+        {view === "dashboard" && !qBusca && (
           <section className="wrap">
             <div className="kpi-row"><KPI label="Animais" value={count("animal")} /><KPI label="Prenhezes" value={count("prenhez")} /><KPI label="Aspirações" value={count("aspiracao")} /><KPI label="Patrimônio estimado" value={fmt(kpis.patrimonio)} tone="gold" /></div>
             <div className="kpi-row"><KPI label="Total investido" value={fmt(kpis.total)} /><KPI label="Já pago" value={fmt(kpis.pago)} tone="pos" /><KPI label="Em aberto" value={fmt(kpis.aberto)} tone="neg" /><KPI label="Parcelas do mês" value={fmt(parcelasMes.total)} tone="gold" sub={`${parcelasMes.qtd} parcela(s) · ${parcelasMes.pagas} paga(s)`} /></div>
@@ -1821,7 +1855,11 @@ export default function App() {
 
         {view === "socios" && (
           <section className="wrap"><div className="cards-grid wide">
-            {db.socios.map((s) => {
+            {db.socios.filter((s) => {
+              if (!qBusca) return true;
+              const parts = reais.filter((a) => (a.socios || []).some((x) => x.nome === s.nome));
+              return norm([s.nome, s.obs, s.doc, s.tel, s.email, ...parts.map((a) => a.nome)].join(" ")).includes(qBusca);
+            }).map((s) => {
               const parts = reais.filter((a) => (a.socios || []).some((x) => x.nome === s.nome));
               return (
                 <div className="card socio-card" key={s.id}>
@@ -1849,7 +1887,11 @@ export default function App() {
             <div className="card"><div className="card-h">Todas as parcelas</div>
               <div className="tbl-wrap"><table className="tbl">
                 <thead><tr><th>Ativo</th><th>Tipo</th><th>Nº</th><th>Vencimento</th><th>Valor</th><th>Status</th></tr></thead>
-                <tbody>{parcelas.slice().sort((a, b) => (a.venc || "").localeCompare(b.venc || "")).map((p, i) => (
+                <tbody>{parcelas.slice().sort((a, b) => (a.venc || "").localeCompare(b.venc || "")).filter((p) => {
+                  if (!qBusca) return true;
+                  const a = ativos.find((x) => x.id === p.ativoId) || {};
+                  return norm([p.ativoNome, p.tipo, a.leilao, a.vendedor, a.obs, p.venc, dataBR(p.venc), mesLabel((p.venc || "").slice(0, 7)), p.valor, p.origemLabel, p.obs].join(" ")).includes(qBusca);
+                }).map((p, i) => (
                   <tr key={i} className={`clk ${p.status === "vencido" ? "row-late" : ""}`} onClick={() => setAberto(ativos.find((a) => a.id === p.ativoId))}>
                     <td>{p.ativoNome}</td><td>{p.tipo}</td><td>{p.numero}</td><td>{dataBR(p.venc)}</td><td>{fmt(p.valor)}</td><td><Badge tone={statusTone(p.status)}>{p.status}</Badge></td></tr>
                 ))}</tbody></table></div></div>
@@ -1858,7 +1900,11 @@ export default function App() {
 
         {view === "leiloes" && (
           <section className="wrap"><div className="cards-grid wide">
-            {db.leiloes.map((l) => {
+            {db.leiloes.filter((l) => {
+              if (!qBusca) return true;
+              const comp = reais.filter((a) => (a.leilao || "") === l.nome);
+              return norm([l.nome, ...comp.flatMap((a) => [a.nome, a.vendedor, a.obs])].join(" ")).includes(qBusca);
+            }).map((l) => {
               const comp = reais.filter((a) => (a.leilao || "") === l.nome);
               const tot = comp.reduce((s, a) => s + finance(a).total, 0), pago = comp.reduce((s, a) => s + finance(a).pago, 0);
               return (
@@ -2075,6 +2121,8 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .video-frame{aspect-ratio:16/9;border-radius:10px;overflow:hidden;background:#000;width:100%}.video-frame iframe{width:100%;height:100%;border:0}
 .auto-item.hi{background:var(--paper)}
 .row-now{background:rgba(198,161,91,.10)}
+.busca-grupo{margin-top:12px}
+.busca-cat{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
 
 .timeline{display:flex;flex-direction:column;padding-left:8px}
 .tl-item{display:flex;gap:14px;padding:12px 0;border-left:2px solid var(--line);margin-left:6px;padding-left:18px;position:relative}
