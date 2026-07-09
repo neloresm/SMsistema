@@ -4,6 +4,7 @@ import {
   ResponsiveContainer, CartesianGrid, Legend,
 } from "recharts";
 import { supabase } from "./supabase";
+import * as XLSX from "xlsx";
 
 /* =========================================================================
    SM SISTEMA — Gestão de Gado de Elite  (compra por cotas)
@@ -1477,6 +1478,144 @@ function UsersView({ meId }) {
   );
 }
 
+/* ============================ RELATÓRIOS =============================== */
+const INFO_OPTS = [
+  ["basico", "Dados básicos do animal"], ["genealogia", "Genealogia"], ["sociedade", "Sociedade / cotas"],
+  ["participacao", "Participação atual"], ["estimado", "Valor estimado"], ["investido", "Valor total investido"],
+  ["pago", "Valor pago"], ["aberto", "Valor em aberto"], ["parcelas", "Parcelas"], ["comissao", "Comissão"],
+  ["compras", "Compras"], ["vendas", "Vendas"], ["prenhezVinc", "Prenhezes vinculadas"],
+  ["aspiracaoVinc", "Aspirações vinculadas"], ["historico", "Histórico financeiro"], ["obs", "Observações"],
+];
+const socioStr = (a) => ((a.sociedadeAtual || a.socios || []).filter(Boolean)).map((s) => `${s.nome} ${num(s.pct)}%`).join("; ");
+const prenhezVinculadas = (a, ativos) => (ativos || []).filter((x) => x && x.tipo === "prenhez" && lc(x.doadora) === lc(a.nome));
+const aspVinculadas = (a, ativos) => (ativos || []).filter((x) => x && x.tipo === "aspiracao" && lc(x.doadora) === lc(a.nome));
+
+function RelatoriosView({ lista, ativos }) {
+  const [sel, setSel] = useState(() => new Set(lista.map((a) => a.id)));
+  const [campos, setCampos] = useState({ basico: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, obs: false });
+  const selecionados = lista.filter((a) => sel.has(a.id));
+  const toggleAnimal = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const todos = () => setSel(new Set(lista.map((a) => a.id)));
+  const nenhum = () => setSel(new Set());
+  const toggleCampo = (k) => setCampos((c) => ({ ...c, [k]: !c[k] }));
+  const nCampos = Object.values(campos).filter(Boolean).length;
+
+  // monta uma linha (objeto) para o animal conforme campos marcados
+  const linhaDe = (a) => {
+    const f = finance(a); const row = {};
+    if (campos.basico) { row["Tipo"] = a.tipo; row["Nome"] = a.nome; row["Registro"] = a.registro || ""; row["Sexo"] = a.sexo || ""; row["Categoria"] = a.categoria || a.raca || ""; row["Status"] = a.status || ""; row["Onde está"] = a.ondeEsta || ""; row["Nascimento"] = a.nascimento ? dataBR(a.nascimento) : ""; }
+    else { row["Nome"] = a.nome; }
+    if (campos.genealogia) { row["Pai"] = a.pai || a.touro || ""; row["Mãe"] = a.mae || a.doadora || ""; row["Registro da mãe"] = a.maeRegistro || a.regDoadora || ""; row["Avô paterno"] = a.avoPaterno || ""; row["Avó paterna"] = a.avoPaterna || ""; row["Avô materno"] = a.avoMaterno || ""; row["Avó materna"] = a.avoMaterna || ""; row["Obs. genealógicas"] = a.obsGen || ""; }
+    if (campos.sociedade) row["Sociedade"] = socioStr(a);
+    if (campos.participacao) row["Participação atual (%)"] = participacaoAtual(a);
+    if (campos.estimado) row["Valor estimado"] = f.totalEstimado;
+    if (campos.investido) row["Total investido"] = f.total;
+    if (campos.pago) row["Valor pago"] = f.pago;
+    if (campos.aberto) row["Valor em aberto"] = f.aberto;
+    if (campos.parcelas) { const uni = parcelasUnificadas(a); row["Parcelas (qtd)"] = uni.length; row["Valor parcela"] = f.valor; row["Parcelas (total)"] = uni.reduce((s, p) => s + num(p.valor), 0); }
+    if (campos.comissao) { row["Comissão (%)"] = f.com.pct; row["Comissão (R$)"] = f.com.total; }
+    if (campos.compras) row["Compras adicionais"] = (a.comprasAdic || []).map((c) => `+${num(c.pctAdicional)}% ${fmt(num(c.valor) || num(c.valorParcela) * num(c.parcelas))}`).join("; ");
+    if (campos.vendas) row["Vendas"] = vendasDo(a).map((v) => `${v.tipo}${v.pctVendida ? " " + v.pctVendida + "%" : ""} ${fmt(v.valor)}`).join("; ");
+    if (campos.prenhezVinc) row["Prenhezes vinculadas"] = prenhezVinculadas(a, ativos).map((x) => x.nome).join("; ");
+    if (campos.aspiracaoVinc) row["Aspirações vinculadas"] = aspVinculadas(a, ativos).map((x) => x.nome).join("; ");
+    if (campos.historico) row["Histórico financeiro"] = (a.historico || []).map((h) => `${dataBR(h.data)}: ${h.desc || h.tipo}`).join(" | ");
+    if (campos.obs) row["Observações"] = a.obs || "";
+    return row;
+  };
+
+  const exportarExcel = () => {
+    if (!selecionados.length) return;
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(selecionados.map(linhaDe)), "Animais");
+    // aba de parcelas detalhada
+    if (campos.parcelas) {
+      const rows = [];
+      selecionados.forEach((a) => parcelasUnificadas(a).forEach((p) => rows.push({ Animal: a.nome, "Nº": p.numero, Vencimento: dataBR(p.venc), Valor: p.valor, Origem: p.valorAdic > 0 && p.valorBase > 0 ? "original+adicional" : p.valorAdic > 0 ? "adicional" : "original" })));
+      if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Parcelas");
+    }
+    if (campos.sociedade) {
+      const rows = [];
+      selecionados.forEach((a) => ((a.sociedadeAtual || a.socios || []).filter(Boolean)).forEach((s) => rows.push({ Animal: a.nome, Sócio: s.nome, "Porcentagem (%)": num(s.pct), Observações: s.obs || "" })));
+      if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Sociedade");
+    }
+    if (campos.vendas) {
+      const rows = [];
+      selecionados.forEach((a) => vendasDo(a).forEach((v) => rows.push({ Animal: a.nome, Tipo: v.tipo, Data: dataBR(v.data), "% vendida": v.pctVendida || "", Comprador: v.comprador || "", Valor: v.valor })));
+      if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Vendas");
+    }
+    if (campos.compras) {
+      const rows = [];
+      selecionados.forEach((a) => (a.comprasAdic || []).forEach((c) => rows.push({ Animal: a.nome, Data: dataBR(c.data), "% adquirida": num(c.pctAdicional), Valor: num(c.valor) || num(c.valorParcela) * num(c.parcelas), Parcelas: c.parcelas || "" })));
+      if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Compras");
+    }
+    XLSX.writeFile(wb, "relatorio-sm-sistema.xlsx");
+  };
+
+  const exportarPDF = () => {
+    if (!selecionados.length) return;
+    const esc = (v) => String(v ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    const blocos = selecionados.map((a) => {
+      const row = linhaDe(a);
+      const linhas = Object.entries(row).filter(([k]) => k !== "Nome").map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td>${esc(typeof v === "number" && /valor|investido|estimado|comiss|pago|aberto|parcela/i.test(k) ? fmt(v) : v)}</td></tr>`).join("");
+      return `<div class="animal"><h2>${esc(a.nome)} <small>${esc(a.tipo)}</small></h2><table>${linhas}</table></div>`;
+    }).join("");
+    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório SM sistema</title>
+      <style>
+        *{box-sizing:border-box} body{font-family:Georgia,serif;color:#22201a;margin:32px;max-width:900px}
+        h1{font-size:22px;border-bottom:2px solid #c6a15b;padding-bottom:8px}
+        .meta{color:#666;font-size:12px;margin-bottom:20px}
+        .animal{break-inside:avoid;margin:0 0 20px;border:1px solid #e5ddc9;border-radius:10px;padding:14px 16px}
+        .animal h2{font-size:16px;margin:0 0 10px;color:#1d3a2b} .animal h2 small{color:#9a7b3a;font-size:11px;text-transform:uppercase;letter-spacing:.08em}
+        table{width:100%;border-collapse:collapse;font-family:Arial,sans-serif;font-size:12.5px}
+        td{padding:5px 8px;border-bottom:1px solid #f0ead9;vertical-align:top} td.k{color:#666;width:38%;font-weight:600}
+        @media print{body{margin:12mm}}
+      </style></head><body>
+      <h1>Relatório — SM sistema · Gado de Elite</h1>
+      <div class="meta">Gerado em ${new Date().toLocaleDateString("pt-BR")} · ${selecionados.length} animal(is)</div>
+      ${blocos}
+      <script>window.onload=function(){window.print()}</script></body></html>`;
+    const w = window.open("", "_blank");
+    if (w) { w.document.write(html); w.document.close(); }
+  };
+
+  return (
+    <section className="wrap">
+      <div className="card">
+        <div className="card-h">Animais a exportar <span className="muted">({selecionados.length} de {lista.length})</span></div>
+        <div className="rep-tools"><button className="btn btn-ghost" onClick={todos}>Selecionar todos</button><button className="btn btn-ghost" onClick={nenhum}>Nenhum</button></div>
+        <div className="sel-grid">
+          {lista.map((a) => (
+            <label className="sel-item" key={a.id}><input type="checkbox" checked={sel.has(a.id)} onChange={() => toggleAnimal(a.id)} /> <span>{a.nome} <em className="muted">· {a.tipo}</em></span></label>
+          ))}
+          {lista.length === 0 && <p className="muted small">Nenhum registro disponível (ajuste os filtros/busca).</p>}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-h">Informações para exportar <span className="muted">({nCampos} marcada(s))</span></div>
+        <div className="sel-grid">
+          {INFO_OPTS.map(([k, label]) => (
+            <label className="sel-item" key={k}><input type="checkbox" checked={!!campos[k]} onChange={() => toggleCampo(k)} /> <span>{label}</span></label>
+          ))}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-h">Resumo</div>
+        <p className="muted" style={{ marginTop: -4 }}>
+          Serão exportados <b>{selecionados.length} animal(is)</b> com <b>{nCampos} grupo(s) de informação</b>
+          {": "}{INFO_OPTS.filter(([k]) => campos[k]).map(([, l]) => l).join(", ") || "nenhum campo marcado"}.
+        </p>
+        <div className="rep-tools">
+          <button className="btn btn-gold" onClick={exportarExcel} disabled={!selecionados.length || !nCampos}>⤓ Exportar Excel (.xlsx)</button>
+          <button className="btn btn-ghost" onClick={exportarPDF} disabled={!selecionados.length || !nCampos}>🖨 Exportar PDF</button>
+        </div>
+        {(!selecionados.length || !nCampos) && <p className="muted small">Selecione ao menos um animal e uma informação para exportar.</p>}
+      </div>
+    </section>
+  );
+}
+
 /* ================================= APP ================================= */
 export default function App() {
   const [db, setDb] = useState(SEED);
@@ -1921,20 +2060,7 @@ export default function App() {
         )}
 
         {view === "relatorios" && (
-          <section className="wrap"><div className="card">
-            <div className="card-h">Relatório consolidado <span className="muted">({visiveis.length} registros)</span></div>
-            <div className="rep-tools"><button className="btn btn-gold" onClick={exportCSV}>⤓ Exportar Excel/CSV</button><button className="btn btn-ghost" onClick={() => window.print()}>🖨 Imprimir / PDF</button></div>
-            <div className="tbl-wrap"><table className="tbl">
-              <thead><tr><th>Tipo</th><th>Nome</th><th>Status</th><th>Cota</th><th>Total estimado</th><th>Pago</th><th>Em aberto</th></tr></thead>
-              <tbody>{visiveis.map((a) => { const f = finance(a); return (
-                <tr key={a.id} className="clk" onClick={() => setAberto(a)}><td><Badge tone="gold">{a.tipo}</Badge></td><td>{a.nome}</td><td>{a.status || "—"}</td>
-                  <td>{fmt(f.cota)}</td><td>{fmt(f.totalEstimado)}</td><td className="pos">{fmt(f.pago)}</td><td className="neg">{fmt(f.aberto)}</td></tr>); })}</tbody>
-              <tfoot><tr><td colSpan={3}><b>Totais</b></td><td><b>{fmt(visiveis.reduce((s, a) => s + finance(a).cota, 0))}</b></td>
-                <td><b>{fmt(visiveis.reduce((s, a) => s + finance(a).totalEstimado, 0))}</b></td>
-                <td className="pos"><b>{fmt(visiveis.reduce((s, a) => s + finance(a).pago, 0))}</b></td>
-                <td className="neg"><b>{fmt(visiveis.reduce((s, a) => s + finance(a).aberto, 0))}</b></td></tr></tfoot>
-            </table></div>
-          </div></section>
+          <RelatoriosView lista={visiveis} ativos={ativos} />
         )}
 
         {view === "usuarios" && isAdmin && (
@@ -2123,6 +2249,10 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .row-now{background:rgba(198,161,91,.10)}
 .busca-grupo{margin-top:12px}
 .busca-cat{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+.sel-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px 16px;margin-top:6px}
+.sel-item{display:flex;align-items:center;gap:8px;font-size:14px;padding:4px 0;cursor:pointer}
+.sel-item input{width:17px;height:17px;flex-shrink:0}
+.sel-item em{font-style:normal;font-size:12px}
 
 .timeline{display:flex;flex-direction:column;padding-left:8px}
 .tl-item{display:flex;gap:14px;padding:12px 0;border-left:2px solid var(--line);margin-left:6px;padding-left:18px;position:relative}
