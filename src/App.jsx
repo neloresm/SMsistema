@@ -1554,21 +1554,60 @@ function RelatoriosView({ lista, ativos }) {
   const exportarPDF = () => {
     if (!selecionados.length) return;
     const esc = (v) => String(v ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    // caixa de um indivíduo na árvore (azul=macho, rosa=fêmea, neutro)
+    const box = (label, nome, sx) => {
+      const cls = sx === "M" ? "m" : sx === "F" ? "f" : "n";
+      return `<div class="gbox ${cls}"><span class="glabel">${esc(label)}</span><span class="gname">${esc(nome || "—")}</span></div>`;
+    };
+    // quadro genealógico: pai (azul) à esquerda, mãe (rosa) à direita, avós nas pontas
+    const arvore = (a) => {
+      const pai = a.pai || a.touro || "", mae = a.mae || a.doadora || "";
+      const temAlgo = pai || mae || a.avoPaterno || a.avoPaterna || a.avoMaterno || a.avoMaterna;
+      if (!temAlgo) return "";
+      return `<div class="genwrap">
+        <div class="gcol">
+          <div class="gside pai">${box("Pai", pai, "M")}</div>
+          <div class="gavos">${box("Avô paterno", a.avoPaterno, "M")}${box("Avó paterna", a.avoPaterna, "F")}</div>
+        </div>
+        <div class="gcenter">${box(a.tipo === "prenhez" ? "Prenhez" : a.tipo === "aspiracao" ? "Aspiração" : "Animal", a.nome, sexNorm(a.sexo))}</div>
+        <div class="gcol">
+          <div class="gside mae">${box("Mãe doadora", mae, "F")}${a.maeRegistro || a.regDoadora ? `<div class="greg">Registro: ${esc(a.maeRegistro || a.regDoadora)}</div>` : ""}</div>
+          <div class="gavos">${box("Avô materno", a.avoMaterno, "M")}${box("Avó materna", a.avoMaterna, "F")}</div>
+        </div>
+        ${a.obsGen ? `<div class="gobs">Obs. genealógicas: ${esc(a.obsGen)}</div>` : ""}
+      </div>`;
+    };
     const blocos = selecionados.map((a) => {
       const row = linhaDe(a);
-      const linhas = Object.entries(row).filter(([k]) => k !== "Nome").map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td>${esc(typeof v === "number" && /valor|investido|estimado|comiss|pago|aberto|parcela/i.test(k) ? fmt(v) : v)}</td></tr>`).join("");
-      return `<div class="animal"><h2>${esc(a.nome)} <small>${esc(a.tipo)}</small></h2><table>${linhas}</table></div>`;
+      // no PDF, a genealogia vira quadro visual (não linhas de texto)
+      const genKeys = ["Pai", "Mãe", "Registro da mãe", "Avô paterno", "Avó paterna", "Avô materno", "Avó materna", "Obs. genealógicas"];
+      const linhas = Object.entries(row).filter(([k]) => k !== "Nome" && !(campos.genealogia && genKeys.includes(k))).map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td>${esc(typeof v === "number" && /valor|investido|estimado|comiss|pago|aberto|parcela/i.test(k) ? fmt(v) : v)}</td></tr>`).join("");
+      const genBloco = campos.genealogia ? arvore(a) : "";
+      return `<div class="animal"><h2>${esc(a.nome)} <small>${esc(a.tipo)}</small></h2>${linhas ? `<table>${linhas}</table>` : ""}${genBloco ? `<div class="gtit">Genealogia</div>${genBloco}` : ""}</div>`;
     }).join("");
     const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório SM sistema</title>
       <style>
         *{box-sizing:border-box} body{font-family:Georgia,serif;color:#22201a;margin:32px;max-width:900px}
         h1{font-size:22px;border-bottom:2px solid #c6a15b;padding-bottom:8px}
         .meta{color:#666;font-size:12px;margin-bottom:20px}
-        .animal{break-inside:avoid;margin:0 0 20px;border:1px solid #e5ddc9;border-radius:10px;padding:14px 16px}
+        .animal{break-inside:avoid;margin:0 0 22px;border:1px solid #e5ddc9;border-radius:10px;padding:14px 16px}
         .animal h2{font-size:16px;margin:0 0 10px;color:#1d3a2b} .animal h2 small{color:#9a7b3a;font-size:11px;text-transform:uppercase;letter-spacing:.08em}
         table{width:100%;border-collapse:collapse;font-family:Arial,sans-serif;font-size:12.5px}
         td{padding:5px 8px;border-bottom:1px solid #f0ead9;vertical-align:top} td.k{color:#666;width:38%;font-weight:600}
-        @media print{body{margin:12mm}}
+        .gtit{font-family:Arial,sans-serif;font-size:12px;font-weight:700;color:#9a7b3a;text-transform:uppercase;letter-spacing:.08em;margin:14px 0 8px}
+        .genwrap{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:center;font-family:Arial,sans-serif;break-inside:avoid}
+        .gcol{display:flex;flex-direction:column;gap:8px}
+        .gavos{display:flex;flex-direction:column;gap:6px;padding-left:10px;border-left:2px solid #ece3cf;margin-left:6px}
+        .gcenter{display:flex;justify-content:center}
+        .gbox{border:1px solid #e0d9c6;border-radius:8px;padding:6px 10px;display:flex;flex-direction:column;min-width:120px}
+        .gbox.m{background:#e8f0fb;border-color:#bcd3f0} .gbox.f{background:#fbe9f1;border-color:#f0c2d8} .gbox.n{background:#f4efe4;border-color:#e2d9c2}
+        .glabel{font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;color:#8a8471}
+        .gname{font-size:13px;font-weight:700;color:#22201a}
+        .gbox.m .gname{color:#274a86} .gbox.f .gname{color:#8a3a66}
+        .gcenter .gbox{min-width:150px;border-width:2px;box-shadow:0 2px 6px rgba(0,0,0,.06)}
+        .greg{font-size:10px;color:#666;margin-top:2px;padding-left:2px}
+        .gobs{grid-column:1/-1;font-size:11px;color:#555;background:#faf7f0;border:1px solid #ece3cf;border-radius:6px;padding:6px 8px;margin-top:4px}
+        @media print{body{margin:12mm} .animal{page-break-inside:avoid}}
       </style></head><body>
       <h1>Relatório — SM sistema · Gado de Elite</h1>
       <div class="meta">Gerado em ${new Date().toLocaleDateString("pt-BR")} · ${selecionados.length} animal(is)</div>
