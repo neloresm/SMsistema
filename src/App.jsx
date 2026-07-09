@@ -351,7 +351,8 @@ const SCHEMAS = {
   ],
   prenhez: [
     { g: "Identificação", f: [
-      ["doadora", "Mãe doadora", "link"], ["pai", "Pai", "link"],
+      ["doadora", "Mãe doadora", "link"], ["regDoadora", "Registro da mãe doadora", "text"],
+      ["pai", "Pai", "link"],
       ["qtd", "Quantidade de prenhezes", "number"],
       ["status", "Status", "select", STATUS_PRENHEZ], ["ondeEsta", "Onde está", "local"],
     ]},
@@ -366,7 +367,8 @@ const SCHEMAS = {
   ],
   aspiracao: [
     { g: "Identificação", f: [
-      ["doadora", "Mãe doadora", "link"], ["pai", "Pai (se houver)", "link"],
+      ["doadora", "Mãe doadora", "link"], ["regDoadora", "Registro da mãe doadora", "text"],
+      ["pai", "Pai (se houver)", "link"],
       ["qtd", "Quantidade", "number"],
       ["status", "Status", "select", STATUS_ASP], ["ondeEsta", "Onde está", "local"],
     ]},
@@ -624,7 +626,7 @@ function VideoBlock({ v }) {
 }
 
 /* --------------------------- formulário de ficha ----------------------- */
-function FichaForm({ tipo, initial, animalNames, leilaoNames, localNames, vendedorNames, socioNames,
+function FichaForm({ tipo, initial, animalNames, animalReg, leilaoNames, localNames, vendedorNames, socioNames,
   onQuickAnimal, onQuickLeilao, onQuickLocal, onQuickVendedor, onQuickSocio, onSave, onClose }) {
   const [d, setD] = useState(() => initial || { id: uid(), tipo, socios: [], videos: [], historico: [], comissaoPct: 8 });
   useEffect(() => {
@@ -648,6 +650,21 @@ function FichaForm({ tipo, initial, animalNames, leilaoNames, localNames, vended
     local: [localNames, onQuickLocal, "buscar ou cadastrar local"], vendedor: [vendedorNames, onQuickVendedor, "buscar ou cadastrar vendedor"] };
 
   const renderField = ([k, label, type, opt]) => {
+    if (k === "doadora") {
+      return (
+        <label className="field" key={k}><span>{label}<em className="new-hint"> · busca em todo o sistema</em></span>
+          <AutoField value={d.doadora || ""} suggestions={animalNames} onCreate={onQuickAnimal}
+            onChange={(v) => setD((p) => { const np = { ...p, doadora: v }; const reg = (animalReg || {})[lc(v)]; if (reg && (!p.regDoadora || p.__regAuto)) { np.regDoadora = reg; np.__regAuto = true; } return np; })}
+            placeholder="mãe doadora (busca em Animais, Prenhez, Aspiração, Genealogia)" /></label>
+      );
+    }
+    if (k === "regDoadora") {
+      const auto = d.__regAuto && d.regDoadora;
+      return (
+        <label className="field" key={k}><span>{label}{auto ? <em className="new-hint"> · preenchido automaticamente</em> : ""}</span>
+          <input value={d.regDoadora || ""} onChange={(e) => setD((p) => ({ ...p, regDoadora: e.target.value, __regAuto: false }))} placeholder="registro da mãe (auto se já cadastrada)" /></label>
+      );
+    }
     if (type === "simnao") return (
       <label className="field wide" key={k}><span>{label}</span>
         <div className="segmented"><button type="button" className={`seg ${d[k] ? "on" : ""}`} onClick={() => set(k, true)}>Sim</button>
@@ -1164,10 +1181,10 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
 
           <div className="fsec"><div className="fsec-h">Dados</div>
             <div className="info-grid">
-              {a.tipo === "animal" && <><Info l="Onde está" v={a.ondeEsta} /><Info l="Sexo" v={a.sexo} /><Info l="Nascimento" v={dataBR(a.nascimento)} /></>}
-              {a.tipo === "prenhez" && <><Info l="Mãe doadora" v={a.doadora} /><Info l="Pai" v={a.pai} />
+              {a.tipo === "animal" && <><Info l="Onde está" v={a.ondeEsta} /><Info l="Sexo" v={a.sexo} /><Info l="Nascimento" v={dataBR(a.nascimento)} />{a.maeRegistro && <Info l="Registro da mãe" v={a.maeRegistro} />}</>}
+              {a.tipo === "prenhez" && <><Info l="Mãe doadora" v={a.doadora} /><Info l="Registro da mãe" v={a.regDoadora} /><Info l="Pai" v={a.pai} />
                 <Info l="Quantidade" v={qtdRestante(a)} /><Info l="Onde está" v={a.ondeEsta} /></>}
-              {a.tipo === "aspiracao" && <><Info l="Mãe doadora" v={a.doadora} /><Info l="Pai" v={a.pai} />
+              {a.tipo === "aspiracao" && <><Info l="Mãe doadora" v={a.doadora} /><Info l="Registro da mãe" v={a.regDoadora} /><Info l="Pai" v={a.pai} />
                 <Info l="Quantidade" v={qtdRestante(a)} /><Info l="Onde está" v={a.ondeEsta} /></>}
               <Info l="Leilão / origem" v={a.leilao} /><Info l="Vendedor" v={a.vendedor} /><Info l="Data da compra" v={dataBR(a.dataCompra)} />
             </div>
@@ -1570,7 +1587,27 @@ export default function App() {
 
   const soSocio = false;
   const ativos = db.ativos;
-  const animalNames = useMemo(() => (ativos || []).filter((a) => a && a.tipo === "animal" && typeof a.nome === "string" && a.nome).map((a) => a.nome), [ativos]);
+  const GEN_KEYS = ["doadora", "pai", "mae", "touro", "avoPaterno", "avoPaterna", "avoMaterno", "avoMaterna"];
+  const animalNames = useMemo(() => {
+    const set = new Set();
+    (ativos || []).forEach((a) => {
+      if (!a) return;
+      if (a.tipo === "animal" && typeof a.nome === "string" && a.nome) set.add(a.nome);
+      GEN_KEYS.forEach((k) => { if (typeof a[k] === "string" && a[k].trim()) set.add(a[k].trim()); });
+    });
+    return [...set];
+  }, [ativos]);
+  // mapa nome(min.) -> registro, para preencher automaticamente o registro da mãe doadora
+  const animalReg = useMemo(() => {
+    const m = {};
+    (ativos || []).forEach((a) => {
+      if (!a) return;
+      if (a.tipo === "animal" && a.nome && a.registro && !m[lc(a.nome)]) m[lc(a.nome)] = a.registro;
+      if (a.doadora && a.regDoadora && !m[lc(a.doadora)]) m[lc(a.doadora)] = a.regDoadora;
+      if (a.mae && a.maeRegistro && !m[lc(a.mae)]) m[lc(a.mae)] = a.maeRegistro;
+    });
+    return m;
+  }, [ativos]);
   const leilaoNames = useMemo(() => { const s = new Set((db.leiloes || []).map((l) => l && l.nome).filter(Boolean)); (ativos || []).forEach((a) => a && a.leilao && s.add(a.leilao)); return [...s]; }, [db.leiloes, ativos]);
   const localNames = useMemo(() => { const s = new Set((db.locais || []).filter(Boolean)); (ativos || []).forEach((a) => a && a.ondeEsta && s.add(a.ondeEsta)); return [...s]; }, [db.locais, ativos]);
   const vendedorNames = useMemo(() => { const s = new Set((db.vendedores || []).map((v) => v && v.nome).filter(Boolean)); (ativos || []).forEach((a) => a && a.vendedor && s.add(a.vendedor)); return [...s]; }, [db.vendedores, ativos]);
@@ -1603,6 +1640,12 @@ export default function App() {
       let list = [...p.ativos];
       const nameSet = new Set(list.filter((a) => a && a.tipo === "animal" && a.nome).map((a) => lc(a.nome)));
       linkKeysOf(d.tipo).forEach((k) => { const nm = (d[k] ?? "").toString().trim(); if (nm && !nameSet.has(lc(nm)) && lc(nm) !== lc(d.nome)) { list.push(stubAnimal(nm, profile && profile.nome)); nameSet.add(lc(nm)); } });
+      // registro da mãe doadora fica salvo no animal correspondente (compartilhado entre áreas)
+      const regPairs = { prenhez: [["doadora", "regDoadora"]], aspiracao: [["doadora", "regDoadora"]], animal: [["mae", "maeRegistro"]] };
+      (regPairs[d.tipo] || []).forEach(([nk, rk]) => {
+        const nm = (d[nk] || "").toString().trim(); const rg = (d[rk] || "").toString().trim();
+        if (nm && rg) list = list.map((a) => (a && a.tipo === "animal" && lc(a.nome) === lc(nm) && !a.registro ? { ...a, registro: rg } : a));
+      });
       const exists = list.some((a) => a.id === d.id);
       if (exists) list = list.map((a) => (a.id === d.id ? d : a));
       else {
@@ -1642,6 +1685,7 @@ export default function App() {
       nascimento: "", status: "", ondeEsta: src.ondeEsta || "",
       // genealogia herdada
       pai: src.pai || src.touro || "", mae: src.doadora || "",
+      maeRegistro: src.regDoadora || "",
       avoPaterno: src.avoPaterno || "", avoPaterna: src.avoPaterna || "",
       avoMaterno: src.avoMaterno || "", avoMaterna: src.avoMaterna || "",
       obsGen: src.obsGen || "",
@@ -1869,7 +1913,7 @@ export default function App() {
       )}
 
       {form && <FichaForm tipo={form.tipo} initial={form.initial}
-        animalNames={animalNames} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
+        animalNames={animalNames} animalReg={animalReg} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
         onSave={salvar} onClose={() => setForm(null)} />}
       {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onClose={() => setAberto(null)} onUpdate={updateAtivo}
