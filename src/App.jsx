@@ -1542,13 +1542,36 @@ function svgGenealogiaStr(a) {
   return `<svg viewBox="${-maxX} ${-maxY} ${2 * maxX} ${2 * maxY}" style="width:100%;height:auto;max-width:${2 * maxX}px" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">${paths}${gs}</svg>`;
 }
 
+const BUSCA_TIPOS = [["geral", "Geral"], ["animal", "Animal"], ["socio", "Sócio"], ["ondeEsta", "Onde Está"], ["leilao", "Leilão"], ["vendedor", "Vendedor"], ["comprador", "Comprador"], ["registro", "Registro"]];
+
 function RelatoriosView({ lista, ativos }) {
-  const [sel, setSel] = useState(() => new Set(lista.map((a) => a.id)));
+  const [tipoBusca, setTipoBusca] = useState("geral");
+  const [q, setQ] = useState("");
   const [campos, setCampos] = useState({ basico: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, obs: false });
-  const selecionados = lista.filter((a) => sel.has(a.id));
+
+  // base: apenas registros com cadastro próprio (exclui ancestrais só-genealogia e arquivados)
+  const base = (lista || []).filter((a) => a && a.origem !== "genealogia" && !a.arquivada);
+  const nq = norm(q).trim();
+  const matchTipo = (a) => {
+    if (!nq) return true;
+    switch (tipoBusca) {
+      case "animal": return norm(a.nome).includes(nq);
+      case "socio": return ((a.sociedadeAtual || a.socios || []).filter(Boolean)).some((s) => norm(s.nome).includes(nq));
+      case "ondeEsta": return norm(a.ondeEsta).includes(nq);
+      case "leilao": return norm(a.leilao).includes(nq);
+      case "vendedor": return norm(a.vendedor).includes(nq);
+      case "comprador": return vendasDo(a).some((v) => norm(v.comprador).includes(nq));
+      case "registro": return norm(a.registro).includes(nq);
+      default: try { return norm(JSON.stringify(a)).includes(nq); } catch (e) { return false; }
+    }
+  };
+  const listaF = base.filter(matchTipo);
+
+  const [sel, setSel] = useState(() => new Set(base.map((a) => a.id)));
+  const selecionados = listaF.filter((a) => sel.has(a.id));
   const toggleAnimal = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const todos = () => setSel(new Set(lista.map((a) => a.id)));
-  const nenhum = () => setSel(new Set());
+  const todos = () => setSel((s) => { const n = new Set(s); listaF.forEach((a) => n.add(a.id)); return n; });
+  const nenhum = () => setSel((s) => { const n = new Set(s); listaF.forEach((a) => n.delete(a.id)); return n; });
   const toggleCampo = (k) => setCampos((c) => ({ ...c, [k]: !c[k] }));
   const nCampos = Object.values(campos).filter(Boolean).length;
 
@@ -1648,13 +1671,25 @@ function RelatoriosView({ lista, ativos }) {
   return (
     <section className="wrap">
       <div className="card">
-        <div className="card-h">Animais a exportar <span className="muted">({selecionados.length} de {lista.length})</span></div>
+        <div className="card-h">Buscar por</div>
+        <div className="rep-busca">
+          <select value={tipoBusca} onChange={(e) => setTipoBusca(e.target.value)} className="rep-sel">
+            {BUSCA_TIPOS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
+          <input className="rep-inp" value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Pesquisar por ${(BUSCA_TIPOS.find(([k]) => k === tipoBusca) || [])[1] || "Geral"}…`} />
+          {q && <button className="btn btn-ghost" onClick={() => setQ("")}>limpar</button>}
+        </div>
+        <p className="muted small" style={{ marginTop: 6 }}>{nq ? `${listaF.length} resultado(s) para “${q}” em ${(BUSCA_TIPOS.find(([k]) => k === tipoBusca) || [])[1]}.` : "Sem busca: todos os cadastros próprios aparecem abaixo."}</p>
+      </div>
+
+      <div className="card">
+        <div className="card-h">Animais a exportar <span className="muted">({selecionados.length} de {listaF.length})</span></div>
         <div className="rep-tools"><button className="btn btn-ghost" onClick={todos}>Selecionar todos</button><button className="btn btn-ghost" onClick={nenhum}>Nenhum</button></div>
         <div className="sel-grid">
-          {lista.map((a) => (
+          {listaF.map((a) => (
             <label className="sel-item" key={a.id}><input type="checkbox" checked={sel.has(a.id)} onChange={() => toggleAnimal(a.id)} /> <span>{a.nome} <em className="muted">· {a.tipo}</em></span></label>
           ))}
-          {lista.length === 0 && <p className="muted small">Nenhum registro disponível (ajuste os filtros/busca).</p>}
+          {listaF.length === 0 && <p className="muted small">Nenhum registro encontrado{nq ? " para esta busca." : "."}</p>}
         </div>
       </div>
 
@@ -2127,7 +2162,7 @@ export default function App() {
         )}
 
         {view === "relatorios" && (
-          <RelatoriosView lista={visiveis} ativos={ativos} />
+          <RelatoriosView lista={ativos} ativos={ativos} />
         )}
 
         {view === "usuarios" && isAdmin && (
@@ -2320,6 +2355,9 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .sel-item{display:flex;align-items:center;gap:8px;font-size:14px;padding:4px 0;cursor:pointer}
 .sel-item input{width:17px;height:17px;flex-shrink:0}
 .sel-item em{font-style:normal;font-size:12px}
+.rep-busca{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.rep-sel{padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;font-size:14px;min-width:150px}
+.rep-inp{flex:1;min-width:180px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px}
 
 .timeline{display:flex;flex-direction:column;padding-left:8px}
 .tl-item{display:flex;gap:14px;padding:12px 0;border-left:2px solid var(--line);margin-left:6px;padding-left:18px;position:relative}
