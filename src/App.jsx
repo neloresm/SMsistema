@@ -1543,6 +1543,8 @@ function svgGenealogiaStr(a) {
 }
 
 const BUSCA_TIPOS = [["geral", "Geral"], ["animal", "Animal"], ["socio", "Sócio"], ["ondeEsta", "Onde Está"], ["leilao", "Leilão"], ["vendedor", "Vendedor"], ["comprador", "Comprador"], ["registro", "Registro"]];
+const EYE_ON = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>;
+const EYE_OFF = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></svg>;
 
 function RelatoriosView({ lista, ativos }) {
   const [tipoBusca, setTipoBusca] = useState("geral");
@@ -1728,6 +1730,9 @@ export default function App() {
   const [novo, setNovo] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [showAncestrais, setShowAncestrais] = useState(false);
+  const [privado, setPrivado] = useState(() => { try { return localStorage.getItem("sm_privado") === "1"; } catch (e) { return false; } });
+  useEffect(() => { try { localStorage.setItem("sm_privado", privado ? "1" : "0"); } catch (e) {} }, [privado]);
+  const money = (v) => (privado ? "R$ ••••••" : fmt(v));
   const [session, setSession] = useState(null);       // sessão do Supabase
   const [profile, setProfile] = useState(null);       // perfil (nome, permissão, aprovação)
   const [profileLoaded, setProfileLoaded] = useState(false);
@@ -2031,13 +2036,19 @@ export default function App() {
 
         {view === "dashboard" && !qBusca && (
           <section className="wrap">
-            <div className="kpi-row"><KPI label="Animais" value={count("animal")} /><KPI label="Prenhezes" value={count("prenhez")} /><KPI label="Aspirações" value={count("aspiracao")} /><KPI label="Patrimônio estimado" value={fmt(kpis.patrimonio)} tone="gold" /></div>
-            <div className="kpi-row"><KPI label="Total investido" value={fmt(kpis.total)} /><KPI label="Já pago" value={fmt(kpis.pago)} tone="pos" /><KPI label="Em aberto" value={fmt(kpis.aberto)} tone="neg" /><KPI label="Parcelas do mês" value={fmt(parcelasMes.total)} tone="gold" sub={`${parcelasMes.qtd} parcela(s) · ${parcelasMes.pagas} paga(s)`} /></div>
+            <div className="dash-head">
+              <h1 className="dash-title serif">Painel</h1>
+              <button className="eye-btn" onClick={() => setPrivado((p) => !p)} title={privado ? "Mostrar valores" : "Ocultar valores"} aria-label={privado ? "Mostrar valores" : "Ocultar valores"}>
+                {privado ? EYE_OFF : EYE_ON}<span>{privado ? "Mostrar valores" : "Ocultar valores"}</span>
+              </button>
+            </div>
+            <div className="kpi-row"><KPI label="Animais" value={count("animal")} /><KPI label="Prenhezes" value={count("prenhez")} /><KPI label="Aspirações" value={count("aspiracao")} /><KPI label="Patrimônio estimado" value={money(kpis.patrimonio)} tone="gold" /></div>
+            <div className="kpi-row"><KPI label="Total investido" value={money(kpis.total)} /><KPI label="Já pago" value={money(kpis.pago)} tone="pos" /><KPI label="Em aberto" value={money(kpis.aberto)} tone="neg" /><KPI label="Parcelas do mês" value={money(parcelasMes.total)} tone="gold" sub={`${parcelasMes.qtd} parcela(s) · ${parcelasMes.pagas} paga(s)`} /></div>
             <div className="cols-2">
               <div className="card"><div className="card-h">Investimento por tipo de ativo</div>
                 <ResponsiveContainer width="100%" height={230}><BarChart data={invTipo} margin={{ left: 10, right: 10 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="name" tick={{ fontSize: 11, fill: "#5a5346" }} />
-                  <YAxis tick={{ fontSize: 11, fill: "#5a5346" }} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} /><Tooltip formatter={(v) => fmt(v)} />
+                  <YAxis tick={{ fontSize: 11, fill: "#5a5346" }} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} /><Tooltip formatter={(v) => money(v)} />
                   <Bar dataKey="value" fill="#C6A15B" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></div>
               <div className="card"><div className="card-h">Animais por status</div>
                 <ResponsiveContainer width="100%" height={230}><PieChart><Pie data={porStatus} dataKey="value" nameKey="name" innerRadius={55} outerRadius={90} paddingAngle={2}>
@@ -2046,12 +2057,12 @@ export default function App() {
             <div className="cols-2">
               <div className="card"><div className="card-h">Próximas parcelas</div>
                 <table className="tbl"><thead><tr><th>Ativo</th><th>Nº</th><th>Venc.</th><th>Valor</th></tr></thead>
-                  <tbody>{proximas.map((p, i) => <tr key={i}><td>{p.ativoNome}</td><td>{p.numero}</td><td>{dataBR(p.venc)}</td><td>{fmt(p.valor)}</td></tr>)}
+                  <tbody>{proximas.map((p, i) => <tr key={i}><td>{p.ativoNome}</td><td>{p.numero}</td><td>{dataBR(p.venc)}</td><td>{money(p.valor)}</td></tr>)}
                     {proximas.length === 0 && <tr><td colSpan={4} className="muted">Nenhuma parcela em aberto.</td></tr>}</tbody></table></div>
               <div className="card"><div className="card-h">Maiores ativos</div>
                 <table className="tbl"><thead><tr><th>Ativo</th><th>Tipo</th><th>Total estimado</th></tr></thead>
                   <tbody>{reais.slice().sort((a, b) => finance(b).totalEstimado - finance(a).totalEstimado).slice(0, 6).map((a) => (
-                    <tr key={a.id} className="clk" onClick={() => setAberto(a)}><td>{a.nome}</td><td><Badge tone="gold">{a.tipo}</Badge></td><td>{fmt(finance(a).totalEstimado)}</td></tr>))}</tbody></table></div>
+                    <tr key={a.id} className="clk" onClick={() => setAberto(a)}><td>{a.nome}</td><td><Badge tone="gold">{a.tipo}</Badge></td><td>{money(finance(a).totalEstimado)}</td></tr>))}</tbody></table></div>
             </div>
           </section>
         )}
@@ -2358,6 +2369,12 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .rep-busca{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .rep-sel{padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;font-size:14px;min-width:150px}
 .rep-inp{flex:1;min-width:180px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px}
+.dash-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.dash-title{font-size:24px;margin:0;color:var(--ink)}
+.eye-btn{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border:1px solid var(--line);border-radius:999px;background:#fff;color:var(--muted);font-size:13px;cursor:pointer;transition:.15s}
+.eye-btn:hover{border-color:var(--gold);color:var(--ink)}
+.eye-btn svg{display:block}
+@media(max-width:560px){.eye-btn span{display:none}.eye-btn{padding:9px}}
 
 .timeline{display:flex;flex-direction:column;padding-left:8px}
 .tl-item{display:flex;gap:14px;padding:12px 0;border-left:2px solid var(--line);margin-left:6px;padding-left:18px;position:relative}
