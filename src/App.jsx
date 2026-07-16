@@ -340,7 +340,7 @@ const SCHEMAS = {
     { g: "Identificação", f: [
       ["nome", "Nome do animal", "text"], ["registro", "Número de registro", "text"],
       ["raca", "Raça", "select", RACAS], ["sexo", "Sexo", "select", ["Fêmea", "Macho"]],
-      ["nascimento", "Data de nascimento", "date"], ["status", "Status", "select", STATUS_ANIMAL],
+      ["nascimento", "Data de nascimento", "date"],
       ["ondeEsta", "Onde está", "local"],
     ]},
     { g: "Genealogia", gen: true, f: [
@@ -1048,7 +1048,7 @@ function ComprasAdicSecao({ a, compras, partAtual, socAtual, socioNames, onQuick
 }
 
 /* ------------------------------ ficha detalhe -------------------------- */
-function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, socioNamesGlobais, onQuickSocio, onNascer }) {
+function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onConfirm }) {
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", h);
@@ -1102,13 +1102,17 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
     onUpdate(patch);
   };
 
-  const delVenda = (id) => {
+  const delVendaExec = (id) => {
     const restantes = vendas.filter((v) => v.id !== id);
     const patch = { ...a, vendas: restantes };
     const base = (a.sociedadeBase && a.sociedadeBase.length) ? a.sociedadeBase : socAtual;
     patch.sociedadeAtual = recomputeSoc(base, restantes);
     patch.sociedadeHist = (a.sociedadeHist || []).filter((h) => h.vendaId !== id);
     onUpdate(patch);
+  };
+  const delVenda = (id) => {
+    if (!onConfirm) return delVendaExec(id);
+    onConfirm({ titulo: "Excluir esta venda?", mensagem: "A venda será removida e a sociedade será recalculada. Esta ação não pode ser desfeita.", usos: [], botoes: [{ label: "Excluir", tone: "danger", onClick: () => { delVendaExec(id); onConfirm(null); } }] });
   };
   const setSociedadeAtual = (linhas) => onUpdate({ ...a, sociedadeAtual: (linhas || []).filter((s) => s && (s.nome || s.pct)) });
 
@@ -1130,10 +1134,14 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
     (socLinhas || []).forEach((s) => { if (s.nome && onQuickSocio) onQuickSocio(s.nome.trim()); });
     onUpdate(patch);
   };
-  const delCompraAdic = (id) => {
+  const delCompraAdicExec = (id) => {
     const patch = { ...a, comprasAdic: (a.comprasAdic || []).filter((c) => c.id !== id) };
     patch.sociedadeHist = (a.sociedadeHist || []).filter((h) => h.compraId !== id);
     onUpdate(patch);
+  };
+  const delCompraAdic = (id) => {
+    if (!onConfirm) return delCompraAdicExec(id);
+    onConfirm({ titulo: "Excluir esta compra adicional?", mensagem: "A compra e suas parcelas serão removidas do cálculo. As parcelas originais não são afetadas. Esta ação não pode ser desfeita.", usos: [], botoes: [{ label: "Excluir", tone: "danger", onClick: () => { delCompraAdicExec(id); onConfirm(null); } }] });
   };
   const comprasAdic = (a.comprasAdic || []).filter(Boolean);
 
@@ -1146,7 +1154,7 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
             <h2 className="serif">{a.nome}</h2>
             <div className="chips">
               {fase && <Badge tone="fase">{fase}</Badge>}
-              {a.status && <Badge tone={statusTone(a.status)}>{a.status}</Badge>}
+              {a.status && a.tipo !== "animal" && <Badge tone={statusTone(a.status)}>{a.status}</Badge>}
               {a.registro && <Badge tone="gold">Reg. {a.registro}</Badge>}
               {a.tipo === "animal" && a.nascimento && <Badge tone="gold">{idade(a.nascimento)}</Badge>}
               {a.ondeEsta && <Badge tone="gold">📍 {a.ondeEsta}</Badge>}
@@ -1580,7 +1588,7 @@ function RelatoriosView({ lista, ativos }) {
   // monta uma linha (objeto) para o animal conforme campos marcados
   const linhaDe = (a) => {
     const f = finance(a); const row = {};
-    if (campos.basico) { row["Tipo"] = a.tipo; row["Nome"] = a.nome; row["Registro"] = a.registro || ""; row["Sexo"] = a.sexo || ""; row["Categoria"] = a.categoria || a.raca || ""; row["Status"] = a.status || ""; row["Onde está"] = a.ondeEsta || ""; row["Nascimento"] = a.nascimento ? dataBR(a.nascimento) : ""; }
+    if (campos.basico) { row["Tipo"] = a.tipo; row["Nome"] = a.nome; row["Registro"] = a.registro || ""; row["Sexo"] = a.sexo || ""; row["Categoria"] = a.categoria || a.raca || ""; row["Onde está"] = a.ondeEsta || ""; row["Nascimento"] = a.nascimento ? dataBR(a.nascimento) : ""; }
     else { row["Nome"] = a.nome; }
     if (campos.genealogia) { row["Pai"] = a.pai || a.touro || ""; row["Mãe"] = a.mae || a.doadora || ""; row["Registro da mãe"] = a.maeRegistro || a.regDoadora || ""; row["Avô paterno"] = a.avoPaterno || ""; row["Avó paterna"] = a.avoPaterna || ""; row["Avô materno"] = a.avoMaterno || ""; row["Avó materna"] = a.avoMaterna || ""; row["Obs. genealógicas"] = a.obsGen || ""; }
     if (campos.sociedade) row["Sociedade"] = socioStr(a);
@@ -1855,10 +1863,10 @@ export default function App() {
     });
     return m;
   }, [ativos]);
-  const leilaoNames = useMemo(() => { const s = new Set((db.leiloes || []).map((l) => l && l.nome).filter(Boolean)); (ativos || []).forEach((a) => a && a.leilao && s.add(a.leilao)); return [...s]; }, [db.leiloes, ativos]);
+  const leilaoNames = useMemo(() => { const s = new Set((db.leiloes || []).filter((l) => l && !l.arquivado).map((l) => l.nome).filter(Boolean)); (ativos || []).forEach((a) => a && a.leilao && s.add(a.leilao)); return [...s]; }, [db.leiloes, ativos]);
   const localNames = useMemo(() => { const s = new Set((db.locais || []).filter(Boolean)); (ativos || []).forEach((a) => a && a.ondeEsta && s.add(a.ondeEsta)); return [...s]; }, [db.locais, ativos]);
   const vendedorNames = useMemo(() => { const s = new Set((db.vendedores || []).map((v) => v && v.nome).filter(Boolean)); (ativos || []).forEach((a) => a && a.vendedor && s.add(a.vendedor)); return [...s]; }, [db.vendedores, ativos]);
-  const socioNames = useMemo(() => (db.socios || []).map((s) => s && s.nome).filter(Boolean), [db.socios]);
+  const socioNames = useMemo(() => (db.socios || []).filter((s) => s && !s.arquivado).map((s) => s.nome).filter(Boolean), [db.socios]);
 
   const visiveis = useMemo(() => {
     let list = (ativos || []).filter(Boolean);
@@ -1945,14 +1953,73 @@ export default function App() {
     setForm({ tipo: "animal", initial: novo });
   };
   const excluir = (id) => { setDb((p) => ({ ...p, ativos: p.ativos.filter((a) => a.id !== id) })); setAberto(null); };
+
+  const [confirmar, setConfirmar] = useState(null);
+  const [verArquivados, setVerArquivados] = useState(false);
+  // onde um sócio é usado (por nome, para não quebrar histórico)
+  const usosSocio = (s) => {
+    const nome = s.nome; const set = new Map();
+    reais.forEach((a) => {
+      const naSoc = (a.socios || []).some((x) => x && lc(x.nome) === lc(nome)) || (a.sociedadeAtual || []).some((x) => x && lc(x.nome) === lc(nome));
+      const naVenda = vendasDo(a).some((v) => lc(v.comprador) === lc(nome) || (v.linhas || []).some((l) => lc(l.vendedor) === lc(nome) || lc(l.comprador) === lc(nome)));
+      if (naSoc || naVenda) set.set(a.id, a.nome);
+    });
+    return [...set.values()];
+  };
+  const usosLeilao = (l) => reais.filter((a) => lc(a.leilao || "") === lc(l.nome)).map((a) => a.nome);
+
+  const excluirSocio = (s) => {
+    const usos = usosSocio(s); const botoes = [];
+    if (usos.length) {
+      botoes.push({ label: "Arquivar", tone: "gold", onClick: () => { setDb((p) => ({ ...p, socios: (p.socios || []).map((x) => (x.id === s.id ? { ...x, arquivado: true } : x)) })); setConfirmar(null); } });
+      botoes.push({ label: "Excluir mesmo assim", tone: "danger", onClick: () => { setDb((p) => ({ ...p, socios: (p.socios || []).filter((x) => x.id !== s.id) })); setConfirmar(null); } });
+    } else {
+      botoes.push({ label: "Excluir", tone: "danger", onClick: () => { setDb((p) => ({ ...p, socios: (p.socios || []).filter((x) => x.id !== s.id) })); setConfirmar(null); } });
+    }
+    setConfirmar({ titulo: `Excluir o sócio ${s.nome}?`, mensagem: usos.length ? `Este sócio está vinculado a ${usos.length} registro(s). Para preservar o histórico, recomendamos arquivar em vez de excluir (ele some das listas e do autocomplete, mas continua nos históricos).` : `Tem certeza de que deseja excluir o sócio ${s.nome}? Esta ação não pode ser desfeita.`, usos, botoes });
+  };
+  const excluirLeilao = (l) => {
+    const usos = usosLeilao(l); const botoes = [];
+    if (usos.length) {
+      botoes.push({ label: "Arquivar", tone: "gold", onClick: () => { setDb((p) => ({ ...p, leiloes: (p.leiloes || []).map((x) => (x.id === l.id ? { ...x, arquivado: true } : x)) })); setConfirmar(null); } });
+      botoes.push({ label: "Excluir mesmo assim", tone: "danger", onClick: () => { setDb((p) => ({ ...p, leiloes: (p.leiloes || []).filter((x) => x.id !== l.id) })); setConfirmar(null); } });
+    } else {
+      botoes.push({ label: "Excluir", tone: "danger", onClick: () => { setDb((p) => ({ ...p, leiloes: (p.leiloes || []).filter((x) => x.id !== l.id) })); setConfirmar(null); } });
+    }
+    setConfirmar({ titulo: `Excluir o leilão ${l.nome}?`, mensagem: usos.length ? `Este leilão está vinculado a ${usos.length} animal(is). Para preservar o histórico, recomendamos arquivar em vez de excluir.` : `Tem certeza de que deseja excluir o leilão ${l.nome}? Esta ação não pode ser desfeita.`, usos, botoes });
+  };
+  const restaurarSocio = (s) => setDb((p) => ({ ...p, socios: (p.socios || []).map((x) => (x.id === s.id ? { ...x, arquivado: false } : x)) }));
+  const restaurarLeilao = (l) => setDb((p) => ({ ...p, leiloes: (p.leiloes || []).map((x) => (x.id === l.id ? { ...x, arquivado: false } : x)) }));
+  const pedirExcluirAtivo = (a) => setConfirmar({
+    titulo: `Excluir ${a.nome || "este registro"}?`,
+    mensagem: "Tem certeza de que deseja excluir este registro? Esta ação não pode ser desfeita.",
+    usos: [],
+    botoes: [{ label: "Excluir", tone: "danger", onClick: () => { excluir(a.id); setConfirmar(null); } }],
+  });
   const quickAnimal = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => (p.ativos.some((a) => a && a.tipo === "animal" && lc(a.nome) === lc(nm)) ? p : { ...p, ativos: [...p.ativos, stubAnimal(nm, profile && profile.nome)] })); };
   const quickLeilao = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => ((p.leiloes || []).some((l) => l && lc(l.nome) === lc(nm)) ? p : { ...p, leiloes: [...(p.leiloes || []), { id: uid(), nome: nm }] })); };
   const quickLocal = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => ((p.locais || []).some((l) => lc(l) === lc(nm)) ? p : { ...p, locais: [...(p.locais || []), nm] })); };
   const quickVendedor = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => ((p.vendedores || []).some((v) => v && lc(v.nome) === lc(nm)) ? p : { ...p, vendedores: [...(p.vendedores || []), { id: uid(), nome: nm, tipo: "Outro", doc: "", tel: "", email: "", obs: "" }] })); };
   const quickSocio = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => ((p.socios || []).some((s) => s && lc(s.nome) === lc(nm)) ? p : { ...p, socios: [...(p.socios || []), { id: uid(), nome: nm, doc: "", tel: "", email: "", endereco: "", obs: "" }] })); };
 
-  const porStatus = useMemo(() => { const m = {}; reais.filter((a) => a.tipo === "animal").forEach((a) => { const k = a.status || "Sem status"; m[k] = (m[k] || 0) + 1; }); return Object.entries(m).map(([name, value]) => ({ name, value })); }, [ativos]);
   const invTipo = useMemo(() => { const m = {}; reais.forEach((a) => { m[a.tipo] = (m[a.tipo] || 0) + finance(a).cota; }); return Object.entries(m).map(([name, value]) => ({ name, value })); }, [ativos]);
+  // Idade do plantel: só animais com cadastro próprio, ativos (participação > 0), com nascimento válido
+  const plantel = useMemo(() => {
+    const animais = reais.filter((a) => a && a.tipo === "animal" && !a.arquivada && participacaoAtual(a) > 0);
+    const comIdade = animais.map((a) => ({ a, meses: mesesDe(a.nascimento) })).filter((x) => x.meses != null && x.meses >= 0);
+    const semData = animais.length - comIdade.length;
+    const faixasDef = [["< 1 ano", 0, 12], ["1 a 2 anos", 12, 24], ["2 a 4 anos", 24, 48], ["4 a 6 anos", 48, 72], ["6 a 8 anos", 72, 96], ["+ 8 anos", 96, Infinity]];
+    const faixas = faixasDef.map(([name, lo, hi]) => ({ name, value: comIdade.filter((x) => x.meses >= lo && x.meses < hi).length }));
+    let mediaTxt = "—", media = null, novo = null, velho = null;
+    if (comIdade.length) {
+      media = comIdade.reduce((s, x) => s + x.meses, 0) / comIdade.length;
+      const anos = Math.floor(media / 12), mes = Math.round(media - anos * 12);
+      mediaTxt = anos > 0 ? `${anos} ${anos === 1 ? "ano" : "anos"}${mes ? ` e ${mes} ${mes === 1 ? "mês" : "meses"}` : ""}` : `${mes} ${mes === 1 ? "mês" : "meses"}`;
+      const ord = comIdade.slice().sort((x, y) => x.meses - y.meses);
+      novo = ord[0]; velho = ord[ord.length - 1];
+    }
+    return { total: comIdade.length, semData, faixas, mediaTxt, novo, velho };
+  }, [ativos]);
   const PIE = ["#C6A15B", "#2F5D45", "#7A5230", "#9BB39F", "#E0C079", "#4A4A4A"];
 
   const exportCSV = () => {
@@ -1971,8 +2038,8 @@ export default function App() {
       animal: (ativos || []).filter((a) => a && a.tipo === "animal" && !a.arquivada && a.origem !== "genealogia" && m(a)),
       prenhez: (ativos || []).filter((a) => a && a.tipo === "prenhez" && !a.arquivada && m(a)),
       aspiracao: (ativos || []).filter((a) => a && a.tipo === "aspiracao" && !a.arquivada && m(a)),
-      socios: (db.socios || []).filter((s) => s && norm([s.nome, s.obs, s.doc, s.tel, s.email].join(" ")).includes(qBusca)),
-      leiloes: (db.leiloes || []).filter((l) => l && norm(l.nome).includes(qBusca)),
+      socios: (db.socios || []).filter((s) => s && !s.arquivado && norm([s.nome, s.obs, s.doc, s.tel, s.email].join(" ")).includes(qBusca)),
+      leiloes: (db.leiloes || []).filter((l) => l && !l.arquivado && norm(l.nome).includes(qBusca)),
     };
   }, [qBusca, ativos, db.socios, db.leiloes]);
 
@@ -2050,9 +2117,20 @@ export default function App() {
                   <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="name" tick={{ fontSize: 11, fill: "#5a5346" }} />
                   <YAxis tick={{ fontSize: 11, fill: "#5a5346" }} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} /><Tooltip formatter={(v) => money(v)} />
                   <Bar dataKey="value" fill="#C6A15B" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></div>
-              <div className="card"><div className="card-h">Animais por status</div>
-                <ResponsiveContainer width="100%" height={230}><PieChart><Pie data={porStatus} dataKey="value" nameKey="name" innerRadius={55} outerRadius={90} paddingAngle={2}>
-                  {porStatus.map((e, i) => <Cell key={i} fill={PIE[i % PIE.length]} />)}</Pie><Tooltip /><Legend /></PieChart></ResponsiveContainer></div>
+              <div className="card"><div className="card-h">Idade do Plantel</div>
+                <div className="plantel-media">Idade média do plantel: <b>{plantel.mediaTxt}</b></div>
+                {plantel.total > 0 ? (
+                  <ResponsiveContainer width="100%" height={200}><BarChart data={plantel.faixas} margin={{ left: 6, right: 10, top: 6 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="name" tick={{ fontSize: 10.5, fill: "#5a5346" }} interval={0} /><YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#5a5346" }} />
+                    <Tooltip formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#1d3a2b" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>
+                ) : <p className="muted small">Nenhum animal com data de nascimento válida para calcular.</p>}
+                <div className="plantel-info">
+                  {plantel.novo && <span>Mais novo: <b>{plantel.novo.a.nome}</b> ({idade(plantel.novo.a.nascimento)})</span>}
+                  {plantel.velho && <span>Mais velho: <b>{plantel.velho.a.nome}</b> ({idade(plantel.velho.a.nascimento)})</span>}
+                  <span>Considerados: <b>{plantel.total}</b></span>
+                  <span>Sem data: <b>{plantel.semData}</b></span>
+                </div>
+              </div>
             </div>
             <div className="cols-2">
               <div className="card"><div className="card-h">Próximas parcelas</div>
@@ -2081,7 +2159,7 @@ export default function App() {
                   <div className="asset-card" key={a.id} onClick={() => setAberto(a)} onKeyDown={(e) => { if (e.key === "Enter") setAberto(a); }} tabIndex={0} role="button" aria-label={`Abrir ${a.nome}`}>
                     <div className="asset-head">
                       <div className="asset-name serif">{a.nome || "—"}</div>
-                      {a.origem === "genealogia" ? <Badge tone="gold">ancestral</Badge> : a.status ? <Badge tone={statusTone(a.status)}>{a.status}</Badge> : null}
+                      {a.origem === "genealogia" ? <Badge tone="gold">ancestral</Badge> : (a.status && a.tipo !== "animal") ? <Badge tone={statusTone(a.status)}>{a.status}</Badge> : null}
                     </div>
                     <div className="asset-tags">
                       {a.registro && <span className="tag">Reg. {a.registro}</span>}
@@ -2106,22 +2184,27 @@ export default function App() {
         )}
 
         {view === "socios" && (
-          <section className="wrap"><div className="cards-grid wide">
-            {db.socios.filter((s) => {
+          <section className="wrap">
+            {(db.socios || []).some((s) => s && s.arquivado) && (
+              <label className="toggle"><input type="checkbox" checked={verArquivados} onChange={(e) => setVerArquivados(e.target.checked)} /> Mostrar arquivados</label>
+            )}
+            <div className="cards-grid wide">
+            {db.socios.filter((s) => verArquivados ? true : !s.arquivado).filter((s) => {
               if (!qBusca) return true;
               const parts = reais.filter((a) => (a.socios || []).some((x) => x.nome === s.nome));
               return norm([s.nome, s.obs, s.doc, s.tel, s.email, ...parts.map((a) => a.nome)].join(" ")).includes(qBusca);
             }).map((s) => {
               const parts = reais.filter((a) => (a.socios || []).some((x) => x.nome === s.nome));
               return (
-                <div className="card socio-card" key={s.id}>
-                  <div className="socio-top"><div className="avatar">{s.nome.slice(0, 1)}</div><div><div className="serif socio-name">{s.nome}</div><div className="muted small">{s.doc || "—"}</div></div></div>
+                <div className={`card socio-card ${s.arquivado ? "arquivado" : ""}`} key={s.id}>
+                  <div className="socio-top"><div className="avatar">{s.nome.slice(0, 1)}</div><div><div className="serif socio-name">{s.nome}{s.arquivado ? " · arquivado" : ""}</div><div className="muted small">{s.doc || "—"}</div></div></div>
                   <div className="socio-lines">
                     <div><span>Telefone</span><b>{s.tel || "—"}</b></div>
                     <div><span>E-mail</span><b>{s.email || "—"}</b></div>
                     <div><span>Ativos em que participa</span><b>{parts.length}</b></div>
                   </div>
                   <div className="socio-parts">{parts.map((a) => { const sc = a.socios.find((x) => x.nome === s.nome); return <span className="tag" key={a.id} onClick={() => setAberto(a)}>{a.nome} · {sc.pct}%</span>; })}</div>
+                  {isAdmin && <div className="card-acts">{s.arquivado ? <button className="btn btn-mini" onClick={() => restaurarSocio(s)}>Restaurar</button> : <button className="btn-del" onClick={() => excluirSocio(s)} title="Excluir sócio">🗑 Excluir</button>}</div>}
                 </div>
               );
             })}
@@ -2151,8 +2234,12 @@ export default function App() {
         )}
 
         {view === "leiloes" && (
-          <section className="wrap"><div className="cards-grid wide">
-            {db.leiloes.filter((l) => {
+          <section className="wrap">
+            {(db.leiloes || []).some((l) => l && l.arquivado) && (
+              <label className="toggle"><input type="checkbox" checked={verArquivados} onChange={(e) => setVerArquivados(e.target.checked)} /> Mostrar arquivados</label>
+            )}
+            <div className="cards-grid wide">
+            {db.leiloes.filter((l) => verArquivados ? true : !l.arquivado).filter((l) => {
               if (!qBusca) return true;
               const comp = reais.filter((a) => (a.leilao || "") === l.nome);
               return norm([l.nome, ...comp.flatMap((a) => [a.nome, a.vendedor, a.obs])].join(" ")).includes(qBusca);
@@ -2160,12 +2247,13 @@ export default function App() {
               const comp = reais.filter((a) => (a.leilao || "") === l.nome);
               const tot = comp.reduce((s, a) => s + finance(a).total, 0), pago = comp.reduce((s, a) => s + finance(a).pago, 0);
               return (
-                <div className="card" key={l.id}><div className="card-h">{l.nome}</div>
+                <div className={`card ${l.arquivado ? "arquivado" : ""}`} key={l.id}><div className="card-h">{l.nome}{l.arquivado ? " · arquivado" : ""}</div>
                   <div className="socio-lines"><div><span>Ativos comprados</span><b>{comp.length}</b></div>
                     <div><span>Total comprado</span><b className="gold">{fmt(tot)}</b></div><div><span>Pago</span><b className="pos">{fmt(pago)}</b></div>
                     <div><span>Em aberto</span><b className="neg">{fmt(tot - pago)}</b></div></div>
                   <div className="socio-parts">{comp.map((a) => <span className="tag" key={a.id} onClick={() => setAberto(a)}>{a.nome}</span>)}
                     {comp.length === 0 && <span className="muted small">Sem ativos vinculados ainda.</span>}</div>
+                  {isAdmin && <div className="card-acts">{l.arquivado ? <button className="btn btn-mini" onClick={() => restaurarLeilao(l)}>Restaurar</button> : <button className="btn-del" onClick={() => excluirLeilao(l)} title="Excluir leilão">🗑 Excluir</button>}</div>}
                 </div>
               );
             })}
@@ -2201,9 +2289,26 @@ export default function App() {
         animalNames={animalNames} animalReg={animalReg} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
         onSave={salvar} onClose={() => setForm(null)} />}
-      {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onClose={() => setAberto(null)} onUpdate={updateAtivo}
-        onEdit={() => { setForm({ tipo: aberto.tipo, initial: aberto }); setAberto(null); }} onDelete={() => excluir(aberto.id)} />}
+      {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onConfirm={setConfirmar} onClose={() => setAberto(null)} onUpdate={updateAtivo}
+        onEdit={() => { setForm({ tipo: aberto.tipo, initial: aberto }); setAberto(null); }} onDelete={() => pedirExcluirAtivo(aberto)} />}
       {navOpen && <div className="scrim" onClick={() => setNavOpen(false)} />}
+
+      {confirmar && (
+        <div className="modal-bg" onClick={() => setConfirmar(null)}>
+          <div className="modal confirm" onClick={(e) => e.stopPropagation()}>
+            <div className="confirm-h">{confirmar.titulo}</div>
+            <p className="confirm-msg">{confirmar.mensagem}</p>
+            {confirmar.usos && confirmar.usos.length > 0 && (
+              <div className="confirm-usos"><div className="muted small" style={{ marginBottom: 6 }}>Utilizado em:</div>
+                <div className="socio-parts">{confirmar.usos.slice(0, 20).map((n, i) => <span className="tag" key={i}>{n}</span>)}{confirmar.usos.length > 20 && <span className="muted small">+{confirmar.usos.length - 20}</span>}</div></div>
+            )}
+            <div className="confirm-acts">
+              <button className="btn btn-ghost" onClick={() => setConfirmar(null)}>Cancelar</button>
+              {confirmar.botoes.map((b, i) => <button key={i} className={`btn ${b.tone === "danger" ? "btn-danger" : b.tone === "gold" ? "btn-gold" : "btn-ghost"}`} onClick={b.onClick}>{b.label}</button>)}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2371,6 +2476,18 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .rep-inp{flex:1;min-width:180px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px}
 .dash-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap}
 .dash-title{font-size:24px;margin:0;color:var(--ink)}
+.plantel-media{font-size:15px;color:var(--ink);margin:-4px 0 12px}.plantel-media b{font-family:Fraunces,serif;color:var(--forest)}
+.plantel-info{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:12px;font-size:12.5px;color:var(--muted)}.plantel-info b{color:var(--ink)}
+.card-acts{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.btn-del{display:inline-flex;align-items:center;gap:6px;background:transparent;border:1px solid var(--line);color:var(--muted);padding:7px 12px;border-radius:9px;font-size:12.5px;cursor:pointer;font-family:inherit;transition:.15s}
+.btn-del:hover{border-color:var(--neg);color:var(--neg);background:rgba(176,74,58,.05)}
+.btn-danger{background:var(--neg);color:#fff;border:1px solid var(--neg)}.btn-danger:hover{filter:brightness(1.06)}
+.card.arquivado{opacity:.62}
+.confirm{max-width:460px;padding:24px}
+.confirm-h{font-family:Fraunces,serif;font-size:19px;font-weight:600;color:var(--ink);margin-bottom:10px}
+.confirm-msg{font-size:14px;color:var(--txt);line-height:1.5;margin:0 0 14px}
+.confirm-usos{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:16px;max-height:160px;overflow:auto}
+.confirm-acts{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}
 .eye-btn{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border:1px solid var(--line);border-radius:999px;background:#fff;color:var(--muted);font-size:13px;cursor:pointer;transition:.15s}
 .eye-btn:hover{border-color:var(--gold);color:var(--ink)}
 .eye-btn svg{display:block}
