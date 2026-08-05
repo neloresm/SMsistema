@@ -1728,256 +1728,6 @@ function RelatoriosView({ lista, ativos }) {
   );
 }
 
-/* ============================ AUDITORIA =============================== */
-const achaCol = (cols, alvos) => cols.find((c) => alvos.some((a) => norm(c).includes(a)));
-const limpaReg = (v) => norm(v).replace(/[^a-z0-9]/g, "");
-
-function AuditoriaView({ ativos, prefichas, onCriar, onGerarPrefichas, usuario }) {
-  const [linhas, setLinhas] = useState(null);
-  const [erro, setErro] = useState("");
-  const [nomeArq, setNomeArq] = useState("");
-  const [filtro, setFiltro] = useState("todos");
-  const [gerou, setGerou] = useState(false);
-
-  const animaisSis = (ativos || []).filter((a) => a && a.tipo === "animal" && a.origem !== "genealogia" && !a.arquivada);
-
-  const lerArquivo = async (file) => {
-    setErro(""); setLinhas(null); setNomeArq(file.name);
-    try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array" });
-      const todas = [];
-      wb.SheetNames.forEach((aba) => {
-        const js = XLSX.utils.sheet_to_json(wb.Sheets[aba], { defval: "", raw: false });
-        js.forEach((row, i) => todas.push({ __aba: aba, __linha: i + 2, ...row }));
-      });
-      if (!todas.length) { setErro("A planilha não tem linhas de dados."); return; }
-      setLinhas(todas);
-    } catch (e) { setErro("Não consegui ler o arquivo. Envie um .xlsx ou .csv válido."); }
-  };
-
-  const cols = linhas && linhas.length ? Object.keys(linhas[0]).filter((k) => !k.startsWith("__")) : [];
-  const colNome = achaCol(cols, ["nome", "animal", "brinco"]);
-  const colReg = achaCol(cols, ["registro", "rgn", "rgd", "matricula", "matrícula"]);
-  const colLeilao = achaCol(cols, ["leilao", "leilão", "leilo"]);
-
-  const idx = useMemo(() => {
-    const porReg = new Map(), porNome = new Map(), porNorm = new Map();
-    animaisSis.forEach((a) => {
-      if (a.registro) porReg.set(limpaReg(a.registro), a);
-      if (a.nome) { porNome.set(a.nome.trim(), a); const n = norm(a.nome).replace(/\s+/g, " ").trim(); if (!porNorm.has(n)) porNorm.set(n, []); porNorm.get(n).push(a); }
-    });
-    return { porReg, porNome, porNorm };
-  }, [ativos]);
-
-  const resultado = useMemo(() => {
-    if (!linhas) return null;
-    const usados = new Set();
-    const doExcel = [];
-    linhas.forEach((row) => {
-      const nome = colNome ? String(row[colNome] || "").trim() : "";
-      const reg = colReg ? String(row[colReg] || "").trim() : "";
-      const leilao = colLeilao ? String(row[colLeilao] || "").trim() : "";
-      if (!nome && !reg) return;
-      let match = null, criterio = "", duvida = false;
-      if (reg && idx.porReg.has(limpaReg(reg))) { match = idx.porReg.get(limpaReg(reg)); criterio = "registro"; }
-      if (!match && nome && idx.porNome.has(nome)) { match = idx.porNome.get(nome); criterio = "nome exato"; }
-      if (!match && nome) {
-        const cand = idx.porNorm.get(norm(nome).replace(/\s+/g, " ").trim()) || [];
-        if (cand.length === 1) { match = cand[0]; criterio = "nome sem acento/maiúscula"; }
-        else if (cand.length > 1) {
-          const porLeilao = cand.filter((a) => leilao && lc(a.leilao || "") === lc(leilao));
-          if (porLeilao.length === 1) { match = porLeilao[0]; criterio = "nome + leilão"; }
-          else { match = cand[0]; criterio = "nome parecido"; duvida = true; }
-        }
-      }
-      // registro divergente => marcar como dúvida (nomes parecidos não bastam)
-      if (match && reg && match.registro && limpaReg(match.registro) !== limpaReg(reg) && criterio !== "registro") duvida = true;
-      if (match) usados.add(match.id);
-      doExcel.push({ row, nome, reg, leilao, match, criterio, duvida });
-    });
-    const soNoSistema = animaisSis.filter((a) => !usados.has(a.id));
-    return { doExcel, soNoSistema, usados };
-  }, [linhas, colNome, colReg, colLeilao, ativos]);
-
-  if (!linhas) {
-    return (
-      <section className="wrap">
-        <div className="card">
-          <div className="card-h">Auditoria — Conferência de dados com Excel</div>
-          <p className="muted" style={{ marginTop: -4 }}>Envie sua planilha (.xlsx ou .csv). O sistema compara os animais da planilha com os cadastrados, apontando o que falta de cada lado. <b>Nada é criado, apagado ou alterado</b> — é só leitura.</p>
-          <label className="btn btn-gold" style={{ display: "inline-block", cursor: "pointer" }}>
-            ⤒ Escolher planilha
-            <input type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }} onChange={(e) => e.target.files[0] && lerArquivo(e.target.files[0])} />
-          </label>
-          {erro && <p className="auth-erro" style={{ marginTop: 12 }}>{erro}</p>}
-          <p className="muted small" style={{ marginTop: 14 }}>A planilha deve ter uma coluna de <b>nome</b> e, de preferência, uma de <b>registro</b> (o registro tem prioridade no casamento). Uma coluna de <b>leilão</b> ajuda a desempatar nomes iguais.</p>
-        </div>
-      </section>
-    );
-  }
-
-  const faltando = resultado.doExcel.filter((x) => !x.match);
-  const duplicidade = resultado.doExcel.filter((x) => x.match && x.duvida);
-  const encontrados = resultado.doExcel.filter((x) => x.match && !x.duvida);
-  const naoIdent = linhas.filter((row) => { const n = colNome ? String(row[colNome] || "").trim() : ""; const r = colReg ? String(row[colReg] || "").trim() : ""; return !n && !r; });
-
-  const badgeDe = (t) => t === "faltando" ? <Badge tone="neg">Faltando no sistema</Badge>
-    : t === "sistema" ? <Badge tone="gold">Existe apenas no sistema</Badge>
-    : t === "duplicidade" ? <Badge tone="fase">Possível correspondência — revisar</Badge>
-    : <Badge tone="pos">Encontrado nos dois</Badge>;
-
-  const listaFiltrada = () => {
-    if (filtro === "faltando") return faltando.map((x) => ({ ...x, _tipo: "faltando" }));
-    if (filtro === "duplicidade") return duplicidade.map((x) => ({ ...x, _tipo: "duplicidade" }));
-    if (filtro === "sistema") return resultado.soNoSistema.map((a) => ({ _tipo: "sistema", match: a }));
-    if (filtro === "encontrados") return encontrados.map((x) => ({ ...x, _tipo: "encontrado" }));
-    return [
-      ...faltando.map((x) => ({ ...x, _tipo: "faltando" })),
-      ...duplicidade.map((x) => ({ ...x, _tipo: "duplicidade" })),
-      ...resultado.soNoSistema.map((a) => ({ _tipo: "sistema", match: a })),
-      ...encontrados.map((x) => ({ ...x, _tipo: "encontrado" })),
-    ];
-  };
-
-  return (
-    <section className="wrap">
-      <div className="card">
-        <div className="card-h">Resumo da auditoria <span className="muted">· {nomeArq}</span></div>
-        <div className="aud-resumo">
-          <div><span>Animais no Excel</span><b>{resultado.doExcel.length}</b></div>
-          <div><span>Animais no sistema</span><b>{animaisSis.length}</b></div>
-          <div><span>Encontrados nos dois</span><b className="pos">{encontrados.length}</b></div>
-          <div><span>Faltando no sistema</span><b className="neg">{faltando.length}</b></div>
-          <div><span>Apenas no sistema</span><b className="gold">{resultado.soNoSistema.length}</b></div>
-          <div><span>Possíveis duplicidades</span><b>{duplicidade.length}</b></div>
-          <div><span>Não identificados</span><b>{naoIdent.length}</b></div>
-        </div>
-        <p className="muted small" style={{ marginTop: 12 }}>Colunas detectadas — nome: <b>{colNome || "?"}</b> · registro: <b>{colReg || "não encontrada"}</b> · leilão: <b>{colLeilao || "não encontrada"}</b></p>
-        <p className="muted small">Abas lidas: {[...new Set(linhas.map((l) => l.__aba))].map((ab) => `${ab} (${linhas.filter((l) => l.__aba === ab).length})`).join(" · ")}</p>
-        <div className="rep-tools" style={{ marginTop: 8 }}>
-          <button className="btn btn-gold" disabled={!faltando.length || gerou} onClick={() => { onGerarPrefichas(faltando, { arquivo: nomeArq, abas: [...new Set(linhas.map((l) => l.__aba))], totalExcel: resultado.doExcel.length, colNome, colReg, colLeilao }); setGerou(true); }}>
-            {gerou ? "✓ Pré-fichas geradas" : `Gerar ${faltando.length} pré-ficha(s) das faltantes`}
-          </button>
-          <button className="btn btn-ghost" onClick={() => { setLinhas(null); setNomeArq(""); setGerou(false); }}>Trocar planilha</button>
-        </div>
-        <p className="muted small" style={{ marginTop: 6 }}>As pré-fichas ficam pendentes na <b>Central de Revisão</b>. Nada vira cadastro sem você aprovar.</p>
-      </div>
-
-      <div className="card">
-        <div className="aud-filtros">
-          {[["todos", "Todos"], ["faltando", `Faltando no sistema (${faltando.length})`], ["sistema", `Apenas no sistema (${resultado.soNoSistema.length})`], ["duplicidade", `Revisar (${duplicidade.length})`], ["encontrados", `Encontrados (${encontrados.length})`]].map(([k, l]) => (
-            <button key={k} className={`seg ${filtro === k ? "on" : ""}`} onClick={() => setFiltro(k)}>{l}</button>
-          ))}
-        </div>
-
-        <div className="aud-lista">
-          {listaFiltrada().map((item, i) => {
-            const t = item._tipo;
-            if (t === "sistema") {
-              const a = item.match;
-              return (
-                <div className="aud-item" key={"s" + a.id}>
-                  <div className="aud-item-h"><b>{a.nome}</b> {badgeDe("sistema")}</div>
-                  <div className="aud-item-b muted small">Registro: {a.registro || "—"} · Leilão: {a.leilao || "—"}. Cadastrado no sistema, mas não encontrado na planilha do Excel.</div>
-                  <div className="aud-acts"><button className="btn btn-mini" onClick={() => onCriar && onCriar(a)}>Ver ficha</button></div>
-                </div>
-              );
-            }
-            const x = item;
-            return (
-              <div className="aud-item" key={"e" + i}>
-                <div className="aud-item-h"><b>{x.nome || "(sem nome)"}</b> {badgeDe(t)}</div>
-                <div className="aud-item-b muted small">
-                  Registro: {x.reg || "—"} · Leilão: {x.leilao || "—"} · Excel: aba <b>{x.row.__aba}</b>, linha <b>{x.row.__linha}</b>.
-                  {t === "faltando" && <> Motivo: não há no sistema nenhum animal com esse registro nem com esse nome (exato ou sem acento/maiúscula).</>}
-                  {t === "duplicidade" && <> Casou por nome parecido com <b>{x.match.nome}</b>, mas o registro diverge ou está ausente. Revise antes de confiar.</>}
-                  {t === "encontrado" && <> Corresponde a <b>{x.match.nome}</b> (por {x.criterio}).</>}
-                </div>
-                {t === "faltando" && <div className="aud-acts"><button className="btn btn-mini gold" onClick={() => onCriar && onCriar(null, x)}>Revisar / Criar cadastro</button></div>}
-                {t === "duplicidade" && <div className="aud-acts"><button className="btn btn-mini" onClick={() => onCriar && onCriar(x.match)}>Ver ficha do sistema</button></div>}
-              </div>
-            );
-          })}
-          {listaFiltrada().length === 0 && <p className="muted small">Nada neste filtro.</p>}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-/* ======================= CENTRAL DE REVISÃO ========================== */
-function RevisaoView({ prefichas, migracoes, onVer, onEditar, onAprovar, onIgnorar, onExcluir }) {
-  const [filtro, setFiltro] = useState("pendente");
-  const pf = prefichas || [];
-  const cont = {
-    pendente: pf.filter((x) => x.status === "pendente").length,
-    aprovada: pf.filter((x) => x.status === "aprovada").length,
-    ignorada: pf.filter((x) => x.status === "ignorada").length,
-    todas: pf.length,
-  };
-  const lista = filtro === "todas" ? pf : pf.filter((x) => x.status === filtro);
-
-  return (
-    <section className="wrap">
-      <div className="card">
-        <div className="card-h">Central de Revisão</div>
-        <p className="muted small" style={{ marginTop: -4 }}>Pré-fichas geradas pela Migração do Excel. Nenhuma vira cadastro sem você clicar em <b>Aprovar cadastro</b>.</p>
-        <div className="aud-filtros" style={{ marginTop: 10 }}>
-          {[["pendente", `Pendentes (${cont.pendente})`], ["aprovada", `Aprovadas (${cont.aprovada})`], ["ignorada", `Ignoradas (${cont.ignorada})`], ["todas", `Todas (${cont.todas})`]].map(([k, l]) => (
-            <button key={k} className={`seg ${filtro === k ? "on" : ""}`} onClick={() => setFiltro(k)}>{l}</button>
-          ))}
-        </div>
-        <div className="aud-lista">
-          {lista.map((x) => {
-            const d = x.dados || {};
-            return (
-              <div className="aud-item preficha" key={x.id}>
-                <div className="aud-item-h">
-                  <b>{d.nome || "(sem nome)"}</b>
-                  {x.status === "pendente" && <Badge tone="fase">Pendente de aprovação</Badge>}
-                  {x.status === "aprovada" && <Badge tone="pos">Aprovada</Badge>}
-                  {x.status === "ignorada" && <Badge tone="gold">Ignorada</Badge>}
-                  <span className="tag">{d.tipo || "animal"}</span>
-                </div>
-                <div className="aud-item-b muted small">
-                  Registro: {d.registro || "—"} · Leilão: {d.leilao || "—"} · Origem: {x.arquivo || "Excel"} (aba {x.aba}, linha {x.linha}).
-                  {x.status === "aprovada" && <> Aprovada por <b>{x.aprovadoPor}</b> em {dataBR(x.aprovadoEm)}.</>}
-                  {x.excel && <div style={{ marginTop: 4 }}>Dados do Excel: {x.excel}</div>}
-                </div>
-                {x.status === "pendente" && (
-                  <div className="aud-acts">
-                    <button className="btn btn-mini" onClick={() => onVer(x)}>Visualizar</button>
-                    <button className="btn btn-mini" onClick={() => onEditar(x)}>Editar</button>
-                    <button className="btn btn-mini gold" onClick={() => onAprovar(x)}>Aprovar cadastro</button>
-                    <button className="btn btn-mini" onClick={() => onIgnorar(x.id)}>Ignorar</button>
-                    <button className="btn-del" onClick={() => onExcluir(x.id)}>🗑 Excluir</button>
-                  </div>
-                )}
-                {x.status === "aprovada" && x.animalId && <div className="aud-acts"><button className="btn btn-mini" onClick={() => onVer(x)}>Ver ficha</button></div>}
-                {x.status === "ignorada" && <div className="aud-acts"><button className="btn btn-mini gold" onClick={() => onAprovar(x)}>Aprovar mesmo assim</button><button className="btn-del" onClick={() => onExcluir(x.id)}>🗑 Excluir</button></div>}
-              </div>
-            );
-          })}
-          {lista.length === 0 && <p className="muted small">Nenhuma pré-ficha neste filtro.</p>}
-        </div>
-      </div>
-
-      {(migracoes || []).length > 0 && (
-        <div className="card">
-          <div className="card-h">Histórico de migrações</div>
-          <div className="tbl-wrap"><table className="tbl">
-            <thead><tr><th>Data</th><th>Arquivo</th><th>Abas</th><th>Registros</th><th>Geradas</th><th>Por</th></tr></thead>
-            <tbody>{(migracoes || []).slice().reverse().map((m) => (
-              <tr key={m.id}><td>{dataBR(m.data)}</td><td>{m.arquivo}</td><td>{(m.abas || []).join(", ")}</td><td>{m.totalRegistros}</td><td>{m.geradas}</td><td>{m.por || "—"}</td></tr>
-            ))}</tbody>
-          </table></div>
-        </div>
-      )}
-    </section>
-  );
-}
-
 /* ================================= APP ================================= */
 export default function App() {
   const [db, setDb] = useState(SEED);
@@ -2014,8 +1764,6 @@ export default function App() {
       locais: Array.isArray(base.locais) ? base.locais.filter(Boolean) : [],
       vendedores: Array.isArray(base.vendedores) ? base.vendedores.filter(Boolean) : [],
       users: Array.isArray(base.users) ? base.users.filter(Boolean) : [],
-      prefichas: Array.isArray(base.prefichas) ? base.prefichas.filter(Boolean) : [],
-      migracoes: Array.isArray(base.migracoes) ? base.migracoes.filter(Boolean) : [],
     };
   };
 
@@ -2139,12 +1887,6 @@ export default function App() {
   const count = (t) => (ativos || []).filter((a) => a && a.tipo === t && a.origem !== "genealogia" && !a.arquivada).length;
 
   const salvar = (d) => {
-    // edição de pré-ficha: só atualiza a pré-ficha (não cria nada no banco principal)
-    if (d.__pref) {
-      const prefId = d.__pref; const dados = { ...d }; delete dados.__pref; delete dados.__fromOrigem; delete dados.origemLabel;
-      setDb((p) => ({ ...p, prefichas: (p.prefichas || []).map((x) => (x.id === prefId ? { ...x, dados } : x)) }));
-      setForm(null); return;
-    }
     if (d.tipo === "prenhez" || d.tipo === "aspiracao") d = { ...d, nome: rotuloReprod(d) };
     const origemId = d.origemId; const veioDeOrigem = d.__fromOrigem;
     d = { ...d }; delete d.__fromOrigem;
@@ -2211,30 +1953,6 @@ export default function App() {
     setForm({ tipo: "animal", initial: novo });
   };
   const excluir = (id) => { setDb((p) => ({ ...p, ativos: p.ativos.filter((a) => a.id !== id) })); setAberto(null); };
-
-  /* ---- Migração Inteligente: pré-fichas + histórico (nada entra no banco sem aprovar) ---- */
-  const registrarMigracao = (info, novasPrefichas) => {
-    setDb((p) => ({
-      ...p,
-      prefichas: [...(p.prefichas || []), ...novasPrefichas],
-      migracoes: [...(p.migracoes || []), info],
-    }));
-  };
-  const aprovarPreficha = (pf) => {
-    // cria o registro definitivo a partir da pré-ficha, preservando tudo; exige que ESTA ação seja clicada
-    const novo = { ...pf.dados, id: uid(), origem: undefined, __fromOrigem: undefined,
-      historico: [{ id: uid(), data: today(), tipo: "Migração", desc: `Aprovado da migração (${pf.arquivo || "Excel"})`, responsavel: profile && profile.nome }] };
-    delete novo.__pref;
-    setDb((p) => ({
-      ...p,
-      ativos: [novo, ...p.ativos],
-      prefichas: (p.prefichas || []).map((x) => (x.id === pf.id ? { ...x, status: "aprovada", aprovadoPor: profile && profile.nome, aprovadoEm: today(), animalId: novo.id } : x)),
-    }));
-    setAberto(novo);
-  };
-  const editarPreficha = (pf) => setForm({ tipo: pf.dados.tipo || "animal", initial: { ...pf.dados, __pref: pf.id, __fromOrigem: true, origemLabel: `Pré-ficha da migração (${pf.arquivo || "Excel"})` } });
-  const marcarPreficha = (id, status) => setDb((p) => ({ ...p, prefichas: (p.prefichas || []).map((x) => (x.id === id ? { ...x, status } : x)) }));
-  const excluirPreficha = (id) => setDb((p) => ({ ...p, prefichas: (p.prefichas || []).filter((x) => x.id !== id) }));
 
   const [confirmar, setConfirmar] = useState(null);
   const [verArquivados, setVerArquivados] = useState(false);
@@ -2326,7 +2044,7 @@ export default function App() {
   }, [qBusca, ativos, db.socios, db.leiloes]);
 
   const nav = [["dashboard", "◆", "Painel"], ["animal", "❖", "Animais"], ["prenhez", "◗", "Prenhezes"], ["aspiracao", "✧", "Aspirações"],
-    ["socios", "◎", "Sócios"], ["parcelas", "▤", "Parcelas"], ["leiloes", "⚑", "Leilões"], ["relatorios", "▦", "Relatórios"], ["auditoria", "◈", "Migração Excel"], ["revisao", "◇", "Central de Revisão"],
+    ["socios", "◎", "Sócios"], ["parcelas", "▤", "Parcelas"], ["leiloes", "⚑", "Leilões"], ["relatorios", "▦", "Relatórios"],
     ...(isAdmin ? [["usuarios", "◐", "Usuários"]] : [])];
 
   if (!authReady) return <div className="auth-bg"><style>{CSS}</style><div className="auth-card"><div className="auth-brand"><div className="brand-mark">SM</div><div><div className="serif auth-title">SM sistema</div><div className="brand-sub">Gado de Elite</div></div></div><div className="auth-note">Carregando…</div></div></div>;
@@ -2546,38 +2264,6 @@ export default function App() {
           <RelatoriosView lista={ativos} ativos={ativos} />
         )}
 
-        {view === "auditoria" && (
-          <AuditoriaView ativos={ativos} prefichas={db.prefichas || []} usuario={profile && profile.nome}
-            onCriar={(animalSis, linhaExcel) => {
-              if (animalSis) { setAberto(animalSis); return; }
-              if (linhaExcel) {
-                const novo = { id: uid(), tipo: "animal", raca: "Nelore", comissaoPct: 8, socios: [], videos: [], historico: [],
-                  nome: linhaExcel.nome || "", registro: linhaExcel.reg || "", leilao: linhaExcel.leilao || "", __fromOrigem: true, origemLabel: "Importado da auditoria (Excel)" };
-                setForm({ tipo: "animal", initial: novo });
-              }
-            }}
-            onGerarPrefichas={(faltando, info) => {
-              const now = today();
-              const jaTem = (x) => (db.prefichas || []).some((p) => p.status !== "ignorada" && ((x.reg && lc(p.dados.registro) === lc(x.reg)) || (!x.reg && x.nome && lc(p.dados.nome) === lc(x.nome))));
-              const novas = faltando.filter((x) => !jaTem(x)).map((x) => {
-                const row = x.row; const abaLow = norm(row.__aba);
-                const tipo = abaLow.includes("prenhez") ? "prenhez" : abaLow.includes("aspira") ? "aspiracao" : "animal";
-                const extras = Object.keys(row).filter((k) => !k.startsWith("__")).map((k) => `${k}: ${row[k]}`).filter((s) => !/: $/.test(s)).join(" | ");
-                const dados = { tipo, nome: x.nome, registro: x.reg, leilao: x.leilao, raca: "Nelore", comissaoPct: 8, socios: [], videos: [], historico: [], obs: extras };
-                return { id: uid(), status: "pendente", arquivo: info.arquivo, criadoEm: now, criadoPor: profile && profile.nome, aba: row.__aba, linha: row.__linha, criterio: "faltando", dados, excel: extras };
-              });
-              const registro = { id: uid(), data: now, arquivo: info.arquivo, abas: info.abas, totalRegistros: info.totalExcel, geradas: novas.length, por: profile && profile.nome };
-              registrarMigracao(registro, novas);
-              setView("revisao");
-            }} />
-        )}
-
-        {view === "revisao" && (
-          <RevisaoView prefichas={db.prefichas || []} migracoes={db.migracoes || []}
-            onVer={(pf) => { if (pf.animalId) { const a = ativos.find((x) => x.id === pf.animalId); if (a) return setAberto(a); } setForm({ tipo: pf.dados.tipo || "animal", initial: { ...pf.dados, __pref: pf.id, __fromOrigem: true, origemLabel: `Pré-ficha (${pf.arquivo || "Excel"})` } }); }}
-            onEditar={editarPreficha} onAprovar={aprovarPreficha} onIgnorar={(id) => marcarPreficha(id, "ignorada")} onExcluir={excluirPreficha} />
-        )}
-
         {view === "usuarios" && isAdmin && (
           <UsersView meId={session.user.id} />
         )}
@@ -2788,18 +2474,6 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .rep-busca{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .rep-sel{padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;font-size:14px;min-width:150px}
 .rep-inp{flex:1;min-width:180px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px}
-.aud-resumo{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:4px}
-.aud-resumo>div{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:2px}
-.aud-resumo span{font-size:11.5px;color:var(--muted)}.aud-resumo b{font-size:20px;font-family:Fraunces,serif}
-.aud-filtros{display:flex;flex-wrap:wrap;gap:6px;border:1px solid var(--line);border-radius:12px;overflow:hidden;padding:4px;margin-bottom:14px}
-.aud-filtros .seg{border-radius:8px}.aud-filtros .seg.on{background:var(--forest);color:#fff}
-.aud-lista{display:flex;flex-direction:column;gap:10px}
-.aud-item{border:1px solid var(--line);border-radius:11px;padding:12px 14px;background:#fff}
-.aud-item-h{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:15px}
-.aud-item-b{margin-top:5px;line-height:1.5}
-.aud-acts{margin-top:9px;display:flex;gap:8px}
-.btn-mini.gold{border-color:var(--gold);color:#8a6a2c}
-.aud-item.preficha{border-left:3px solid var(--gold)}
 .dash-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap}
 .dash-title{font-size:24px;margin:0;color:var(--ink)}
 .plantel-media{font-size:15px;color:var(--ink);margin:-4px 0 12px}.plantel-media b{font-family:Fraunces,serif;color:var(--forest)}
