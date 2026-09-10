@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid, Legend,
+  ResponsiveContainer, CartesianGrid, Legend, LineChart, Line,
 } from "recharts";
 import { supabase } from "./supabase";
 import * as XLSX from "xlsx";
@@ -58,6 +58,26 @@ function mesesDe(nasc) {
   let m = (h.getFullYear() - d.getFullYear()) * 12 + (h.getMonth() - d.getMonth());
   if (h.getDate() < d.getDate()) m--;
   return m < 0 ? null : m;
+}
+// dias entre duas datas ISO (aaaa-mm-dd)
+function diasEntre(a, b) {
+  if (!a || !b) return null;
+  const d1 = new Date(a + "T00:00:00"), d2 = new Date(b + "T00:00:00");
+  return Math.round((d2 - d1) / 86400000);
+}
+// pesagens ordenadas por data, com GMD (kg/dia) entre pesagens consecutivas
+function pesagensCalc(a) {
+  const lista = (a && a.pesagens || []).filter((p) => p && p.data && num(p.peso) > 0)
+    .slice().sort((x, y) => (x.data || "").localeCompare(y.data || ""));
+  return lista.map((p, i) => {
+    let gmd = null, dias = null;
+    if (i > 0) {
+      const ant = lista[i - 1];
+      dias = diasEntre(ant.data, p.data);
+      if (dias && dias > 0) gmd = Math.round(((num(p.peso) - num(ant.peso)) / dias) * 1000) / 1000;
+    }
+    return { ...p, peso: num(p.peso), gmd, dias, ordem: i + 1 };
+  });
 }
 /* Fase automática da fêmea: Bezerra (0–12m), Novilha (13–35m), Matriz (36m+ ou após 1º parto registrado) */
 function faseAnimal(a, ativos) {
@@ -1047,8 +1067,144 @@ function ComprasAdicSecao({ a, compras, partAtual, socAtual, socioNames, onQuick
   );
 }
 
+/* -------------------------- seção Pesagens / GMD ----------------------- */
+function PesagensSecao({ a, onAdd, onDel, canDelete }) {
+  const vazio = { data: today(), peso: "", marco: "", obs: "" };
+  const [f, setF] = useState(vazio);
+  const [aberto, setAberto] = useState(false);
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+
+  const lista = pesagensCalc(a);
+  const ultima = lista[lista.length - 1] || null;
+  const primeira = lista[0] || null;
+  // GMD geral (da 1ª à última pesagem)
+  let gmdGeral = null;
+  if (primeira && ultima && ultima !== primeira) {
+    const d = diasEntre(primeira.data, ultima.data);
+    if (d > 0) gmdGeral = Math.round(((ultima.peso - primeira.peso) / d) * 1000) / 1000;
+  }
+  // marcos: peso ao nascer e à desmama
+  const nascer = lista.find((p) => p.marco === "nascer") || null;
+  const desmama = lista.find((p) => p.marco === "desmama") || null;
+  let gmdPreDesmama = null;
+  if (nascer && desmama) {
+    const d = diasEntre(nascer.data, desmama.data);
+    if (d > 0) gmdPreDesmama = Math.round(((desmama.peso - nascer.peso) / d) * 1000) / 1000;
+  }
+  const chart = lista.map((p) => ({ data: dataBR(p.data).slice(0, 5), peso: p.peso }));
+
+  const salvar = () => {
+    if (!(num(f.peso) > 0) || !f.data) return;
+    onAdd({ id: uid(), data: f.data, peso: num(f.peso), marco: f.marco || "", obs: (f.obs || "").trim() });
+    setF(vazio); setAberto(false);
+  };
+
+  return (
+    <div className="fsec">
+      <div className="fsec-h">Pesagens & desempenho <span className="muted small hint">— peso em kg, marcos (nascer/desmama) e GMD</span></div>
+
+      {(nascer || desmama) && (
+        <div className="pes-marcos">
+          {nascer && <span className="marco-tag nasc">🐣 Ao nascer: <b>{nascer.peso} kg</b> ({dataBR(nascer.data)})</span>}
+          {desmama && <span className="marco-tag desm">🌾 À desmama: <b>{desmama.peso} kg</b> ({dataBR(desmama.data)})</span>}
+          {gmdPreDesmama != null && <span className="marco-tag gmd">GMD nascer→desmama: <b>{gmdPreDesmama} kg/dia</b></span>}
+        </div>
+      )}
+
+      {lista.length > 0 && (
+        <div className="pes-kpis">
+          <div><span>Peso atual</span><b>{ultima.peso} kg</b></div>
+          {ultima.gmd != null && <div><span>Último GMD</span><b className={ultima.gmd >= 0 ? "pos" : "neg"}>{ultima.gmd} kg/dia</b></div>}
+          {gmdGeral != null && <div><span>GMD geral</span><b>{gmdGeral} kg/dia</b></div>}
+          <div><span>Pesagens</span><b>{lista.length}</b></div>
+        </div>
+      )}
+
+      {lista.length >= 2 && (
+        <div style={{ marginTop: 10 }}>
+          <ResponsiveContainer width="100%" height={190}><LineChart data={chart} margin={{ left: 4, right: 12, top: 6 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="data" tick={{ fontSize: 11, fill: "#5a5346" }} /><YAxis tick={{ fontSize: 11, fill: "#5a5346" }} width={40} />
+            <Tooltip formatter={(v) => [`${v} kg`, "Peso"]} /><Line type="monotone" dataKey="peso" stroke="#1d3a2b" strokeWidth={2.4} dot={{ r: 3, fill: "#C6A15B" }} /></LineChart></ResponsiveContainer>
+        </div>
+      )}
+
+      {lista.length > 0 && (
+        <div className="tbl-wrap" style={{ marginTop: 10 }}><table className="tbl">
+          <thead><tr><th>Data</th><th>Peso (kg)</th><th>Marco</th><th>GMD (kg/dia)</th><th>Intervalo</th><th>Obs.</th><th></th></tr></thead>
+          <tbody>{lista.slice().reverse().map((p) => (
+            <tr key={p.id}>
+              <td>{dataBR(p.data)}</td><td><b>{p.peso}</b></td>
+              <td>{p.marco === "nascer" ? <span className="tag tag-video">🐣 nascer</span> : p.marco === "desmama" ? <span className="tag tag-video">🌾 desmama</span> : "—"}</td>
+              <td>{p.gmd != null ? <span className={p.gmd >= 0 ? "pos" : "neg"}>{p.gmd}</span> : "—"}</td>
+              <td>{p.dias != null ? `${p.dias} dias` : "1ª pesagem"}</td>
+              <td className="muted small">{p.obs || "—"}</td>
+              <td>{canDelete && <button className="btn btn-mini" onClick={() => onDel(p.id)}>excluir</button>}</td>
+            </tr>
+          ))}</tbody>
+        </table></div>
+      )}
+      {lista.length === 0 && <p className="muted small">Nenhuma pesagem registrada.</p>}
+
+      {!aberto ? (
+        <button className="btn btn-ghost" style={{ marginTop: 12 }} onClick={() => { setF(vazio); setAberto(true); }}>+ Registrar pesagem</button>
+      ) : (
+        <div className="venda-form">
+          <div className="grid">
+            <label className="field"><span>Data da pesagem</span><input type="date" value={f.data} onChange={(e) => set("data", e.target.value)} /></label>
+            <label className="field"><span>Peso (kg)</span><input type="number" step="any" placeholder="ex.: 480" value={f.peso} onChange={(e) => set("peso", e.target.value)} /></label>
+            <label className="field"><span>Marco</span>
+              <select value={f.marco} onChange={(e) => set("marco", e.target.value)}>
+                <option value="">Pesagem comum</option>
+                <option value="nascer">Peso ao nascer</option>
+                <option value="desmama">Peso à desmama</option>
+              </select></label>
+            <label className="field wide"><span>Observações</span><input value={f.obs} onChange={(e) => set("obs", e.target.value)} placeholder="opcional" /></label>
+          </div>
+          <div className="rep-tools">
+            <button className="btn btn-gold" onClick={salvar} disabled={!(num(f.peso) > 0)}>Salvar pesagem</button>
+            <button className="btn btn-ghost" onClick={() => setAberto(false)}>Cancelar</button>
+          </div>
+          <p className="muted small">O GMD é calculado automaticamente entre pesagens. Marque "ao nascer" e "à desmama" para ver o ganho pré-desmama.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------- seção Descendência ------------------------- */
+function DescendenciaSecao({ a, ativos, onAbrir }) {
+  const nome = norm(a.nome);
+  if (!nome) return null;
+  // crias: registros onde este animal é mãe/doadora ou pai
+  const comoMae = (ativos || []).filter((x) => x && x.id !== a.id && (norm(x.mae) === nome || norm(x.doadora) === nome));
+  const comoPai = (ativos || []).filter((x) => x && x.id !== a.id && (norm(x.pai) === nome || norm(x.touro) === nome));
+  const total = comoMae.length + comoPai.length;
+  if (total === 0) return null;
+
+  const linha = (x) => (
+    <div className="desc-item" key={x.id} onClick={() => onAbrir(x)}>
+      <div><b>{x.nome}</b> <span className="tag">{x.tipo}</span>{x.origem === "genealogia" && <span className="tag">ancestral</span>}</div>
+      <div className="muted small">{x.registro ? `Reg. ${x.registro} · ` : ""}{x.sexo || ""}{x.nascimento ? ` · ${dataBR(x.nascimento)}` : ""}</div>
+    </div>
+  );
+
+  return (
+    <div className="fsec">
+      <div className="fsec-h">Descendência <span className="muted small hint">— crias vinculadas a este animal ({total})</span></div>
+      {comoMae.length > 0 && <>
+        <div className="desc-sub">Como mãe / doadora ({comoMae.length})</div>
+        <div className="desc-lista">{comoMae.map(linha)}</div>
+      </>}
+      {comoPai.length > 0 && <>
+        <div className="desc-sub" style={{ marginTop: 10 }}>Como pai ({comoPai.length})</div>
+        <div className="desc-lista">{comoPai.map(linha)}</div>
+      </>}
+    </div>
+  );
+}
+
 /* ------------------------------ ficha detalhe -------------------------- */
-function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onConfirm }) {
+function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onConfirm }) {
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", h);
@@ -1115,6 +1271,8 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
     onConfirm({ titulo: "Excluir esta venda?", mensagem: "A venda será removida e a sociedade será recalculada. Esta ação não pode ser desfeita.", usos: [], botoes: [{ label: "Excluir", tone: "danger", onClick: () => { delVendaExec(id); onConfirm(null); } }] });
   };
   const setSociedadeAtual = (linhas) => onUpdate({ ...a, sociedadeAtual: (linhas || []).filter((s) => s && (s.nome || s.pct)) });
+  const addPesagem = (p) => onUpdate({ ...a, pesagens: [...(a.pesagens || []), p] });
+  const delPesagem = (id) => onUpdate({ ...a, pesagens: (a.pesagens || []).filter((p) => p.id !== id) });
 
   const addCompraAdic = (c, socLinhas) => {
     const antes = partAtual;
@@ -1260,6 +1418,12 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, ativos, canDelete, so
           {(a.videos || []).some((v) => v && v.url) && (
             <div className="fsec"><div className="fsec-h">Vídeos</div><div className="videos-list">{a.videos.filter((v) => v && v.url).map((v) => <VideoBlock key={v.id} v={v} />)}</div></div>
           )}
+
+          {a.tipo === "animal" && a.origem !== "genealogia" && (
+            <PesagensSecao a={a} onAdd={addPesagem} onDel={delPesagem} canDelete={canDelete} />
+          )}
+
+          <DescendenciaSecao a={a} ativos={ativos} onAbrir={(x) => onAbrir && onAbrir(x)} />
 
           {a.tipo === "animal" && a.origem !== "genealogia" && (
             <VendasSecao a={a} vendas={vendas} partAtual={partAtual} socAtual={socVenda} socioNames={socioNamesGlobais || []} onQuickSocio={onQuickSocio} onAdd={addVenda} onDel={delVenda} canDelete={canDelete} />
@@ -1612,7 +1776,7 @@ const BUSCA_TIPOS = [["geral", "Geral"], ["animal", "Animal"], ["socio", "Sócio
 const EYE_ON = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>;
 const EYE_OFF = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></svg>;
 
-function RelatoriosView({ lista, ativos }) {
+function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const [tipoBusca, setTipoBusca] = useState("geral");
   const [q, setQ] = useState("");
   const [campos, setCampos] = useState({ basico: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, obs: false });
@@ -1782,7 +1946,95 @@ function RelatoriosView({ lista, ativos }) {
         </div>
         {(!selecionados.length || !nCampos) && <p className="muted small">Selecione ao menos um animal e uma informação para exportar.</p>}
       </div>
+
+      <BackupSecao db={db} onRestaurar={onRestaurar} isAdmin={isAdmin} usuario={usuario} ativos={ativos} />
     </section>
+  );
+}
+
+/* --------------------------- Backup / Restauração ---------------------- */
+function BackupSecao({ db, onRestaurar, isAdmin, usuario, ativos }) {
+  const [msg, setMsg] = useState("");
+  const [pendente, setPendente] = useState(null);   // conteúdo aguardando confirmação de restauro
+  const inputRef = useRef(null);
+
+  const contar = (b) => ({
+    animais: (b.ativos || []).filter((a) => a && a.tipo === "animal").length,
+    prenhezes: (b.ativos || []).filter((a) => a && a.tipo === "prenhez").length,
+    aspiracoes: (b.ativos || []).filter((a) => a && a.tipo === "aspiracao").length,
+    socios: (b.socios || []).length, leiloes: (b.leiloes || []).length,
+  });
+
+  const baixar = () => {
+    const backup = { _tipo: "sm-sistema-backup", _versao: 1, _data: new Date().toISOString(), _por: usuario || "", dados: db };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const hoje = new Date().toISOString().slice(0, 10);
+    link.href = url; link.download = `backup-sm-sistema-${hoje}.json`;
+    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    setMsg("Backup baixado. Guarde esse arquivo em local seguro (nuvem, e-mail, pen drive).");
+  };
+
+  const escolherArquivo = async (file) => {
+    setMsg("");
+    try {
+      const txt = await file.text();
+      const obj = JSON.parse(txt);
+      const dados = obj && obj._tipo === "sm-sistema-backup" ? obj.dados : obj;
+      if (!dados || (!Array.isArray(dados.ativos) && !Array.isArray(dados.socios))) {
+        setMsg("Esse arquivo não parece um backup válido do SM sistema."); return;
+      }
+      setPendente({ dados, nome: file.name, quando: obj._data });
+    } catch (e) { setMsg("Não consegui ler o arquivo. Envie um backup .json gerado pelo próprio sistema."); }
+    if (inputRef.current) inputRef.current.value = "";
+  };
+
+  const confirmarRestauro = () => {
+    onRestaurar(pendente.dados);
+    setPendente(null);
+    setMsg("Backup restaurado. Os dados anteriores foram substituídos pelos do arquivo.");
+  };
+
+  const atual = contar(db);
+
+  return (
+    <div className="card">
+      <div className="card-h">💾 Backup / Cópia de segurança</div>
+      <p className="muted small" style={{ marginTop: -4 }}>
+        Baixe uma cópia completa da sua base ({atual.animais} animais, {atual.prenhezes} prenhezes, {atual.aspiracoes} aspirações, {atual.socios} sócios, {atual.leiloes} leilões). O arquivo contém <b>tudo</b> da sua conta e serve para guardar em segurança ou restaurar depois.
+      </p>
+      <div className="rep-tools">
+        <button className="btn btn-gold" onClick={baixar}>⤓ Baixar backup completo</button>
+        {isAdmin && (
+          <>
+            <button className="btn btn-ghost" onClick={() => inputRef.current && inputRef.current.click()}>⤒ Restaurar de um backup</button>
+            <input ref={inputRef} type="file" accept=".json,application/json" style={{ display: "none" }} onChange={(e) => e.target.files[0] && escolherArquivo(e.target.files[0])} />
+          </>
+        )}
+      </div>
+      {msg && <p className="muted small" style={{ marginTop: 10 }}>{msg}</p>}
+      <p className="muted small" style={{ marginTop: 8 }}>Dica: baixe um backup de tempos em tempos (ex.: uma vez por mês). O arquivo é só seu e não é enviado a lugar nenhum.</p>
+
+      {pendente && (
+        <div className="modal-bg" onClick={() => setPendente(null)}>
+          <div className="modal confirm" onClick={(e) => e.stopPropagation()}>
+            <div className="confirm-h">Restaurar este backup?</div>
+            <p className="confirm-msg">
+              Arquivo: <b>{pendente.nome}</b>{pendente.quando ? ` (de ${new Date(pendente.quando).toLocaleDateString("pt-BR")})` : ""}.<br />
+              Ele contém {contar(pendente.dados).animais} animais, {contar(pendente.dados).socios} sócios, {contar(pendente.dados).leiloes} leilões.<br /><br />
+              <b>Atenção:</b> restaurar vai <b>substituir</b> os dados atuais da sua conta pelos do arquivo. Faça um backup do estado atual antes, se tiver dúvida.
+            </p>
+            <div className="confirm-acts">
+              <button className="btn btn-ghost" onClick={() => setPendente(null)}>Cancelar</button>
+              <button className="btn btn-gold" onClick={baixar}>Baixar backup atual antes</button>
+              <button className="btn btn-danger" onClick={confirmarRestauro}>Restaurar mesmo assim</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2331,7 +2583,7 @@ export default function App() {
         )}
 
         {view === "relatorios" && (
-          <RelatoriosView lista={ativos} ativos={ativos} />
+          <RelatoriosView lista={ativos} ativos={ativos} db={db} onRestaurar={(novo) => { setDb(normalizeDb(novo)); }} isAdmin={isAdmin} usuario={profile && profile.nome} />
         )}
 
         {view === "usuarios" && isAdmin && (
@@ -2359,7 +2611,7 @@ export default function App() {
         animalNames={animalNames} animalReg={animalReg} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
         onSave={salvar} onClose={() => setForm(null)} />}
-      {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onConfirm={setConfirmar} onClose={() => setAberto(null)} onUpdate={updateAtivo}
+      {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo}
         onEdit={() => { setForm({ tipo: aberto.tipo, initial: aberto }); setAberto(null); }} onDelete={() => pedirExcluirAtivo(aberto)} />}
       {navOpen && <div className="scrim" onClick={() => setNavOpen(false)} />}
 
@@ -2546,6 +2798,16 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .rep-inp{flex:1;min-width:180px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px}
 .aud-resumo{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:4px}
 .aud-resumo>div{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:2px}
+.pes-kpis{display:flex;flex-wrap:wrap;gap:10px;margin-top:4px}
+.pes-kpis>div{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:8px 14px;display:flex;flex-direction:column;gap:1px;min-width:110px}
+.pes-kpis span{font-size:11px;color:var(--muted)}.pes-kpis b{font-size:17px;font-family:Fraunces,serif}
+.pes-marcos{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 12px}
+.marco-tag{font-size:12.5px;padding:6px 12px;border-radius:999px;background:var(--paper);border:1px solid var(--line)}
+.marco-tag.nasc{background:#eef6ef;border-color:#bcd9c2}.marco-tag.desm{background:#f6efdd;border-color:#e6d3a2}.marco-tag.gmd{background:#e8f0fb;border-color:#bcd3f0}
+.desc-sub{font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px}
+.desc-lista{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px}
+.desc-item{border:1px solid var(--line);border-radius:9px;padding:9px 12px;cursor:pointer;transition:.15s;background:#fff}
+.desc-item:hover{border-color:var(--gold);box-shadow:var(--shadow-sm)}
 .aud-resumo span{font-size:11.5px;color:var(--muted)}.aud-resumo b{font-size:20px;font-family:Fraunces,serif}
 .aud-filtros{display:flex;flex-wrap:wrap;gap:6px;border:1px solid var(--line);border-radius:12px;overflow:hidden;padding:4px;margin-bottom:14px}
 .aud-filtros .seg{border-radius:8px}.aud-filtros .seg.on{background:var(--forest);color:#fff}
