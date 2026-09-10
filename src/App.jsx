@@ -1472,9 +1472,16 @@ function UsersView({ meId }) {
     if (!excluir || !senha) return;
     setProc(true); setMsgExcl("");
     try {
-      const { data, error } = await supabase.functions.invoke("excluir-usuario", { body: { alvoId: excluir.id, senha } });
+      // 1) reautentica a SUA senha aqui (usa a sessão atual; se a senha errar, o Supabase recusa)
+      const { data: meNow } = await supabase.auth.getUser();
+      const meuEmail = meNow?.user?.email;
+      if (!meuEmail) { setMsgExcl("Sessão expirada. Saia e entre novamente."); setProc(false); return; }
+      const { error: reauthErr } = await supabase.auth.signInWithPassword({ email: meuEmail, password: senha });
+      if (reauthErr) { setMsgExcl("Senha incorreta. Exclusão cancelada."); setProc(false); return; }
+      // 2) chama a função de exclusão (ela revalida que você é admin e protege a conta principal)
+      const { data, error } = await supabase.functions.invoke("excluir-usuario", { body: { alvoId: excluir.id, senhaConfirmada: true } });
       if (error || (data && data.error)) {
-        setMsgExcl((data && data.error) || "Não foi possível excluir. Confira a senha e se a função 'excluir-usuario' está publicada.");
+        setMsgExcl((data && data.error) || "Não foi possível excluir. Verifique se a função 'excluir-usuario' está publicada.");
         setProc(false); return;
       }
       setExcluir(null); setSenha(""); setProc(false); load();
@@ -1780,142 +1787,6 @@ function RelatoriosView({ lista, ativos }) {
 }
 
 
-/* ========================= ASSISTENTE IA ============================= */
-const IA_TIPOS = [
-  ["compra", "Compra de animal"], ["venda", "Venda de participação"], ["compra_adicional", "Compra adicional de participação"],
-  ["prenhez", "Prenhez"], ["aspiracao", "Aspiração"], ["contrato", "Contrato"], ["catalogo", "Catálogo"], ["nao_identificado", "Documento não identificado"],
-];
-const rotuloTipoIA = (t) => (IA_TIPOS.find(([k]) => k === t) || [null, "Documento não identificado"])[1];
-
-function AssistenteIAView({ ativos, prefichas, onVer, onEditar, onAprovar, onRejeitar, onExcluir, onNovaPreficha, onReanalisar, checarDuplicidade }) {
-  const [aba, setAba] = useState("ler");
-  const [estado, setEstado] = useState("idle");  // idle | enviando | analisando | erro | ok
-  const [msg, setMsg] = useState("");
-  const [previa, setPrevia] = useState(null);
-
-  const lerImagem = async (file) => {
-    if (!file) return;
-    const okTipos = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
-    if (!okTipos.includes(file.type)) { setEstado("erro"); setMsg("Formato não aceito. Use JPG, JPEG, PNG ou WEBP."); return; }
-    setPrevia(URL.createObjectURL(file));
-    setEstado("enviando"); setMsg("Enviando imagem para o Storage privado…");
-    try {
-      // 1) upload para bucket privado
-      const ext = (file.name.split(".").pop() || "jpg").toLowerCase();
-      const path = `ia/${today()}/${uid()}.${ext}`;
-      const up = await supabase.storage.from("ia-docs").upload(path, file, { contentType: file.type, upsert: false });
-      if (up.error) throw new Error("Falha ao enviar a imagem: " + up.error.message + " (verifique se o bucket privado 'ia-docs' existe).");
-      // 2) chama a Edge Function que fala com a OpenAI (visão)
-      setEstado("analisando"); setMsg("A IA está analisando o documento…");
-      const { data, error } = await supabase.functions.invoke("ler-imagem", { body: { path } });
-      if (error) throw new Error("A função de IA ainda não respondeu. Confirme que a Edge Function 'ler-imagem' está publicada e a chave OPENAI_API_KEY foi cadastrada. Detalhe: " + error.message);
-      // 3) cria a pré-ficha (pendente) a partir do JSON da IA — NUNCA cadastra sozinho
-      const pf = await onNovaPreficha({ imagemPath: path, resultado: data });
-      setEstado("ok"); setMsg("Pré-ficha criada! Revise na aba “Pré-fichas do Assistente IA”.");
-      setAba("prefichas");
-    } catch (e) {
-      setEstado("erro"); setMsg(e.message || "Erro ao processar a imagem.");
-    }
-  };
-
-  const pfIA = (prefichas || []).filter((p) => p.fonte === "ia");
-  const pendentes = pfIA.filter((p) => p.status === "pendente");
-  const [filtro, setFiltro] = useState("pendente");
-  const lista = filtro === "todas" ? pfIA : pfIA.filter((p) => p.status === filtro);
-
-  return (
-    <section className="wrap">
-      <div className="card">
-        <div className="card-h">🤖 Assistente IA</div>
-        <div className="aud-filtros" style={{ marginTop: 4 }}>
-          <button className={`seg ${aba === "ler" ? "on" : ""}`} onClick={() => setAba("ler")}>📷 Ler Imagem</button>
-          <button className={`seg ${aba === "prefichas" ? "on" : ""}`} onClick={() => setAba("prefichas")}>Pré-fichas do Assistente IA ({pfIA.length})</button>
-        </div>
-      </div>
-
-      {aba === "ler" && (
-        <div className="card">
-          <div className="card-h">📷 Ler Imagem</div>
-          <p className="muted small" style={{ marginTop: -4 }}>Selecione uma imagem ou tire uma foto de um documento (compra, venda, prenhez, aspiração, contrato, catálogo…). A IA lê e cria uma <b>pré-ficha</b> para você revisar. <b>Nada é cadastrado automaticamente.</b></p>
-          <div className="rep-tools" style={{ marginTop: 10 }}>
-            <label className="btn btn-gold" style={{ cursor: "pointer" }}>
-              📷 Tirar foto / escolher imagem
-              <input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" style={{ display: "none" }} onChange={(e) => lerImagem(e.target.files[0])} />
-            </label>
-          </div>
-          {estado !== "idle" && (
-            <div className={`ia-status ${estado}`} style={{ marginTop: 14 }}>
-              {(estado === "enviando" || estado === "analisando") && <span className="ia-spin" />}
-              <span>{msg}</span>
-            </div>
-          )}
-          {previa && <img src={previa} alt="prévia" className="ia-previa" />}
-          <p className="muted small" style={{ marginTop: 14 }}>Formatos aceitos: JPG, JPEG, PNG, WEBP. (PDF será adicionado no futuro.)</p>
-        </div>
-      )}
-
-      {aba === "prefichas" && (
-        <div className="card">
-          <div className="card-h">Pré-fichas do Assistente IA</div>
-          <div className="aud-filtros" style={{ marginTop: 4 }}>
-            {[["pendente", `Pendentes (${pfIA.filter((p) => p.status === "pendente").length})`], ["aprovada", `Aprovadas (${pfIA.filter((p) => p.status === "aprovada").length})`], ["rejeitada", `Rejeitadas (${pfIA.filter((p) => p.status === "rejeitada").length})`], ["todas", `Todas (${pfIA.length})`]].map(([k, l]) => (
-              <button key={k} className={`seg ${filtro === k ? "on" : ""}`} onClick={() => setFiltro(k)}>{l}</button>
-            ))}
-          </div>
-          <div className="aud-lista">
-            {lista.map((p) => {
-              const d = p.dados || {}; const faltando = p.faltando || []; const baixa = p.baixaConfianca || [];
-              const dup = p.status === "pendente" ? checarDuplicidade(d) : [];
-              return (
-                <div className="aud-item preficha" key={p.id}>
-                  <div className="aud-item-h">
-                    <b>{d.nome || rotuloTipoIA(p.tipo)}</b>
-                    {p.status === "pendente" && <Badge tone="fase">Pendente de aprovação</Badge>}
-                    {p.status === "aprovada" && <Badge tone="pos">Aprovada</Badge>}
-                    {p.status === "rejeitada" && <Badge tone="neg">Rejeitada</Badge>}
-                    <span className="tag">{rotuloTipoIA(p.tipo)}</span>
-                    {typeof p.confianca === "number" && <span className="tag">confiança {Math.round(p.confianca * 100)}%</span>}
-                  </div>
-                  <div className="ia-corpo">
-                    {p.imagemUrl && <img src={p.imagemUrl} alt="doc" className="ia-thumb" onClick={() => window.open(p.imagemUrl, "_blank")} />}
-                    <div className="ia-dados">
-                      {dup.length > 0 && <div className="ia-dup">⚠ Possível cadastro já existente: {dup.map((a) => a.nome).join(", ")}. Revise antes de aprovar.</div>}
-                      <div className="ia-campos">
-                        {[["Nome", d.nome], ["Registro", d.registro], ["Pai", d.pai], ["Mãe", d.mae], ["Reg. mãe", d.maeRegistro], ["Leilão", d.leilao], ["Data", d.data], ["Valor", d.valor], ["%", d.porcentagem], ["Parcelas", d.parcelas], ["Vendedor", d.vendedor], ["Comprador", d.comprador]].filter(([, v]) => v != null && v !== "").map(([k, v]) => (
-                          <span className="ia-campo" key={k}>{k}: <b>{String(v)}</b></span>
-                        ))}
-                      </div>
-                      {faltando.length > 0 && <div className="ia-faltando">Campos não encontrados: {faltando.join(", ")}</div>}
-                      {baixa.length > 0 && <div className="ia-baixa">Baixa confiança (revisar): {baixa.join(", ")}</div>}
-                      {p.observacoesIA && <div className="muted small" style={{ marginTop: 4 }}>Observações da IA: {p.observacoesIA}</div>}
-                    </div>
-                  </div>
-                  {p.status === "pendente" && (
-                    <div className="aud-acts">
-                      <button className="btn btn-mini" onClick={() => onEditar(p)}>Editar</button>
-                      <button className="btn btn-mini gold" onClick={() => onAprovar(p)}>Aprovar Cadastro</button>
-                      <button className="btn btn-mini" onClick={() => onReanalisar(p)}>Analisar novamente</button>
-                      <button className="btn btn-mini" onClick={() => onRejeitar(p.id)}>Rejeitar</button>
-                      <button className="btn-del" onClick={() => onExcluir(p.id)}>🗑 Excluir</button>
-                    </div>
-                  )}
-                  {p.status !== "pendente" && (
-                    <div className="aud-acts">
-                      {p.animalId && <button className="btn btn-mini" onClick={() => onVer(p)}>Ver ficha</button>}
-                      {p.status === "rejeitada" && <button className="btn btn-mini gold" onClick={() => onAprovar(p)}>Aprovar mesmo assim</button>}
-                      <button className="btn-del" onClick={() => onExcluir(p.id)}>🗑 Excluir</button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            {lista.length === 0 && <p className="muted small">Nenhuma pré-ficha neste filtro.</p>}
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
 
 /* ================================= APP ================================= */
 export default function App() {
@@ -2152,77 +2023,6 @@ export default function App() {
   };
   const excluir = (id) => { setDb((p) => ({ ...p, ativos: p.ativos.filter((a) => a.id !== id) })); setAberto(null); };
 
-  /* ---- Assistente IA: pré-fichas (nada entra no banco sem aprovar) ---- */
-  // mapeia o JSON da IA para os campos do sistema, sem inventar nada (null -> vazio + destaca)
-  const mapearIA = (r) => {
-    r = r || {};
-    const g = (k) => (r[k] == null ? "" : r[k]);           // campo vazio quando null
-    const tipo = r.tipo_documento || r.tipo || "nao_identificado";
-    const tipoSistema = tipo === "prenhez" ? "prenhez" : tipo === "aspiracao" ? "aspiracao" : "animal";
-    const dados = {
-      tipo: tipoSistema, nome: g("nome_animal") || g("nome"), registro: g("registro"),
-      pai: g("pai"), mae: g("mae"), maeRegistro: g("registro_mae") || g("maeRegistro"),
-      leilao: g("leilao"), data: g("data"), valor: g("valor_negociado") || g("valor"),
-      porcentagem: g("porcentagem") || g("participacao"), parcelas: g("parcelas"), valorParcela: g("valor_parcela"),
-      comissao: g("comissao"), vendedor: g("vendedor"), comprador: g("comprador"),
-      avoPaterno: g("avo_paterno"), avoPaterna: g("avo_paterna"), avoMaterno: g("avo_materno"), avoMaterna: g("avo_materna"),
-      ondeEsta: g("onde_esta"), obs: [g("observacoes"), r.sociedade ? "Sociedade: " + (typeof r.sociedade === "string" ? r.sociedade : JSON.stringify(r.sociedade)) : ""].filter(Boolean).join(" | "),
-      raca: "Nelore", comissaoPct: 8, socios: [], videos: [], historico: [],
-    };
-    const faltando = Object.entries({ Nome: dados.nome, Registro: dados.registro, Pai: dados.pai, Mãe: dados.mae, Leilão: dados.leilao, Valor: dados.valor }).filter(([, v]) => !v).map(([k]) => k);
-    return { tipo: tipoDocParaChave(tipo), tipoSistema, dados, faltando, baixaConfianca: Array.isArray(r.campos_baixa_confianca) ? r.campos_baixa_confianca : [], observacoesIA: r.observacoes_ia || r.observacoes || "", confianca: typeof r.confianca === "number" ? r.confianca : null };
-  };
-  const tipoDocParaChave = (t) => (IA_TIPOS.some(([k]) => k === t) ? t : "nao_identificado");
-
-  const novaPrefichaIA = async ({ imagemPath, resultado }) => {
-    const m = mapearIA(resultado);
-    let imagemUrl = "";
-    try { const s = await supabase.storage.from("ia-docs").createSignedUrl(imagemPath, 60 * 60 * 24 * 365); imagemUrl = (s && s.data && s.data.signedUrl) || ""; } catch (e) {}
-    const pf = { id: uid(), fonte: "ia", status: "pendente", criadoEm: today(), criadoPor: profile && profile.nome,
-      imagemPath, imagemUrl, tipo: m.tipo, dados: m.dados, faltando: m.faltando, baixaConfianca: m.baixaConfianca,
-      observacoesIA: m.observacoesIA, confianca: m.confianca, resultadoBruto: resultado };
-    setDb((p) => ({ ...p, prefichas: [pf, ...(p.prefichas || [])] }));
-    return pf;
-  };
-  // verifica possível duplicidade: registro -> nome -> nome+leilão -> nome parecido
-  const checarDuplicidade = (d) => {
-    const out = new Map();
-    const rn = norm(d.registro).replace(/[^a-z0-9]/g, "");
-    (ativos || []).filter((a) => a && a.tipo === "animal" && a.origem !== "genealogia").forEach((a) => {
-      const arn = norm(a.registro).replace(/[^a-z0-9]/g, "");
-      if (rn && arn && rn === arn) out.set(a.id, a);
-      else if (d.nome && norm(a.nome) === norm(d.nome)) out.set(a.id, a);
-      else if (d.nome && d.leilao && norm(a.nome) === norm(d.nome) && norm(a.leilao) === norm(d.leilao)) out.set(a.id, a);
-    });
-    return [...out.values()];
-  };
-  const aprovarPrefichaIA = (pf) => {
-    const dup = checarDuplicidade(pf.dados);
-    const criar = () => {
-      const novo = { ...pf.dados, id: uid(),
-        historico: [{ id: uid(), data: today(), tipo: "Assistente IA", desc: "Aprovado do Assistente IA (leitura de imagem)", responsavel: profile && profile.nome }] };
-      delete novo.__pref;
-      if (novo.tipo === "prenhez" || novo.tipo === "aspiracao") novo.nome = rotuloReprod(novo);
-      novo.parcelasList = ensureParcelas(novo);
-      setDb((p) => ({ ...p, ativos: [novo, ...p.ativos],
-        prefichas: (p.prefichas || []).map((x) => (x.id === pf.id ? { ...x, status: "aprovada", aprovadoPor: profile && profile.nome, aprovadoEm: today(), animalId: novo.id } : x)) }));
-      setConfirmar(null); setAberto(novo);
-    };
-    if (dup.length) {
-      setConfirmar({ titulo: "Possível cadastro já existente", mensagem: `Encontramos ${dup.length} registro(s) parecido(s) no sistema. Deseja criar mesmo assim? Nada será sobrescrito — um novo cadastro será criado.`, usos: dup.map((a) => a.nome), botoes: [{ label: "Criar assim mesmo", tone: "gold", onClick: criar }] });
-    } else criar();
-  };
-  const editarPrefichaIA = (pf) => setForm({ tipo: pf.dados.tipo || "animal", initial: { ...pf.dados, __pref: pf.id, __fromOrigem: true, origemLabel: "Pré-ficha do Assistente IA" } });
-  const marcarPreficha = (id, status) => setDb((p) => ({ ...p, prefichas: (p.prefichas || []).map((x) => (x.id === id ? { ...x, status } : x)) }));
-  const excluirPreficha = (id) => setDb((p) => ({ ...p, prefichas: (p.prefichas || []).filter((x) => x.id !== id) }));
-  const reanalisarPreficha = async (pf) => {
-    try {
-      const { data, error } = await supabase.functions.invoke("ler-imagem", { body: { path: pf.imagemPath } });
-      if (error) throw error;
-      const m = mapearIA(data);
-      setDb((p) => ({ ...p, prefichas: (p.prefichas || []).map((x) => (x.id === pf.id ? { ...x, tipo: m.tipo, dados: m.dados, faltando: m.faltando, baixaConfianca: m.baixaConfianca, observacoesIA: m.observacoesIA, confianca: m.confianca, resultadoBruto: data } : x)) }));
-    } catch (e) { setConfirmar({ titulo: "Não foi possível reanalisar", mensagem: "A Edge Function de IA não respondeu. Verifique a publicação e a chave OPENAI_API_KEY.", usos: [], botoes: [] }); }
-  };
 
   const [confirmar, setConfirmar] = useState(null);
   const [verArquivados, setVerArquivados] = useState(false);
@@ -2314,7 +2114,7 @@ export default function App() {
   }, [qBusca, ativos, db.socios, db.leiloes]);
 
   const nav = [["dashboard", "◆", "Painel"], ["animal", "❖", "Animais"], ["prenhez", "◗", "Prenhezes"], ["aspiracao", "✧", "Aspirações"],
-    ["socios", "◎", "Sócios"], ["parcelas", "▤", "Parcelas"], ["leiloes", "⚑", "Leilões"], ["relatorios", "▦", "Relatórios"], ["ia", "🤖", "Assistente IA"],
+    ["socios", "◎", "Sócios"], ["parcelas", "▤", "Parcelas"], ["leiloes", "⚑", "Leilões"], ["relatorios", "▦", "Relatórios"],
     ...(isAdmin ? [["usuarios", "◐", "Usuários"]] : [])];
 
   if (!authReady) return <div className="auth-bg"><style>{CSS}</style><div className="auth-card"><div className="auth-brand"><div className="brand-mark">SM</div><div><div className="serif auth-title">SM sistema</div><div className="brand-sub">Gado de Elite</div></div></div><div className="auth-note">Carregando…</div></div></div>;
@@ -2532,14 +2332,6 @@ export default function App() {
 
         {view === "relatorios" && (
           <RelatoriosView lista={ativos} ativos={ativos} />
-        )}
-
-        {view === "ia" && (
-          <AssistenteIAView ativos={ativos} prefichas={db.prefichas || []}
-            onNovaPreficha={novaPrefichaIA} checarDuplicidade={checarDuplicidade}
-            onVer={(pf) => { if (pf.animalId) { const a = ativos.find((x) => x.id === pf.animalId); if (a) return setAberto(a); } editarPrefichaIA(pf); }}
-            onEditar={editarPrefichaIA} onAprovar={aprovarPrefichaIA} onReanalisar={reanalisarPreficha}
-            onRejeitar={(id) => marcarPreficha(id, "rejeitada")} onExcluir={excluirPreficha} />
         )}
 
         {view === "usuarios" && isAdmin && (
