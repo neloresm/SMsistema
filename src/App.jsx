@@ -1723,8 +1723,11 @@ const INFO_OPTS = [
   ["participacao", "Participação atual"], ["estimado", "Valor estimado"], ["investido", "Valor total investido"],
   ["pago", "Valor pago"], ["aberto", "Valor em aberto"], ["parcelas", "Parcelas"], ["comissao", "Comissão"],
   ["compras", "Compras"], ["vendas", "Vendas"], ["prenhezVinc", "Prenhezes vinculadas"],
-  ["aspiracaoVinc", "Aspirações vinculadas"], ["historico", "Histórico financeiro"], ["obs", "Observações"],
+  ["aspiracaoVinc", "Aspirações vinculadas"], ["historico", "Histórico financeiro"], ["videos", "Vídeos (links)"], ["obs", "Observações"],
 ];
+// lista de vídeos com URL (para relatório)
+const videosLista = (a) => ((a && a.videos) || []).filter((v) => v && v.url);
+const videosTexto = (a) => videosLista(a).map((v) => `${v.tipo ? v.tipo + ": " : ""}${v.url}`).join("  |  ");
 const socioStr = (a) => ((a.sociedadeAtual || a.socios || []).filter(Boolean)).map((s) => `${s.nome} ${num(s.pct)}%`).join("; ");
 const prenhezVinculadas = (a, ativos) => (ativos || []).filter((x) => x && x.tipo === "prenhez" && lc(x.doadora) === lc(a.nome));
 const aspVinculadas = (a, ativos) => (ativos || []).filter((x) => x && x.tipo === "aspiracao" && lc(x.doadora) === lc(a.nome));
@@ -1779,7 +1782,7 @@ const EYE_OFF = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stro
 function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const [tipoBusca, setTipoBusca] = useState("geral");
   const [q, setQ] = useState("");
-  const [campos, setCampos] = useState({ basico: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, obs: false });
+  const [campos, setCampos] = useState({ basico: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, videos: false, obs: false });
 
   // base: apenas registros com cadastro próprio (exclui ancestrais só-genealogia e arquivados)
   const base = (lista || []).filter((a) => a && a.origem !== "genealogia" && !a.arquivada);
@@ -1826,6 +1829,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
     if (campos.prenhezVinc) row["Prenhezes vinculadas"] = prenhezVinculadas(a, ativos).map((x) => x.nome).join("; ");
     if (campos.aspiracaoVinc) row["Aspirações vinculadas"] = aspVinculadas(a, ativos).map((x) => x.nome).join("; ");
     if (campos.historico) row["Histórico financeiro"] = (a.historico || []).map((h) => `${dataBR(h.data)}: ${h.desc || h.tipo}`).join(" | ");
+    if (campos.videos) row["Vídeos (links)"] = videosTexto(a);
     if (campos.obs) row["Observações"] = a.obs || "";
     return row;
   };
@@ -1865,13 +1869,22 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
       const row = linhaDe(a);
       // no PDF, a genealogia vira o MESMO pedigree visual da ficha (SVG)
       const genKeys = ["Pai", "Mãe", "Registro da mãe", "Avô paterno", "Avó paterna", "Avô materno", "Avó materna", "Obs. genealógicas"];
-      const linhas = Object.entries(row).filter(([k]) => k !== "Nome" && !(campos.genealogia && genKeys.includes(k))).map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td>${esc(typeof v === "number" && /valor|investido|estimado|comiss|pago|aberto|parcela/i.test(k) ? fmt(v) : v)}</td></tr>`).join("");
+      const linhas = Object.entries(row).filter(([k]) => k !== "Nome" && k !== "Vídeos (links)" && !(campos.genealogia && genKeys.includes(k))).map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td>${esc(typeof v === "number" && /valor|investido|estimado|comiss|pago|aberto|parcela/i.test(k) ? fmt(v) : v)}</td></tr>`).join("");
+      // vídeos: links clicáveis (não texto solto)
+      let linhaVideos = "";
+      if (campos.videos) {
+        const vids = videosLista(a);
+        if (vids.length) {
+          const itens = vids.map((v) => `<a href="${esc(v.url)}" style="color:#1d3a2b">${esc(v.tipo || "Vídeo")}: ${esc(v.url)}</a>`).join("<br>");
+          linhaVideos = `<tr><td class="k">Vídeos</td><td>${itens}</td></tr>`;
+        }
+      }
       let genBloco = "";
       if (campos.genealogia) {
         const svg = svgGenealogiaStr(a);
         if (svg) genBloco = `<div class="gtit">Genealogia</div><div class="ped">${svg}<div class="ped-legend"><span><i class="sw m"></i> Macho</span><span><i class="sw f"></i> Fêmea</span><span class="side">◀ Paterno</span><span class="side">Materno ▶</span></div>${a.obsGen ? `<div class="gobs">Obs. genealógicas: ${esc(a.obsGen)}</div>` : ""}</div>`;
       }
-      return `<div class="animal"><h2>${esc(a.nome)} <small>${esc(a.tipo)}</small></h2>${linhas ? `<table>${linhas}</table>` : ""}${genBloco}</div>`;
+      return `<div class="animal"><h2>${esc(a.nome)} <small>${esc(a.tipo)}</small></h2>${(linhas || linhaVideos) ? `<table>${linhas}${linhaVideos}</table>` : ""}${genBloco}</div>`;
     }).join("");
     const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório SM sistema</title>
       <style>
