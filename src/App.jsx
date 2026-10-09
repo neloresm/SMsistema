@@ -337,7 +337,7 @@ function toEmbed(url) {
 /* ------------------------------- opções -------------------------------- */
 const RACAS = ["Nelore", "Brahman", "Gir", "Guzerá", "Angus", "Senepol", "Tabapuã", "Girolando"];
 const STATUS_ANIMAL = ["Pista", "Doadora", "Aposentada"];
-const STATUS_PRENHEZ = ["Confirmada", "Aguardando diagnóstico", "Perdida", "Parida", "Vendida"];
+const STATUS_PRENHEZ = ["Aguardando confirmação", "Confirmada", "Gestação em andamento", "Próxima do parto", "Parto previsto ultrapassado", "Nascimento informado", "Perda gestacional", "Parida", "Concluída", "Vendida"];
 const STATUS_ASP = ["Realizada", "Em laboratório", "Embriões produzidos", "Transferida", "Finalizada", "Cancelada"];
 
 /* --------------------------- esquemas de ficha ------------------------- */
@@ -386,6 +386,12 @@ const SCHEMAS = {
       ["qtd", "Quantidade de prenhezes", "number"],
       ["status", "Status", "select", STATUS_PRENHEZ], ["ondeEsta", "Onde está", "local"],
     ]},
+    { g: "Acompanhamento reprodutivo", f: [
+      ["criatorio", "Criatório responsável", "local"], ["responsavel", "Responsável pelo acompanhamento", "text"],
+      ["receptora", "Receptora (identificação)", "text"],
+      ["dataTE", "Data da transferência do embrião", "date"], ["dataConfirmacao", "Data de confirmação", "date"],
+      ["previsaoParto", "Previsão de parto", "date"], ["dataParto", "Data real do parto", "date"],
+    ]},
     { g: "Genealogia", gen: true, f: [
       ["avoMaterno", "Avô materno", "link"], ["avoMaterna", "Avó materna", "link"],
       ["avoPaterno", "Avô paterno", "link"], ["avoPaterna", "Avó paterna", "link"],
@@ -401,6 +407,13 @@ const SCHEMAS = {
       ["pai", "Pai (se houver)", "link"],
       ["qtd", "Quantidade", "number"],
       ["status", "Status", "select", STATUS_ASP], ["ondeEsta", "Onde está", "local"],
+    ]},
+    { g: "Acompanhamento reprodutivo", f: [
+      ["criatorio", "Criatório responsável", "local"], ["responsavel", "Responsável pelo acompanhamento", "text"],
+      ["dataAspiracao", "Data realizada da aspiração", "date"],
+      ["oocitos", "Oócitos coletados", "number"], ["embrioes", "Embriões produzidos", "number"],
+      ["embrioesTransf", "Embriões transferidos", "number"], ["embrioesArmaz", "Embriões armazenados", "number"],
+      ["prenhezesConf", "Prenhezes confirmadas", "number"],
     ]},
     { g: "Genealogia", gen: true, f: [
       ["avoMaterno", "Avô materno", "link"], ["avoMaterna", "Avó materna", "link"],
@@ -429,6 +442,40 @@ const qtdRest = (a) => Math.max(0, qtdTotal(a) - qtdConvertidos(a));
 function qtdRestante(a) {
   const t = qtdTotal(a), c = qtdConvertidos(a), r = qtdRest(a);
   return `${r} de ${t}${c ? ` (${c} nascida${c > 1 ? "s" : ""})` : ""}`;
+}
+
+/* ---- Acompanhamento reprodutivo: alertas de parto e pendências (só dados reais) ---- */
+// dias até a previsão de parto (negativo = já passou). null se sem data.
+function diasAteParto(a) {
+  if (!a || !a.previsaoParto || a.dataParto) return null;   // sem previsão, ou já pariu
+  const hoje = new Date(today() + "T00:00:00");
+  const prev = new Date(a.previsaoParto + "T00:00:00");
+  return Math.round((prev - hoje) / 86400000);
+}
+// a prenhez ainda está "em andamento" (não pariu, não perdeu, não concluiu/vendeu)?
+function prenhezAtiva(a) {
+  if (!a || a.tipo !== "prenhez" || a.arquivada) return false;
+  const s = lc(a.status);
+  if (s.includes("perda") || s.includes("perdida") || s.includes("vendida") || s.includes("concluída") || s.includes("concluida") || s.includes("parida")) return false;
+  return true;
+}
+// nível de alerta de parto: 'atrasado' | 'hoje' | '7' | '15' | '30' | null
+function alertaParto(a) {
+  if (!prenhezAtiva(a)) return null;
+  const d = diasAteParto(a);
+  if (d == null) return null;
+  if (d < 0) return "atrasado";
+  if (d === 0) return "hoje";
+  if (d <= 7) return "7";
+  if (d <= 15) return "15";
+  if (d <= 30) return "30";
+  return null;
+}
+// aspiração em andamento (não finalizada/cancelada)
+function aspAtiva(a) {
+  if (!a || a.tipo !== "aspiracao" || a.arquivada) return false;
+  const s = lc(a.status);
+  return !(s.includes("finalizada") || s.includes("cancelada") || s.includes("concluída") || s.includes("concluida"));
 }
 
 /* -------------------------------- seed --------------------------------- */
@@ -1204,7 +1251,7 @@ function DescendenciaSecao({ a, ativos, onAbrir }) {
 }
 
 /* ------------------------------ ficha detalhe -------------------------- */
-function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onConfirm }) {
+function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onGerarPrenhez, onConfirm }) {
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", h);
@@ -1317,9 +1364,12 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, canD
               {a.tipo === "animal" && a.nascimento && <Badge tone="gold">{idade(a.nascimento)}</Badge>}
               {a.ondeEsta && <Badge tone="gold">📍 {a.ondeEsta}</Badge>}
               {(a.tipo === "prenhez" || a.tipo === "aspiracao") && <Badge tone="gold">Restam {qtdRest(a)} de {qtdTotal(a)}</Badge>}
-              {a.origemLabel && <Badge tone="gold">Origem: {a.origemLabel}</Badge>}
+              {alertaParto(a) === "atrasado" && <Badge tone="neg">Parto atrasado</Badge>}
+              {["hoje", "7", "15", "30"].includes(alertaParto(a)) && <Badge tone="gold">Parto em {diasAteParto(a)} dia(s)</Badge>}
+              {a.origemLabel && (() => { const org = a.origemId && (ativos || []).find((x) => x.id === a.origemId); return <span onClick={() => org && onAbrir && onAbrir(org)} style={{ cursor: org ? "pointer" : "default" }}><Badge tone="gold">Origem: {a.origemLabel}{org ? " ↗" : ""}</Badge></span>; })()}
             </div>
             <div className="ficha-actions"><button className="btn btn-gold" onClick={onEdit}>Editar</button>
+              {a.tipo === "aspiracao" && a.origem !== "genealogia" && onGerarPrenhez && <button className="btn btn-ghost" onClick={() => onGerarPrenhez(a)}>+ Gerar prenhez</button>}
               {(a.tipo === "prenhez" || a.tipo === "aspiracao") && a.origem !== "genealogia" && qtdRest(a) > 0 && onNascer && <button className="btn btn-gold" onClick={() => onNascer(a)}>🐣 Nasceu</button>}
               {canDelete && <button className="btn btn-ghost" onClick={onDelete}>Excluir</button>}<button className="x abs" onClick={onClose}>✕</button></div>
           </div>
@@ -1723,7 +1773,7 @@ const INFO_OPTS = [
   ["participacao", "Participação atual"], ["estimado", "Valor estimado"], ["investido", "Valor total investido"],
   ["pago", "Valor pago"], ["aberto", "Valor em aberto"], ["parcelas", "Parcelas"], ["comissao", "Comissão"],
   ["compras", "Compras"], ["vendas", "Vendas"], ["prenhezVinc", "Prenhezes vinculadas"],
-  ["aspiracaoVinc", "Aspirações vinculadas"], ["historico", "Histórico financeiro"], ["videos", "Vídeos (links)"], ["obs", "Observações"],
+  ["aspiracaoVinc", "Aspirações vinculadas"], ["historico", "Histórico financeiro"], ["reprodutivo", "Acompanhamento reprodutivo"], ["videos", "Vídeos (links)"], ["obs", "Observações"],
 ];
 // lista de vídeos com URL (para relatório)
 const videosLista = (a) => ((a && a.videos) || []).filter((v) => v && v.url);
@@ -1782,7 +1832,7 @@ const EYE_OFF = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stro
 function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const [tipoBusca, setTipoBusca] = useState("geral");
   const [q, setQ] = useState("");
-  const [campos, setCampos] = useState({ basico: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, videos: false, obs: false });
+  const [campos, setCampos] = useState({ basico: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, reprodutivo: false, videos: false, obs: false });
 
   // base: apenas registros com cadastro próprio (exclui ancestrais só-genealogia e arquivados)
   const base = (lista || []).filter((a) => a && a.origem !== "genealogia" && !a.arquivada);
@@ -1829,6 +1879,11 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
     if (campos.prenhezVinc) row["Prenhezes vinculadas"] = prenhezVinculadas(a, ativos).map((x) => x.nome).join("; ");
     if (campos.aspiracaoVinc) row["Aspirações vinculadas"] = aspVinculadas(a, ativos).map((x) => x.nome).join("; ");
     if (campos.historico) row["Histórico financeiro"] = (a.historico || []).map((h) => `${dataBR(h.data)}: ${h.desc || h.tipo}`).join(" | ");
+    if (campos.reprodutivo) {
+      row["Criatório"] = a.criatorio || "";
+      if (a.tipo === "prenhez") { row["Previsão parto"] = a.previsaoParto ? dataBR(a.previsaoParto) : ""; row["Data parto"] = a.dataParto ? dataBR(a.dataParto) : ""; row["Receptora"] = a.receptora || ""; row["Responsável"] = a.responsavel || ""; }
+      if (a.tipo === "aspiracao") { row["Oócitos"] = a.oocitos || ""; row["Embriões"] = a.embrioes || ""; row["Embriões transf."] = a.embrioesTransf || ""; row["Prenhezes conf."] = a.prenhezesConf || ""; }
+    }
     if (campos.videos) row["Vídeos (links)"] = videosTexto(a);
     if (campos.obs) row["Observações"] = a.obs || "";
     return row;
@@ -2053,6 +2108,114 @@ function BackupSecao({ db, onRestaurar, isAdmin, usuario, ativos }) {
 
 
 
+/* ====================== CRIATÓRIOS PARCEIROS ========================== */
+function CriatoriosView({ criatorios, ativos, socioNames, onSalvar, onExcluir, onRegistrarContato, onAbrir }) {
+  const [form, setForm] = useState(null);     // criatório em edição/criação
+  const [contato, setContato] = useState(null); // criatório recebendo contato
+  const [cForm, setCForm] = useState({ data: today(), responsavel: "", meio: "WhatsApp", assunto: "", recebido: "", proximo: "" });
+
+  const reais = (ativos || []).filter((a) => a && a.origem !== "genealogia" && !a.arquivada);
+  // registros vinculados a um criatório (por campo criatorio OU onde está)
+  const doCriatorio = (nome) => reais.filter((a) => lc(a.criatorio) === lc(nome) || lc(a.ondeEsta) === lc(nome));
+
+  const salvarCont = () => {
+    if (!cForm.assunto && !cForm.recebido) { setContato(null); return; }
+    onRegistrarContato(contato.id, { id: uid(), ...cForm });
+    setContato(null); setCForm({ data: today(), responsavel: "", meio: "WhatsApp", assunto: "", recebido: "", proximo: "" });
+  };
+
+  return (
+    <section className="wrap">
+      <div className="card">
+        <div className="card-h">Criatórios Parceiros <span className="muted">({(criatorios || []).length})</span></div>
+        <p className="muted small" style={{ marginTop: -4 }}>Onde seus animais, prenhezes e aspirações estão sob responsabilidade de parceiros. Vincule preenchendo o <b>Criatório responsável</b> (ou "Onde está") nas fichas.</p>
+        <button className="btn btn-gold" style={{ marginTop: 8 }} onClick={() => setForm({ id: uid(), nome: "", contato: "", tel: "", obs: "", contatos: [] })}>+ Novo criatório</button>
+      </div>
+
+      <div className="cards-grid wide">
+        {(criatorios || []).map((c) => {
+          const regs = doCriatorio(c.nome);
+          const animais = regs.filter((a) => a.tipo === "animal");
+          const prenh = regs.filter((a) => a.tipo === "prenhez");
+          const asp = regs.filter((a) => a.tipo === "aspiracao");
+          const partosProx = prenh.filter((a) => { const n = alertaParto(a); return n && n !== null; });
+          const ultimo = (c.contatos || []).slice().sort((x, y) => (y.data || "").localeCompare(x.data || ""))[0];
+          return (
+            <div className="card" key={c.id}>
+              <div className="card-h">{c.nome}</div>
+              <div className="socio-lines">
+                <div><span>Contato</span><b>{c.contato || "—"}</b></div>
+                <div><span>Telefone/WhatsApp</span><b>{c.tel || "—"}</b></div>
+                <div><span>Animais</span><b>{animais.length}</b></div>
+                <div><span>Prenhezes</span><b>{prenh.length}</b></div>
+                <div><span>Aspirações</span><b>{asp.length}</b></div>
+                <div><span>Partos próximos/atrasados</span><b className={partosProx.length ? "neg" : ""}>{partosProx.length}</b></div>
+                <div><span>Último contato</span><b>{ultimo ? dataBR(ultimo.data) : "—"}</b></div>
+              </div>
+              <div className="socio-parts">{regs.slice(0, 12).map((a) => <span className="tag" key={a.id} onClick={() => onAbrir(a)}>{a.nome}</span>)}
+                {regs.length === 0 && <span className="muted small">Nenhum registro vinculado ainda.</span>}</div>
+              {(c.contatos || []).length > 0 && (
+                <div className="muted small" style={{ marginTop: 8 }}>{c.contatos.length} contato(s) registrado(s). Último: {ultimo.assunto || ultimo.recebido || "—"}</div>
+              )}
+              <div className="card-acts">
+                <button className="btn btn-mini gold" onClick={() => setContato(c)}>Registrar contato</button>
+                <button className="btn btn-mini" onClick={() => setForm(c)}>Editar</button>
+                <button className="btn-del" onClick={() => onExcluir(c)}>🗑 Excluir</button>
+              </div>
+            </div>
+          );
+        })}
+        {(criatorios || []).length === 0 && <div className="empty">Nenhum criatório cadastrado. Clique em "+ Novo criatório".</div>}
+      </div>
+
+      {form && (
+        <div className="modal-bg" onClick={() => setForm(null)}>
+          <div className="modal confirm" onClick={(e) => e.stopPropagation()}>
+            <div className="confirm-h">{form.nome ? "Editar criatório" : "Novo criatório"}</div>
+            <label className="field"><span>Nome do criatório</span><input value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} placeholder="ex.: Nelore Lince" autoFocus /></label>
+            <label className="field"><span>Pessoa de contato</span><input value={form.contato} onChange={(e) => setForm({ ...form, contato: e.target.value })} /></label>
+            <label className="field"><span>Telefone / WhatsApp</span><input value={form.tel} onChange={(e) => setForm({ ...form, tel: e.target.value })} /></label>
+            <label className="field"><span>Observações</span><textarea rows={2} value={form.obs} onChange={(e) => setForm({ ...form, obs: e.target.value })} /></label>
+            <div className="confirm-acts">
+              <button className="btn btn-ghost" onClick={() => setForm(null)}>Cancelar</button>
+              <button className="btn btn-gold" disabled={!form.nome.trim()} onClick={() => { onSalvar(form); setForm(null); }}>Salvar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {contato && (
+        <div className="modal-bg" onClick={() => setContato(null)}>
+          <div className="modal confirm" onClick={(e) => e.stopPropagation()}>
+            <div className="confirm-h">Registrar contato — {contato.nome}</div>
+            <div className="grid">
+              <label className="field"><span>Data</span><input type="date" value={cForm.data} onChange={(e) => setCForm({ ...cForm, data: e.target.value })} /></label>
+              <label className="field"><span>Responsável</span><input value={cForm.responsavel} onChange={(e) => setCForm({ ...cForm, responsavel: e.target.value })} /></label>
+              <label className="field"><span>Meio</span>
+                <select value={cForm.meio} onChange={(e) => setCForm({ ...cForm, meio: e.target.value })}><option>WhatsApp</option><option>Telefone</option><option>E-mail</option><option>Presencial</option><option>Outro</option></select></label>
+              <label className="field"><span>Próximo acompanhamento</span><input type="date" value={cForm.proximo} onChange={(e) => setCForm({ ...cForm, proximo: e.target.value })} /></label>
+              <label className="field wide"><span>Assunto</span><input value={cForm.assunto} onChange={(e) => setCForm({ ...cForm, assunto: e.target.value })} /></label>
+              <label className="field wide"><span>Informações recebidas</span><textarea rows={2} value={cForm.recebido} onChange={(e) => setCForm({ ...cForm, recebido: e.target.value })} /></label>
+            </div>
+            {(contato.contatos || []).length > 0 && (
+              <div className="tbl-wrap" style={{ marginTop: 6, maxHeight: 160, overflow: "auto" }}><table className="tbl">
+                <thead><tr><th>Data</th><th>Meio</th><th>Assunto</th></tr></thead>
+                <tbody>{contato.contatos.slice().sort((x, y) => (y.data || "").localeCompare(x.data || "")).map((h) => (
+                  <tr key={h.id}><td>{dataBR(h.data)}</td><td>{h.meio}</td><td className="small">{h.assunto || h.recebido || "—"}</td></tr>
+                ))}</tbody>
+              </table></div>
+            )}
+            <div className="confirm-acts">
+              <button className="btn btn-ghost" onClick={() => setContato(null)}>Fechar</button>
+              <button className="btn btn-gold" onClick={salvarCont}>Salvar contato</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 /* ================================= APP ================================= */
 export default function App() {
   const [db, setDb] = useState(SEED);
@@ -2091,6 +2254,7 @@ export default function App() {
       users: Array.isArray(base.users) ? base.users.filter(Boolean) : [],
       prefichas: Array.isArray(base.prefichas) ? base.prefichas.filter(Boolean) : [],
       migracoes: Array.isArray(base.migracoes) ? base.migracoes.filter(Boolean) : [],
+      criatorios: Array.isArray(base.criatorios) ? base.criatorios.filter(Boolean) : [],
     };
   };
 
@@ -2192,7 +2356,7 @@ export default function App() {
     return m;
   }, [ativos]);
   const leilaoNames = useMemo(() => { const s = new Set((db.leiloes || []).filter((l) => l && !l.arquivado).map((l) => l.nome).filter(Boolean)); (ativos || []).forEach((a) => a && a.leilao && s.add(a.leilao)); return [...s]; }, [db.leiloes, ativos]);
-  const localNames = useMemo(() => { const s = new Set((db.locais || []).filter(Boolean)); (ativos || []).forEach((a) => a && a.ondeEsta && s.add(a.ondeEsta)); return [...s]; }, [db.locais, ativos]);
+  const localNames = useMemo(() => { const s = new Set((db.locais || []).filter(Boolean)); (ativos || []).forEach((a) => { if (a && a.ondeEsta) s.add(a.ondeEsta); if (a && a.criatorio) s.add(a.criatorio); }); (db.criatorios || []).forEach((c) => c && c.nome && s.add(c.nome)); return [...s]; }, [db.locais, db.criatorios, ativos]);
   const vendedorNames = useMemo(() => { const s = new Set((db.vendedores || []).map((v) => v && v.nome).filter(Boolean)); (ativos || []).forEach((a) => a && a.vendedor && s.add(a.vendedor)); return [...s]; }, [db.vendedores, ativos]);
   const socioNames = useMemo(() => (db.socios || []).filter((s) => s && !s.arquivado).map((s) => s.nome).filter(Boolean), [db.socios]);
 
@@ -2271,7 +2435,7 @@ export default function App() {
       __fromOrigem: true,
       nome: "", registro: "", raca: src.raca || "Nelore",
       sexo: ehPren ? "Fêmea" : "",                 // prenhez sempre fêmea; aspiração o usuário escolhe
-      nascimento: "", status: "", ondeEsta: src.ondeEsta || "",
+      nascimento: "", status: "", ondeEsta: src.ondeEsta || "", criatorio: src.criatorio || "",
       // genealogia herdada
       pai: src.pai || src.touro || "", mae: src.doadora || "",
       maeRegistro: src.regDoadora || "",
@@ -2285,6 +2449,22 @@ export default function App() {
     };
     setAberto(null);
     setForm({ tipo: "animal", initial: novo });
+  };
+
+  /* aspiração → gera uma PRENHEZ vinculada (a aspiração continua existindo) */
+  const gerarPrenhez = (asp) => {
+    const nova = {
+      id: uid(), tipo: "prenhez", origem: "aspiracao",
+      aspiracaoOrigemId: asp.id, origemLabel: rotuloReprod(asp), __fromOrigem: true, origemTipo: "aspiracao",
+      doadora: asp.doadora || "", regDoadora: asp.regDoadora || "", pai: asp.pai || asp.touro || "",
+      qtd: 1, status: "Aguardando confirmação", ondeEsta: asp.ondeEsta || "", criatorio: asp.criatorio || "",
+      avoPaterno: asp.avoPaterno || "", avoPaterna: asp.avoPaterna || "", avoMaterno: asp.avoMaterno || "", avoMaterna: asp.avoMaterna || "",
+      obsGen: asp.obsGen || "",
+      socios: (asp.socios || []).filter(Boolean).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct, obs: s.obs || "" })),
+      videos: [], historico: [], comissaoPct: 8, obs: "",
+    };
+    setAberto(null);
+    setForm({ tipo: "prenhez", initial: nova });
   };
   const excluir = (id) => { setDb((p) => ({ ...p, ativos: p.ativos.filter((a) => a.id !== id) })); setAberto(null); };
 
@@ -2337,7 +2517,35 @@ export default function App() {
   const quickVendedor = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => ((p.vendedores || []).some((v) => v && lc(v.nome) === lc(nm)) ? p : { ...p, vendedores: [...(p.vendedores || []), { id: uid(), nome: nm, tipo: "Outro", doc: "", tel: "", email: "", obs: "" }] })); };
   const quickSocio = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => ((p.socios || []).some((s) => s && lc(s.nome) === lc(nm)) ? p : { ...p, socios: [...(p.socios || []), { id: uid(), nome: nm, doc: "", tel: "", email: "", endereco: "", obs: "" }] })); };
 
+  // Criatórios parceiros
+  const salvarCriatorio = (c) => setDb((p) => {
+    const existe = (p.criatorios || []).some((x) => x.id === c.id);
+    return { ...p, criatorios: existe ? (p.criatorios || []).map((x) => (x.id === c.id ? c : x)) : [...(p.criatorios || []), c] };
+  });
+  const excluirCriatorio = (c) => setConfirmar({ titulo: `Excluir o criatório ${c.nome}?`, mensagem: "O criatório sai da lista. Os animais/prenhezes vinculados a ele não são afetados (o vínculo é pelo nome nas fichas).", usos: [], botoes: [{ label: "Excluir", tone: "danger", onClick: () => { setDb((p) => ({ ...p, criatorios: (p.criatorios || []).filter((x) => x.id !== c.id) })); setConfirmar(null); } }] });
+  const registrarContato = (criatorioId, contato) => setDb((p) => ({ ...p, criatorios: (p.criatorios || []).map((x) => (x.id === criatorioId ? { ...x, contatos: [...(x.contatos || []), contato] } : x)) }));
+
   const invTipo = useMemo(() => { const m = {}; reais.forEach((a) => { m[a.tipo] = (m[a.tipo] || 0) + finance(a).cota; }); return Object.entries(m).map(([name, value]) => ({ name, value })); }, [ativos]);
+
+  // Acompanhamento reprodutivo: indicadores e pendências com dados reais
+  const reprod = useMemo(() => {
+    const todos = (ativos || []).filter((a) => a && a.origem !== "genealogia");
+    const aspAndamento = todos.filter(aspAtiva);
+    const prenhez = todos.filter(prenhezAtiva);
+    const confirmadas = prenhez.filter((a) => { const s = lc(a.status); return s.includes("confirm") || s.includes("gesta") || s.includes("próxima") || s.includes("proxima"); });
+    const proximas = prenhez.filter((a) => { const n = alertaParto(a); return n === "30" || n === "15" || n === "7" || n === "hoje"; });
+    const atrasadas = prenhez.filter((a) => alertaParto(a) === "atrasado");
+    // nascimentos aguardando cadastro: status "Nascimento informado" ou fila explícita
+    const aguardando = todos.filter((a) => a.tipo === "prenhez" && !a.arquivada && lc(a.status).includes("nascimento informado"));
+    // pendências: parto atrasado > próximo > aspiração sem data realizada
+    const pend = [];
+    atrasadas.forEach((a) => pend.push({ id: "pa-" + a.id, prio: 1, tipo: "Parto atrasado", ref: a, data: a.previsaoParto, criatorio: a.criatorio || a.ondeEsta || "—", acao: "Confirmar parto ou atualizar previsão" }));
+    proximas.forEach((a) => pend.push({ id: "pp-" + a.id, prio: 2, tipo: "Parto próximo", ref: a, data: a.previsaoParto, criatorio: a.criatorio || a.ondeEsta || "—", acao: "Acompanhar com o criatório" }));
+    aguardando.forEach((a) => pend.push({ id: "ag-" + a.id, prio: 2, tipo: "Nascimento aguardando cadastro", ref: a, data: a.dataParto || "", criatorio: a.criatorio || a.ondeEsta || "—", acao: "Cadastrar o animal (botão Nasceu)" }));
+    aspAndamento.filter((a) => !a.dataAspiracao).forEach((a) => pend.push({ id: "as-" + a.id, prio: 3, tipo: "Aspiração sem atualização", ref: a, data: "", criatorio: a.criatorio || a.ondeEsta || "—", acao: "Cobrar resultado do criatório" }));
+    pend.sort((x, y) => x.prio - y.prio);
+    return { aspAndamento, prenhez, confirmadas, proximas, atrasadas, aguardando, pendencias: pend };
+  }, [ativos]);
   // Idade do plantel: só animais com cadastro próprio, ativos (participação > 0), com nascimento válido
   const plantel = useMemo(() => {
     const animais = reais.filter((a) => a && a.tipo === "animal" && !a.arquivada && participacaoAtual(a) > 0);
@@ -2379,7 +2587,7 @@ export default function App() {
   }, [qBusca, ativos, db.socios, db.leiloes]);
 
   const nav = [["dashboard", "◆", "Painel"], ["animal", "❖", "Animais"], ["prenhez", "◗", "Prenhezes"], ["aspiracao", "✧", "Aspirações"],
-    ["socios", "◎", "Sócios"], ["parcelas", "▤", "Parcelas"], ["leiloes", "⚑", "Leilões"], ["relatorios", "▦", "Relatórios"],
+    ["pendencias", "⬣", "Pendências"], ["criatorios", "⌂", "Criatórios"], ["socios", "◎", "Sócios"], ["parcelas", "▤", "Parcelas"], ["leiloes", "⚑", "Leilões"], ["relatorios", "▦", "Relatórios"],
     ...(isAdmin ? [["usuarios", "◐", "Usuários"]] : [])];
 
   if (!authReady) return <div className="auth-bg"><style>{CSS}</style><div className="auth-card"><div className="auth-brand"><div className="brand-mark">SM</div><div><div className="serif auth-title">SM sistema</div><div className="brand-sub">Gado de Elite</div></div></div><div className="auth-note">Carregando…</div></div></div>;
@@ -2477,6 +2685,19 @@ export default function App() {
                   <tbody>{reais.slice().sort((a, b) => finance(b).totalEstimado - finance(a).totalEstimado).slice(0, 6).map((a) => (
                     <tr key={a.id} className="clk" onClick={() => setAberto(a)}><td>{a.nome}</td><td><Badge tone="gold">{a.tipo}</Badge></td><td>{money(finance(a).totalEstimado)}</td></tr>))}</tbody></table></div>
             </div>
+
+            <div className="card">
+              <div className="card-h">Acompanhamento Reprodutivo</div>
+              <div className="repro-kpis">
+                <button className="repro-kpi" onClick={() => setView("aspiracao")}><span>Aspirações em andamento</span><b>{reprod.aspAndamento.length}</b></button>
+                <button className="repro-kpi" onClick={() => setView("prenhez")}><span>Prenhezes confirmadas</span><b>{reprod.confirmadas.length}</b></button>
+                <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Partos próximos</span><b className={reprod.proximas.length ? "gold" : ""}>{reprod.proximas.length}</b></button>
+                <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Partos atrasados</span><b className={reprod.atrasadas.length ? "neg" : ""}>{reprod.atrasadas.length}</b></button>
+                <button className="repro-kpi" onClick={() => setView("prenhez")}><span>Nascimentos aguardando</span><b className={reprod.aguardando.length ? "gold" : ""}>{reprod.aguardando.length}</b></button>
+                <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Pendências totais</span><b className={reprod.pendencias.length ? "gold" : ""}>{reprod.pendencias.length}</b></button>
+              </div>
+              <p className="muted small" style={{ marginTop: 10 }}>Clique num indicador para ver os registros. Os partos são calculados pela <b>previsão de parto</b> que você preencher nas prenhezes.</p>
+            </div>
           </section>
         )}
 
@@ -2501,6 +2722,8 @@ export default function App() {
                       {sexoLbl && <span className={`tag ${lc(a.sexo).startsWith("f") ? "tag-f" : "tag-m"}`}>{sexoLbl}</span>}
                       {(a.raca || a.categoria) && <span className="tag">{a.categoria || a.raca}</span>}
                       {(a.tipo === "prenhez" || a.tipo === "aspiracao") && <span className="tag">qtd: {qtdRest(a)} de {qtdTotal(a)}</span>}
+                      {alertaParto(a) === "atrasado" && <span className="tag tag-alerta">parto atrasado</span>}
+                      {["hoje", "7", "15", "30"].includes(alertaParto(a)) && <span className="tag tag-proximo">parto em {diasAteParto(a)}d</span>}
                       {a.origemLabel && <span className="tag tag-video">origem</span>}
                       {temVideo && <span className="tag tag-video">▶ vídeo</span>}
                     </div>
@@ -2595,6 +2818,37 @@ export default function App() {
           </div></section>
         )}
 
+        {view === "pendencias" && (
+          <section className="wrap">
+            <div className="card">
+              <div className="card-h">Pendências da SM <span className="muted">({reprod.pendencias.length})</span></div>
+              <p className="muted small" style={{ marginTop: -4 }}>Organizadas por prioridade. Calculadas pela previsão de parto e pelo status das prenhezes/aspirações. Clique para abrir o registro.</p>
+              {reprod.pendencias.length === 0 ? (
+                <p className="muted" style={{ marginTop: 10 }}>Nenhuma pendência no momento. 👍 Preencha a <b>previsão de parto</b> nas prenhezes para o acompanhamento funcionar.</p>
+              ) : (
+                <div className="tbl-wrap" style={{ marginTop: 10 }}><table className="tbl">
+                  <thead><tr><th>Prioridade</th><th>Tipo</th><th>Registro</th><th>Criatório</th><th>Data ref.</th><th>Próxima ação</th></tr></thead>
+                  <tbody>{reprod.pendencias.map((p) => (
+                    <tr key={p.id} className="clk" onClick={() => setAberto(p.ref)}>
+                      <td>{p.prio === 1 ? <Badge tone="neg">alta</Badge> : p.prio === 2 ? <Badge tone="gold">média</Badge> : <Badge tone="gold">baixa</Badge>}</td>
+                      <td>{p.tipo}</td>
+                      <td><b>{p.ref.nome || rotuloReprod(p.ref)}</b></td>
+                      <td>{p.criatorio}</td>
+                      <td>{p.data ? dataBR(p.data) : "—"}</td>
+                      <td className="muted small">{p.acao}</td>
+                    </tr>
+                  ))}</tbody>
+                </table></div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {view === "criatorios" && (
+          <CriatoriosView criatorios={db.criatorios || []} ativos={ativos} socioNames={socioNames}
+            onSalvar={salvarCriatorio} onExcluir={excluirCriatorio} onRegistrarContato={registrarContato} onAbrir={setAberto} />
+        )}
+
         {view === "relatorios" && (
           <RelatoriosView lista={ativos} ativos={ativos} db={db} onRestaurar={(novo) => { setDb(normalizeDb(novo)); }} isAdmin={isAdmin} usuario={profile && profile.nome} />
         )}
@@ -2624,7 +2878,7 @@ export default function App() {
         animalNames={animalNames} animalReg={animalReg} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
         onSave={salvar} onClose={() => setForm(null)} />}
-      {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo}
+      {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onGerarPrenhez={gerarPrenhez} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo}
         onEdit={() => { setForm({ tipo: aberto.tipo, initial: aberto }); setAberto(null); }} onDelete={() => pedirExcluirAtivo(aberto)} />}
       {navOpen && <div className="scrim" onClick={() => setNavOpen(false)} />}
 
@@ -2714,6 +2968,8 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .tag-m{background:#e8f0fb;border-color:#bcd3f0;color:#274a86}
 .tag-f{background:#fbe9f1;border-color:#f0c2d8;color:#8a3a66}
 .tag-video{background:#f3ecdd;border-color:var(--gold);color:#8a6a2c}
+.tag-alerta{background:#fbecea;border-color:#e3b7ae;color:#8a3a2c}
+.tag-proximo{background:#f6efdd;border-color:#e6d3a2;color:#8a6a2c}
 .asset-part{font-size:13px;color:var(--muted)}.asset-part b{font-size:14px}
 .asset-fin{display:flex;justify-content:space-between;align-items:baseline;font-family:Fraunces,serif;font-size:16px;border-top:1px solid var(--line);padding-top:10px;margin-top:auto}.asset-fin em{font-family:Inter;font-size:12px;font-style:normal}
 .empty{grid-column:1/-1;text-align:center;color:var(--muted);padding:50px;border:1px dashed var(--line);border-radius:16px}
@@ -2849,6 +3105,12 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .dash-title{font-size:24px;margin:0;color:var(--ink)}
 .plantel-media{font-size:15px;color:var(--ink);margin:-4px 0 12px}.plantel-media b{font-family:Fraunces,serif;color:var(--forest)}
 .plantel-info{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:12px;font-size:12.5px;color:var(--muted)}.plantel-info b{color:var(--ink)}
+.repro-kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-top:4px}
+.repro-kpi{display:flex;flex-direction:column;gap:3px;align-items:flex-start;background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:12px 14px;cursor:pointer;transition:.15s;font-family:inherit;text-align:left}
+.repro-kpi:hover{border-color:var(--gold);box-shadow:var(--shadow-sm);transform:translateY(-2px)}
+.repro-kpi span{font-size:12px;color:var(--muted)}
+.repro-kpi b{font-size:24px;font-family:Fraunces,serif;color:var(--ink)}
+.repro-kpi b.gold{color:#8a6a2c}.repro-kpi b.neg{color:var(--neg)}
 .card-acts{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
 .btn-del{display:inline-flex;align-items:center;gap:6px;background:transparent;border:1px solid var(--line);color:var(--muted);padding:7px 12px;border-radius:9px;font-size:12.5px;cursor:pointer;font-family:inherit;transition:.15s}
 .btn-del:hover{border-color:var(--neg);color:var(--neg);background:rgba(176,74,58,.05)}
