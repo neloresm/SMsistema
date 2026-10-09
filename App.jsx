@@ -1251,7 +1251,7 @@ function DescendenciaSecao({ a, ativos, onAbrir }) {
 }
 
 /* ------------------------------ ficha detalhe -------------------------- */
-function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onConfirm }) {
+function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onGerarPrenhez, onConfirm }) {
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", h);
@@ -1366,9 +1366,10 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, canD
               {(a.tipo === "prenhez" || a.tipo === "aspiracao") && <Badge tone="gold">Restam {qtdRest(a)} de {qtdTotal(a)}</Badge>}
               {alertaParto(a) === "atrasado" && <Badge tone="neg">Parto atrasado</Badge>}
               {["hoje", "7", "15", "30"].includes(alertaParto(a)) && <Badge tone="gold">Parto em {diasAteParto(a)} dia(s)</Badge>}
-              {a.origemLabel && <Badge tone="gold">Origem: {a.origemLabel}</Badge>}
+              {a.origemLabel && (() => { const org = a.origemId && (ativos || []).find((x) => x.id === a.origemId); return <span onClick={() => org && onAbrir && onAbrir(org)} style={{ cursor: org ? "pointer" : "default" }}><Badge tone="gold">Origem: {a.origemLabel}{org ? " ↗" : ""}</Badge></span>; })()}
             </div>
             <div className="ficha-actions"><button className="btn btn-gold" onClick={onEdit}>Editar</button>
+              {a.tipo === "aspiracao" && a.origem !== "genealogia" && onGerarPrenhez && <button className="btn btn-ghost" onClick={() => onGerarPrenhez(a)}>+ Gerar prenhez</button>}
               {(a.tipo === "prenhez" || a.tipo === "aspiracao") && a.origem !== "genealogia" && qtdRest(a) > 0 && onNascer && <button className="btn btn-gold" onClick={() => onNascer(a)}>🐣 Nasceu</button>}
               {canDelete && <button className="btn btn-ghost" onClick={onDelete}>Excluir</button>}<button className="x abs" onClick={onClose}>✕</button></div>
           </div>
@@ -1772,7 +1773,7 @@ const INFO_OPTS = [
   ["participacao", "Participação atual"], ["estimado", "Valor estimado"], ["investido", "Valor total investido"],
   ["pago", "Valor pago"], ["aberto", "Valor em aberto"], ["parcelas", "Parcelas"], ["comissao", "Comissão"],
   ["compras", "Compras"], ["vendas", "Vendas"], ["prenhezVinc", "Prenhezes vinculadas"],
-  ["aspiracaoVinc", "Aspirações vinculadas"], ["historico", "Histórico financeiro"], ["videos", "Vídeos (links)"], ["obs", "Observações"],
+  ["aspiracaoVinc", "Aspirações vinculadas"], ["historico", "Histórico financeiro"], ["reprodutivo", "Acompanhamento reprodutivo"], ["videos", "Vídeos (links)"], ["obs", "Observações"],
 ];
 // lista de vídeos com URL (para relatório)
 const videosLista = (a) => ((a && a.videos) || []).filter((v) => v && v.url);
@@ -1831,7 +1832,7 @@ const EYE_OFF = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stro
 function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const [tipoBusca, setTipoBusca] = useState("geral");
   const [q, setQ] = useState("");
-  const [campos, setCampos] = useState({ basico: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, videos: false, obs: false });
+  const [campos, setCampos] = useState({ basico: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, reprodutivo: false, videos: false, obs: false });
 
   // base: apenas registros com cadastro próprio (exclui ancestrais só-genealogia e arquivados)
   const base = (lista || []).filter((a) => a && a.origem !== "genealogia" && !a.arquivada);
@@ -1878,6 +1879,11 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
     if (campos.prenhezVinc) row["Prenhezes vinculadas"] = prenhezVinculadas(a, ativos).map((x) => x.nome).join("; ");
     if (campos.aspiracaoVinc) row["Aspirações vinculadas"] = aspVinculadas(a, ativos).map((x) => x.nome).join("; ");
     if (campos.historico) row["Histórico financeiro"] = (a.historico || []).map((h) => `${dataBR(h.data)}: ${h.desc || h.tipo}`).join(" | ");
+    if (campos.reprodutivo) {
+      row["Criatório"] = a.criatorio || "";
+      if (a.tipo === "prenhez") { row["Previsão parto"] = a.previsaoParto ? dataBR(a.previsaoParto) : ""; row["Data parto"] = a.dataParto ? dataBR(a.dataParto) : ""; row["Receptora"] = a.receptora || ""; row["Responsável"] = a.responsavel || ""; }
+      if (a.tipo === "aspiracao") { row["Oócitos"] = a.oocitos || ""; row["Embriões"] = a.embrioes || ""; row["Embriões transf."] = a.embrioesTransf || ""; row["Prenhezes conf."] = a.prenhezesConf || ""; }
+    }
     if (campos.videos) row["Vídeos (links)"] = videosTexto(a);
     if (campos.obs) row["Observações"] = a.obs || "";
     return row;
@@ -2102,6 +2108,114 @@ function BackupSecao({ db, onRestaurar, isAdmin, usuario, ativos }) {
 
 
 
+/* ====================== CRIATÓRIOS PARCEIROS ========================== */
+function CriatoriosView({ criatorios, ativos, socioNames, onSalvar, onExcluir, onRegistrarContato, onAbrir }) {
+  const [form, setForm] = useState(null);     // criatório em edição/criação
+  const [contato, setContato] = useState(null); // criatório recebendo contato
+  const [cForm, setCForm] = useState({ data: today(), responsavel: "", meio: "WhatsApp", assunto: "", recebido: "", proximo: "" });
+
+  const reais = (ativos || []).filter((a) => a && a.origem !== "genealogia" && !a.arquivada);
+  // registros vinculados a um criatório (por campo criatorio OU onde está)
+  const doCriatorio = (nome) => reais.filter((a) => lc(a.criatorio) === lc(nome) || lc(a.ondeEsta) === lc(nome));
+
+  const salvarCont = () => {
+    if (!cForm.assunto && !cForm.recebido) { setContato(null); return; }
+    onRegistrarContato(contato.id, { id: uid(), ...cForm });
+    setContato(null); setCForm({ data: today(), responsavel: "", meio: "WhatsApp", assunto: "", recebido: "", proximo: "" });
+  };
+
+  return (
+    <section className="wrap">
+      <div className="card">
+        <div className="card-h">Criatórios Parceiros <span className="muted">({(criatorios || []).length})</span></div>
+        <p className="muted small" style={{ marginTop: -4 }}>Onde seus animais, prenhezes e aspirações estão sob responsabilidade de parceiros. Vincule preenchendo o <b>Criatório responsável</b> (ou "Onde está") nas fichas.</p>
+        <button className="btn btn-gold" style={{ marginTop: 8 }} onClick={() => setForm({ id: uid(), nome: "", contato: "", tel: "", obs: "", contatos: [] })}>+ Novo criatório</button>
+      </div>
+
+      <div className="cards-grid wide">
+        {(criatorios || []).map((c) => {
+          const regs = doCriatorio(c.nome);
+          const animais = regs.filter((a) => a.tipo === "animal");
+          const prenh = regs.filter((a) => a.tipo === "prenhez");
+          const asp = regs.filter((a) => a.tipo === "aspiracao");
+          const partosProx = prenh.filter((a) => { const n = alertaParto(a); return n && n !== null; });
+          const ultimo = (c.contatos || []).slice().sort((x, y) => (y.data || "").localeCompare(x.data || ""))[0];
+          return (
+            <div className="card" key={c.id}>
+              <div className="card-h">{c.nome}</div>
+              <div className="socio-lines">
+                <div><span>Contato</span><b>{c.contato || "—"}</b></div>
+                <div><span>Telefone/WhatsApp</span><b>{c.tel || "—"}</b></div>
+                <div><span>Animais</span><b>{animais.length}</b></div>
+                <div><span>Prenhezes</span><b>{prenh.length}</b></div>
+                <div><span>Aspirações</span><b>{asp.length}</b></div>
+                <div><span>Partos próximos/atrasados</span><b className={partosProx.length ? "neg" : ""}>{partosProx.length}</b></div>
+                <div><span>Último contato</span><b>{ultimo ? dataBR(ultimo.data) : "—"}</b></div>
+              </div>
+              <div className="socio-parts">{regs.slice(0, 12).map((a) => <span className="tag" key={a.id} onClick={() => onAbrir(a)}>{a.nome}</span>)}
+                {regs.length === 0 && <span className="muted small">Nenhum registro vinculado ainda.</span>}</div>
+              {(c.contatos || []).length > 0 && (
+                <div className="muted small" style={{ marginTop: 8 }}>{c.contatos.length} contato(s) registrado(s). Último: {ultimo.assunto || ultimo.recebido || "—"}</div>
+              )}
+              <div className="card-acts">
+                <button className="btn btn-mini gold" onClick={() => setContato(c)}>Registrar contato</button>
+                <button className="btn btn-mini" onClick={() => setForm(c)}>Editar</button>
+                <button className="btn-del" onClick={() => onExcluir(c)}>🗑 Excluir</button>
+              </div>
+            </div>
+          );
+        })}
+        {(criatorios || []).length === 0 && <div className="empty">Nenhum criatório cadastrado. Clique em "+ Novo criatório".</div>}
+      </div>
+
+      {form && (
+        <div className="modal-bg" onClick={() => setForm(null)}>
+          <div className="modal confirm" onClick={(e) => e.stopPropagation()}>
+            <div className="confirm-h">{form.nome ? "Editar criatório" : "Novo criatório"}</div>
+            <label className="field"><span>Nome do criatório</span><input value={form.nome} onChange={(e) => setForm({ ...form, nome: e.target.value })} placeholder="ex.: Nelore Lince" autoFocus /></label>
+            <label className="field"><span>Pessoa de contato</span><input value={form.contato} onChange={(e) => setForm({ ...form, contato: e.target.value })} /></label>
+            <label className="field"><span>Telefone / WhatsApp</span><input value={form.tel} onChange={(e) => setForm({ ...form, tel: e.target.value })} /></label>
+            <label className="field"><span>Observações</span><textarea rows={2} value={form.obs} onChange={(e) => setForm({ ...form, obs: e.target.value })} /></label>
+            <div className="confirm-acts">
+              <button className="btn btn-ghost" onClick={() => setForm(null)}>Cancelar</button>
+              <button className="btn btn-gold" disabled={!form.nome.trim()} onClick={() => { onSalvar(form); setForm(null); }}>Salvar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {contato && (
+        <div className="modal-bg" onClick={() => setContato(null)}>
+          <div className="modal confirm" onClick={(e) => e.stopPropagation()}>
+            <div className="confirm-h">Registrar contato — {contato.nome}</div>
+            <div className="grid">
+              <label className="field"><span>Data</span><input type="date" value={cForm.data} onChange={(e) => setCForm({ ...cForm, data: e.target.value })} /></label>
+              <label className="field"><span>Responsável</span><input value={cForm.responsavel} onChange={(e) => setCForm({ ...cForm, responsavel: e.target.value })} /></label>
+              <label className="field"><span>Meio</span>
+                <select value={cForm.meio} onChange={(e) => setCForm({ ...cForm, meio: e.target.value })}><option>WhatsApp</option><option>Telefone</option><option>E-mail</option><option>Presencial</option><option>Outro</option></select></label>
+              <label className="field"><span>Próximo acompanhamento</span><input type="date" value={cForm.proximo} onChange={(e) => setCForm({ ...cForm, proximo: e.target.value })} /></label>
+              <label className="field wide"><span>Assunto</span><input value={cForm.assunto} onChange={(e) => setCForm({ ...cForm, assunto: e.target.value })} /></label>
+              <label className="field wide"><span>Informações recebidas</span><textarea rows={2} value={cForm.recebido} onChange={(e) => setCForm({ ...cForm, recebido: e.target.value })} /></label>
+            </div>
+            {(contato.contatos || []).length > 0 && (
+              <div className="tbl-wrap" style={{ marginTop: 6, maxHeight: 160, overflow: "auto" }}><table className="tbl">
+                <thead><tr><th>Data</th><th>Meio</th><th>Assunto</th></tr></thead>
+                <tbody>{contato.contatos.slice().sort((x, y) => (y.data || "").localeCompare(x.data || "")).map((h) => (
+                  <tr key={h.id}><td>{dataBR(h.data)}</td><td>{h.meio}</td><td className="small">{h.assunto || h.recebido || "—"}</td></tr>
+                ))}</tbody>
+              </table></div>
+            )}
+            <div className="confirm-acts">
+              <button className="btn btn-ghost" onClick={() => setContato(null)}>Fechar</button>
+              <button className="btn btn-gold" onClick={salvarCont}>Salvar contato</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
 /* ================================= APP ================================= */
 export default function App() {
   const [db, setDb] = useState(SEED);
@@ -2140,6 +2254,7 @@ export default function App() {
       users: Array.isArray(base.users) ? base.users.filter(Boolean) : [],
       prefichas: Array.isArray(base.prefichas) ? base.prefichas.filter(Boolean) : [],
       migracoes: Array.isArray(base.migracoes) ? base.migracoes.filter(Boolean) : [],
+      criatorios: Array.isArray(base.criatorios) ? base.criatorios.filter(Boolean) : [],
     };
   };
 
@@ -2241,7 +2356,7 @@ export default function App() {
     return m;
   }, [ativos]);
   const leilaoNames = useMemo(() => { const s = new Set((db.leiloes || []).filter((l) => l && !l.arquivado).map((l) => l.nome).filter(Boolean)); (ativos || []).forEach((a) => a && a.leilao && s.add(a.leilao)); return [...s]; }, [db.leiloes, ativos]);
-  const localNames = useMemo(() => { const s = new Set((db.locais || []).filter(Boolean)); (ativos || []).forEach((a) => a && a.ondeEsta && s.add(a.ondeEsta)); return [...s]; }, [db.locais, ativos]);
+  const localNames = useMemo(() => { const s = new Set((db.locais || []).filter(Boolean)); (ativos || []).forEach((a) => { if (a && a.ondeEsta) s.add(a.ondeEsta); if (a && a.criatorio) s.add(a.criatorio); }); (db.criatorios || []).forEach((c) => c && c.nome && s.add(c.nome)); return [...s]; }, [db.locais, db.criatorios, ativos]);
   const vendedorNames = useMemo(() => { const s = new Set((db.vendedores || []).map((v) => v && v.nome).filter(Boolean)); (ativos || []).forEach((a) => a && a.vendedor && s.add(a.vendedor)); return [...s]; }, [db.vendedores, ativos]);
   const socioNames = useMemo(() => (db.socios || []).filter((s) => s && !s.arquivado).map((s) => s.nome).filter(Boolean), [db.socios]);
 
@@ -2320,7 +2435,7 @@ export default function App() {
       __fromOrigem: true,
       nome: "", registro: "", raca: src.raca || "Nelore",
       sexo: ehPren ? "Fêmea" : "",                 // prenhez sempre fêmea; aspiração o usuário escolhe
-      nascimento: "", status: "", ondeEsta: src.ondeEsta || "",
+      nascimento: "", status: "", ondeEsta: src.ondeEsta || "", criatorio: src.criatorio || "",
       // genealogia herdada
       pai: src.pai || src.touro || "", mae: src.doadora || "",
       maeRegistro: src.regDoadora || "",
@@ -2334,6 +2449,22 @@ export default function App() {
     };
     setAberto(null);
     setForm({ tipo: "animal", initial: novo });
+  };
+
+  /* aspiração → gera uma PRENHEZ vinculada (a aspiração continua existindo) */
+  const gerarPrenhez = (asp) => {
+    const nova = {
+      id: uid(), tipo: "prenhez", origem: "aspiracao",
+      aspiracaoOrigemId: asp.id, origemLabel: rotuloReprod(asp), __fromOrigem: true, origemTipo: "aspiracao",
+      doadora: asp.doadora || "", regDoadora: asp.regDoadora || "", pai: asp.pai || asp.touro || "",
+      qtd: 1, status: "Aguardando confirmação", ondeEsta: asp.ondeEsta || "", criatorio: asp.criatorio || "",
+      avoPaterno: asp.avoPaterno || "", avoPaterna: asp.avoPaterna || "", avoMaterno: asp.avoMaterno || "", avoMaterna: asp.avoMaterna || "",
+      obsGen: asp.obsGen || "",
+      socios: (asp.socios || []).filter(Boolean).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct, obs: s.obs || "" })),
+      videos: [], historico: [], comissaoPct: 8, obs: "",
+    };
+    setAberto(null);
+    setForm({ tipo: "prenhez", initial: nova });
   };
   const excluir = (id) => { setDb((p) => ({ ...p, ativos: p.ativos.filter((a) => a.id !== id) })); setAberto(null); };
 
@@ -2385,6 +2516,14 @@ export default function App() {
   const quickLocal = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => ((p.locais || []).some((l) => lc(l) === lc(nm)) ? p : { ...p, locais: [...(p.locais || []), nm] })); };
   const quickVendedor = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => ((p.vendedores || []).some((v) => v && lc(v.nome) === lc(nm)) ? p : { ...p, vendedores: [...(p.vendedores || []), { id: uid(), nome: nm, tipo: "Outro", doc: "", tel: "", email: "", obs: "" }] })); };
   const quickSocio = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => ((p.socios || []).some((s) => s && lc(s.nome) === lc(nm)) ? p : { ...p, socios: [...(p.socios || []), { id: uid(), nome: nm, doc: "", tel: "", email: "", endereco: "", obs: "" }] })); };
+
+  // Criatórios parceiros
+  const salvarCriatorio = (c) => setDb((p) => {
+    const existe = (p.criatorios || []).some((x) => x.id === c.id);
+    return { ...p, criatorios: existe ? (p.criatorios || []).map((x) => (x.id === c.id ? c : x)) : [...(p.criatorios || []), c] };
+  });
+  const excluirCriatorio = (c) => setConfirmar({ titulo: `Excluir o criatório ${c.nome}?`, mensagem: "O criatório sai da lista. Os animais/prenhezes vinculados a ele não são afetados (o vínculo é pelo nome nas fichas).", usos: [], botoes: [{ label: "Excluir", tone: "danger", onClick: () => { setDb((p) => ({ ...p, criatorios: (p.criatorios || []).filter((x) => x.id !== c.id) })); setConfirmar(null); } }] });
+  const registrarContato = (criatorioId, contato) => setDb((p) => ({ ...p, criatorios: (p.criatorios || []).map((x) => (x.id === criatorioId ? { ...x, contatos: [...(x.contatos || []), contato] } : x)) }));
 
   const invTipo = useMemo(() => { const m = {}; reais.forEach((a) => { m[a.tipo] = (m[a.tipo] || 0) + finance(a).cota; }); return Object.entries(m).map(([name, value]) => ({ name, value })); }, [ativos]);
 
@@ -2448,7 +2587,7 @@ export default function App() {
   }, [qBusca, ativos, db.socios, db.leiloes]);
 
   const nav = [["dashboard", "◆", "Painel"], ["animal", "❖", "Animais"], ["prenhez", "◗", "Prenhezes"], ["aspiracao", "✧", "Aspirações"],
-    ["pendencias", "⬣", "Pendências"], ["socios", "◎", "Sócios"], ["parcelas", "▤", "Parcelas"], ["leiloes", "⚑", "Leilões"], ["relatorios", "▦", "Relatórios"],
+    ["pendencias", "⬣", "Pendências"], ["criatorios", "⌂", "Criatórios"], ["socios", "◎", "Sócios"], ["parcelas", "▤", "Parcelas"], ["leiloes", "⚑", "Leilões"], ["relatorios", "▦", "Relatórios"],
     ...(isAdmin ? [["usuarios", "◐", "Usuários"]] : [])];
 
   if (!authReady) return <div className="auth-bg"><style>{CSS}</style><div className="auth-card"><div className="auth-brand"><div className="brand-mark">SM</div><div><div className="serif auth-title">SM sistema</div><div className="brand-sub">Gado de Elite</div></div></div><div className="auth-note">Carregando…</div></div></div>;
@@ -2705,6 +2844,11 @@ export default function App() {
           </section>
         )}
 
+        {view === "criatorios" && (
+          <CriatoriosView criatorios={db.criatorios || []} ativos={ativos} socioNames={socioNames}
+            onSalvar={salvarCriatorio} onExcluir={excluirCriatorio} onRegistrarContato={registrarContato} onAbrir={setAberto} />
+        )}
+
         {view === "relatorios" && (
           <RelatoriosView lista={ativos} ativos={ativos} db={db} onRestaurar={(novo) => { setDb(normalizeDb(novo)); }} isAdmin={isAdmin} usuario={profile && profile.nome} />
         )}
@@ -2734,7 +2878,7 @@ export default function App() {
         animalNames={animalNames} animalReg={animalReg} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
         onSave={salvar} onClose={() => setForm(null)} />}
-      {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo}
+      {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onGerarPrenhez={gerarPrenhez} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo}
         onEdit={() => { setForm({ tipo: aberto.tipo, initial: aberto }); setAberto(null); }} onDelete={() => pedirExcluirAtivo(aberto)} />}
       {navOpen && <div className="scrim" onClick={() => setNavOpen(false)} />}
 
