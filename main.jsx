@@ -1,11 +1,14 @@
-import { createClient } from "@supabase/supabase-js";
+import React from "react";
+import ReactDOM from "react-dom/client";
+import App from "./App.jsx";
 
 /*
- * Conexão com o banco na nuvem (Supabase).
- * A URL e a chave "publishable" são públicas por natureza — a segurança
- * vem das políticas de acesso (RLS) criadas pelo script supabase-setup.sql.
+ * SM sistema — todos os dados e o login são gerenciados pelo Supabase
+ * (banco na nuvem). Nenhum dado do sistema fica salvo neste navegador;
+ * apenas o token de sessão do login (para manter o usuário conectado).
  */
-const SUPABASE_URL = "https://rtftkxbhmsfmkatlzlpe.supabase.co";
-const SUPABASE_KEY = "sb_publishable_LyWU9Y0hsdLdWFCvSvGb9w_55vQ919z";
-
-export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+ReactDOM.createRoot(document.getElementById("root")).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>
+);
