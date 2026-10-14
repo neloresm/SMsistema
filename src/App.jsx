@@ -1901,10 +1901,9 @@ const EYE_ON = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" strok
 const EYE_OFF = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></svg>;
 
 function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
-  const [tipoBusca, setTipoBusca] = useState("geral");
   const [q, setQ] = useState("");
   const [campos, setCampos] = useState({ basico: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, reprodutivo: false, videos: false, obs: false });
-  const ADV_VAZIO = { situacao: "ativos", sexo: [], faixas: [], nascDe: "", nascAte: "", socios: [], partMin: "", partMax: "", comSociedade: false, part100: false, leiloes: [], vendedor: "", comprador: "", compraDe: "", compraAte: "", aquisicao: [], ondeEsta: "", estMin: "", estMax: "", pagoMin: "", pagoMax: "", abertoMin: "", abertoMax: "" };
+  const ADV_VAZIO = { tipoReg: "animal", situacao: "ativos", sexo: [], faixas: [], nascDe: "", nascAte: "", socios: [], partMin: "", partMax: "", comSociedade: false, part100: false, leiloes: [], vendedor: "", comprador: "", compraDe: "", compraAte: "", aquisicao: [], ondeEsta: "", estMin: "", estMax: "", pagoMin: "", pagoMax: "", abertoMin: "", abertoMax: "" };
   const [adv, setAdv] = useState(ADV_VAZIO);
   const [painelAberto, setPainelAberto] = useState(false);
 
@@ -1917,57 +1916,64 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   // base: apenas registros com cadastro próprio (exclui ancestrais só-genealogia e arquivados)
   const base = (lista || []).filter((a) => a && a.origem !== "genealogia" && !a.arquivada);
   const nq = norm(q).trim();
+  // pesquisa principal: por Nome OU Registro (RG) — campo vazio não restringe
   const matchTipo = (a) => {
     if (!nq) return true;
-    switch (tipoBusca) {
-      case "animal": return norm(a.nome).includes(nq);
-      case "socio": return ((a.sociedadeAtual || a.socios || []).filter(Boolean)).some((s) => norm(s.nome).includes(nq));
-      case "ondeEsta": return norm(a.ondeEsta).includes(nq);
-      case "leilao": return norm(a.leilao).includes(nq);
-      case "vendedor": return norm(a.vendedor).includes(nq);
-      case "comprador": return vendasDo(a).some((v) => norm(v.comprador).includes(nq));
-      case "registro": return norm(a.registro).includes(nq);
-      default: try { return norm(JSON.stringify(a)).includes(nq); } catch (e) { return false; }
-    }
+    return norm(a.nome).includes(nq) || norm(a.registro).includes(nq);
   };
 
-  // filtros avançados: dentro do mesmo campo = OU; entre campos = E
+  // situação conforme o tipo de registro (usa os estados já existentes de cada módulo)
+  const estaAtivo = (a) => {
+    if (a.tipo === "prenhez") return prenhezAtiva(a);
+    if (a.tipo === "aspiracao") return aspAtiva(a);
+    return ehAtivo(a); // animal (e genealogia/arquivada já excluídos da base)
+  };
+
+  // filtros: dentro do mesmo campo = OU; entre campos = E. Filtro vazio não restringe.
   const matchAvancado = (a) => {
-    // situação (só afeta animais)
+    // tipo de registro (principal) — não mistura os tipos
+    if (adv.tipoReg !== "todos" && a.tipo !== adv.tipoReg) return false;
+    // situação (principal) — vale para qualquer tipo, usando os estados de cada módulo
+    if (adv.situacao === "ativos" && !estaAtivo(a)) return false;
+    if (adv.situacao === "inativos" && estaAtivo(a)) return false;
+
+    // filtros avançados — específicos de animais; só restringem registros de animais
+    // (quando filtrando prenhezes/aspirações, não bloqueiam esses registros)
     if (a.tipo === "animal") {
-      if (adv.situacao === "ativos" && !ehAtivo(a)) return false;
-      if (adv.situacao === "inativos" && ehAtivo(a)) return false;
+      if (adv.sexo.length && !adv.sexo.some((x) => lc(a.sexo).startsWith(lc(x).charAt(0)))) return false;
+      if (adv.faixas.length) { const m = mesesDe(a.nascimento); const ok = m != null && adv.faixas.some((fk) => { const f = FAIXAS_IDADE.find((z) => z[0] === fk); return f && m >= f[2] && m < f[3]; }); if (!ok) return false; }
+      if (adv.nascDe && (!a.nascimento || a.nascimento < adv.nascDe)) return false;
+      if (adv.nascAte && (!a.nascimento || a.nascimento > adv.nascAte)) return false;
+      if (adv.socios.length) { const soc = (a.sociedadeAtual || a.socios || []); if (!adv.socios.some((n) => soc.some((s) => lc(s.nome) === lc(n)))) return false; }
+      const part = participacaoAtual(a);
+      if (adv.partMin !== "" && part < num(adv.partMin)) return false;
+      if (adv.partMax !== "" && part > num(adv.partMax)) return false;
+      if (adv.comSociedade && !((a.sociedadeAtual || a.socios || []).filter(Boolean).length > 0)) return false;
+      if (adv.part100 && part !== 100) return false;
+      if (adv.leiloes.length && !adv.leiloes.some((l) => lc(a.leilao) === lc(l))) return false;
+      if (adv.vendedor && !norm(a.vendedor).includes(norm(adv.vendedor))) return false;
+      if (adv.comprador && !vendasDo(a).some((v) => norm(v.comprador).includes(norm(adv.comprador)))) return false;
+      if (adv.compraDe && (!a.dataCompra || a.dataCompra < adv.compraDe)) return false;
+      if (adv.compraAte && (!a.dataCompra || a.dataCompra > adv.compraAte)) return false;
+      if (adv.aquisicao.length && !adv.aquisicao.some((t) => lc(a.origemAnimal) === lc(t))) return false;
+      if (adv.ondeEsta && !norm(a.ondeEsta).includes(norm(adv.ondeEsta))) return false;
+      const f = finance(a);
+      if (adv.estMin !== "" && f.totalEstimado < num(adv.estMin)) return false;
+      if (adv.estMax !== "" && f.totalEstimado > num(adv.estMax)) return false;
+      if (adv.pagoMin !== "" && f.pago < num(adv.pagoMin)) return false;
+      if (adv.pagoMax !== "" && f.pago > num(adv.pagoMax)) return false;
+      if (adv.abertoMin !== "" && f.aberto < num(adv.abertoMin)) return false;
+      if (adv.abertoMax !== "" && f.aberto > num(adv.abertoMax)) return false;
     }
-    if (adv.sexo.length && !adv.sexo.some((x) => lc(a.sexo).startsWith(lc(x).charAt(0)))) return false;
-    if (adv.faixas.length) { const m = mesesDe(a.nascimento); const ok = m != null && adv.faixas.some((fk) => { const f = FAIXAS_IDADE.find((z) => z[0] === fk); return f && m >= f[2] && m < f[3]; }); if (!ok) return false; }
-    if (adv.nascDe && (!a.nascimento || a.nascimento < adv.nascDe)) return false;
-    if (adv.nascAte && (!a.nascimento || a.nascimento > adv.nascAte)) return false;
-    if (adv.socios.length) { const soc = (a.sociedadeAtual || a.socios || []); if (!adv.socios.some((n) => soc.some((s) => lc(s.nome) === lc(n)))) return false; }
-    const part = participacaoAtual(a);
-    if (adv.partMin !== "" && part < num(adv.partMin)) return false;
-    if (adv.partMax !== "" && part > num(adv.partMax)) return false;
-    if (adv.comSociedade && !((a.sociedadeAtual || a.socios || []).filter(Boolean).length > 0)) return false;
-    if (adv.part100 && part !== 100) return false;
-    if (adv.leiloes.length && !adv.leiloes.some((l) => lc(a.leilao) === lc(l))) return false;
-    if (adv.vendedor && !norm(a.vendedor).includes(norm(adv.vendedor))) return false;
-    if (adv.comprador && !vendasDo(a).some((v) => norm(v.comprador).includes(norm(adv.comprador)))) return false;
-    if (adv.compraDe && (!a.dataCompra || a.dataCompra < adv.compraDe)) return false;
-    if (adv.compraAte && (!a.dataCompra || a.dataCompra > adv.compraAte)) return false;
-    if (adv.aquisicao.length && !adv.aquisicao.some((t) => lc(a.origemAnimal) === lc(t))) return false;
-    if (adv.ondeEsta && !norm(a.ondeEsta).includes(norm(adv.ondeEsta))) return false;
-    const f = finance(a);
-    if (adv.estMin !== "" && f.totalEstimado < num(adv.estMin)) return false;
-    if (adv.estMax !== "" && f.totalEstimado > num(adv.estMax)) return false;
-    if (adv.pagoMin !== "" && f.pago < num(adv.pagoMin)) return false;
-    if (adv.pagoMax !== "" && f.pago > num(adv.pagoMax)) return false;
-    if (adv.abertoMin !== "" && f.aberto < num(adv.abertoMin)) return false;
-    if (adv.abertoMax !== "" && f.aberto > num(adv.abertoMax)) return false;
     return true;
   };
 
   // conta filtros ativos (para o resumo e as etiquetas)
   const chipsAtivos = [];
-  if (adv.situacao !== "ativos") chipsAtivos.push({ k: "situacao", label: `Situação: ${adv.situacao}`, clear: () => setAdv((p) => ({ ...p, situacao: "ativos" })) });
+  const TIPOREG_LBL = { animal: "Animais", prenhez: "Prenhezes", aspiracao: "Aspirações", todos: "Todos os tipos" };
+  const SIT_LBL = { ativos: "Ativos", inativos: "Inativos", todos: "Todos" };
+  if (adv.tipoReg !== "todos") chipsAtivos.push({ k: "tipoReg", label: TIPOREG_LBL[adv.tipoReg], clear: () => setAdv((p) => ({ ...p, tipoReg: "todos" })) });
+  if (adv.situacao !== "todos") chipsAtivos.push({ k: "situacao", label: SIT_LBL[adv.situacao], clear: () => setAdv((p) => ({ ...p, situacao: "todos" })) });
   adv.sexo.forEach((x) => chipsAtivos.push({ k: "sexo" + x, label: `Sexo: ${x}`, clear: () => setAdv((p) => ({ ...p, sexo: p.sexo.filter((z) => z !== x) })) }));
   adv.faixas.forEach((x) => { const f = FAIXAS_IDADE.find((z) => z[0] === x); chipsAtivos.push({ k: "faixa" + x, label: `Idade: ${f ? f[1] : x}`, clear: () => setAdv((p) => ({ ...p, faixas: p.faixas.filter((z) => z !== x) })) }); });
   if (adv.nascDe || adv.nascAte) chipsAtivos.push({ k: "nasc", label: `Nasc.: ${adv.nascDe ? dataBR(adv.nascDe) : "…"}–${adv.nascAte ? dataBR(adv.nascAte) : "…"}`, clear: () => setAdv((p) => ({ ...p, nascDe: "", nascAte: "" })) });
@@ -1986,7 +1992,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   if (adv.abertoMin !== "" || adv.abertoMax !== "") chipsAtivos.push({ k: "ab", label: `Em aberto: ${fmt(num(adv.abertoMin))}–${adv.abertoMax ? fmt(num(adv.abertoMax)) : "…"}`, clear: () => setAdv((p) => ({ ...p, abertoMin: "", abertoMax: "" })) });
 
   const listaF = base.filter((a) => matchTipo(a) && matchAvancado(a));
-  const limparFiltros = () => { setAdv(ADV_VAZIO); setQ(""); setTipoBusca("geral"); };
+  const limparFiltros = () => { setAdv(ADV_VAZIO); setQ(""); };
   const toggleArr = (campo, valor) => setAdv((p) => ({ ...p, [campo]: p[campo].includes(valor) ? p[campo].filter((z) => z !== valor) : [...p[campo], valor] }));
 
   const [sel, setSel] = useState(() => new Set(base.map((a) => a.id)));
@@ -2108,18 +2114,33 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   return (
     <section className="wrap">
       <div className="card">
-        <div className="card-h">Buscar por</div>
-        <div className="rep-busca">
-          <select value={tipoBusca} onChange={(e) => setTipoBusca(e.target.value)} className="rep-sel">
-            {BUSCA_TIPOS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-          </select>
-          <input className="rep-inp" value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Pesquisar por ${(BUSCA_TIPOS.find(([k]) => k === tipoBusca) || [])[1] || "Geral"}…`} />
-          {q && <button className="btn btn-ghost" onClick={() => setQ("")}>limpar</button>}
-          <button className={`btn ${painelAberto ? "btn-gold" : "btn-ghost"}`} onClick={() => setPainelAberto((v) => !v)}>⚙ Filtros avançados{chipsAtivos.length ? ` (${chipsAtivos.length})` : ""}</button>
+        <div className="card-h">Filtros principais</div>
+        <div className="rep-princ">
+          <div className="rep-campo"><label>Tipo de registro</label>
+            <select className="rep-sel" value={adv.tipoReg} onChange={(e) => setAdv((p) => ({ ...p, tipoReg: e.target.value }))}>
+              <option value="animal">Animais</option>
+              <option value="prenhez">Prenhezes</option>
+              <option value="aspiracao">Aspirações</option>
+              <option value="todos">Todos</option>
+            </select>
+          </div>
+          <div className="rep-campo"><label>Situação</label>
+            <select className="rep-sel" value={adv.situacao} onChange={(e) => setAdv((p) => ({ ...p, situacao: e.target.value }))}>
+              <option value="ativos">Ativos</option>
+              <option value="inativos">Inativos</option>
+              <option value="todos">Todos</option>
+            </select>
+          </div>
+          <div className="rep-campo rep-campo-busca"><label>Pesquisar</label>
+            <div className="rep-busca-in">
+              <input className="rep-inp" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Nome ou RG…" />
+              {q && <button className="btn btn-ghost" onClick={() => setQ("")}>limpar</button>}
+            </div>
+          </div>
         </div>
 
         <div className="rep-resumo">
-          <b>{listaF.length}</b> animal(is) encontrado(s){chipsAtivos.length ? ` — ${chipsAtivos.length} filtro(s) aplicado(s)` : ""}
+          <b>{listaF.length}</b> registro(s) encontrado(s)
           {(chipsAtivos.length || q) ? <button className="btn btn-mini" style={{ marginLeft: 10 }} onClick={limparFiltros}>Limpar filtros</button> : null}
         </div>
 
@@ -2129,26 +2150,13 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
           </div>
         )}
 
-        {painelAberto && (
+        <button className={`btn adv-toggle ${painelAberto ? "btn-gold" : "btn-ghost"}`} onClick={() => setPainelAberto((v) => !v)}>
+          {painelAberto ? "▲ Ocultar filtros avançados" : "▼ Filtros avançados"}{chipsAtivos.length > 2 ? ` (${chipsAtivos.length - 2} extra)` : ""}
+        </button>
+
+        {painelAberto && (adv.tipoReg === "animal" || adv.tipoReg === "todos") && (
           <div className="adv-panel">
-            {/* Identificação */}
-            <div className="adv-grupo"><div className="adv-tit">Identificação</div>
-              <div className="adv-row">
-                <div className="adv-campo"><label>Situação</label>
-                  <div className="seg-group sm">{[["ativos", "Ativos"], ["inativos", "Inativos"], ["todos", "Todos"]].map(([k, l]) => <button key={k} className={`seg ${adv.situacao === k ? "on" : ""}`} onClick={() => setAdv((p) => ({ ...p, situacao: k }))}>{l}</button>)}</div>
-                </div>
-                <div className="adv-campo"><label>Sexo</label>
-                  <div className="chip-opts">{["Fêmea", "Macho"].map((x) => <button key={x} className={`chip-opt ${adv.sexo.includes(x) ? "on" : ""}`} onClick={() => toggleArr("sexo", x)}>{x}</button>)}</div>
-                </div>
-              </div>
-              <div className="adv-campo"><label>Faixa de idade</label>
-                <div className="chip-opts">{FAIXAS_IDADE.map(([k, l]) => <button key={k} className={`chip-opt ${adv.faixas.includes(k) ? "on" : ""}`} onClick={() => toggleArr("faixas", k)}>{l}</button>)}</div>
-              </div>
-              <div className="adv-row">
-                <div className="adv-campo"><label>Nascimento de</label><input type="date" value={adv.nascDe} onChange={(e) => setAdv((p) => ({ ...p, nascDe: e.target.value }))} /></div>
-                <div className="adv-campo"><label>até</label><input type="date" value={adv.nascAte} onChange={(e) => setAdv((p) => ({ ...p, nascAte: e.target.value }))} /></div>
-              </div>
-            </div>
+            {adv.tipoReg === "todos" && <p className="muted small" style={{ margin: "0 0 4px" }}>Os filtros avançados abaixo se aplicam apenas aos animais; prenhezes e aspirações seguem apenas o tipo e a situação.</p>}
 
             {/* Sociedade */}
             <div className="adv-grupo"><div className="adv-tit">Sociedade</div>
@@ -2164,8 +2172,8 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
               </div>
             </div>
 
-            {/* Leilões e compras */}
-            <div className="adv-grupo"><div className="adv-tit">Leilões e compras</div>
+            {/* Aquisição */}
+            <div className="adv-grupo"><div className="adv-tit">Aquisição</div>
               {leiloesOpc.length > 0 && <div className="adv-campo"><label>Leilões (qualquer um)</label>
                 <div className="chip-opts">{leiloesOpc.map((x) => <button key={x} className={`chip-opt ${adv.leiloes.includes(x) ? "on" : ""}`} onClick={() => toggleArr("leiloes", x)}>{x}</button>)}</div></div>}
               <div className="adv-row">
@@ -2180,8 +2188,13 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
                 <div className="chip-opts">{AQUISICOES.map((x) => <button key={x} className={`chip-opt ${adv.aquisicao.includes(x) ? "on" : ""}`} onClick={() => toggleArr("aquisicao", x)}>{x}</button>)}</div></div>
             </div>
 
-            {/* Financeiro + localização */}
-            <div className="adv-grupo"><div className="adv-tit">Financeiro e localização</div>
+            {/* Localização */}
+            <div className="adv-grupo"><div className="adv-tit">Localização</div>
+              <div className="adv-campo"><label>Onde está</label><input value={adv.ondeEsta} onChange={(e) => setAdv((p) => ({ ...p, ondeEsta: e.target.value }))} /></div>
+            </div>
+
+            {/* Financeiro */}
+            <div className="adv-grupo"><div className="adv-tit">Financeiro</div>
               <div className="adv-row">
                 <div className="adv-campo"><label>Valor estimado mín.</label><input type="number" step="any" value={adv.estMin} onChange={(e) => setAdv((p) => ({ ...p, estMin: e.target.value }))} /></div>
                 <div className="adv-campo"><label>máx.</label><input type="number" step="any" value={adv.estMax} onChange={(e) => setAdv((p) => ({ ...p, estMax: e.target.value }))} /></div>
@@ -2190,7 +2203,20 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
                 <div className="adv-campo"><label>Valor pago mín.</label><input type="number" step="any" value={adv.pagoMin} onChange={(e) => setAdv((p) => ({ ...p, pagoMin: e.target.value }))} /></div>
                 <div className="adv-campo"><label>Em aberto mín.</label><input type="number" step="any" value={adv.abertoMin} onChange={(e) => setAdv((p) => ({ ...p, abertoMin: e.target.value }))} /></div>
               </div>
-              <div className="adv-campo"><label>Onde está</label><input value={adv.ondeEsta} onChange={(e) => setAdv((p) => ({ ...p, ondeEsta: e.target.value }))} /></div>
+            </div>
+
+            {/* Identificação */}
+            <div className="adv-grupo"><div className="adv-tit">Identificação</div>
+              <div className="adv-campo"><label>Sexo</label>
+                <div className="chip-opts">{["Fêmea", "Macho"].map((x) => <button key={x} className={`chip-opt ${adv.sexo.includes(x) ? "on" : ""}`} onClick={() => toggleArr("sexo", x)}>{x}</button>)}</div>
+              </div>
+              <div className="adv-campo"><label>Faixa de idade</label>
+                <div className="chip-opts">{FAIXAS_IDADE.map(([k, l]) => <button key={k} className={`chip-opt ${adv.faixas.includes(k) ? "on" : ""}`} onClick={() => toggleArr("faixas", k)}>{l}</button>)}</div>
+              </div>
+              <div className="adv-row">
+                <div className="adv-campo"><label>Nascimento de</label><input type="date" value={adv.nascDe} onChange={(e) => setAdv((p) => ({ ...p, nascDe: e.target.value }))} /></div>
+                <div className="adv-campo"><label>até</label><input type="date" value={adv.nascAte} onChange={(e) => setAdv((p) => ({ ...p, nascAte: e.target.value }))} /></div>
+              </div>
             </div>
 
             <div className="rep-tools">
@@ -2202,7 +2228,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
       </div>
 
       <div className="card">
-        <div className="card-h">Animais a exportar <span className="muted">({selecionados.length} de {listaF.length})</span></div>
+        <div className="card-h">Registros a exportar <span className="muted">({selecionados.length} de {listaF.length})</span></div>
         <div className="rep-tools"><button className="btn btn-ghost" onClick={todos}>Selecionar todos</button><button className="btn btn-ghost" onClick={nenhum}>Nenhum</button></div>
         <div className="sel-grid">
           {listaF.map((a) => (
@@ -3300,8 +3326,13 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .sel-item input{width:17px;height:17px;flex-shrink:0}
 .sel-item em{font-style:normal;font-size:12px}
 .rep-busca{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.rep-sel{padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;font-size:14px;min-width:150px}
-.rep-inp{flex:1;min-width:180px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px}
+.rep-sel{padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;font-size:14px;min-width:150px;width:100%}
+.rep-inp{flex:1;min-width:140px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px}
+.rep-princ{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;align-items:end}
+.rep-campo label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:5px}
+.rep-campo-busca{grid-column:1/-1}
+.rep-busca-in{display:flex;gap:8px;align-items:center}
+.adv-toggle{margin-top:12px}
 .rep-resumo{margin-top:10px;font-size:14px;color:var(--ink)}.rep-resumo b{font-size:16px;color:var(--forest)}
 .filtro-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
 .fchip{display:inline-flex;align-items:center;gap:6px;background:var(--paper);border:1px solid var(--line);border-radius:999px;padding:4px 6px 4px 11px;font-size:12.5px;color:var(--ink)}
