@@ -4,7 +4,7 @@ import {
   ResponsiveContainer, CartesianGrid, Legend, LineChart, Line,
 } from "recharts";
 import { supabase } from "./supabase";
-import * as XLSX from "xlsx";
+import * as XLSX from "xlsx-js-style";
 
 /* =========================================================================
    SM SISTEMA — Gestão de Gado de Elite  (compra por cotas)
@@ -2032,11 +2032,127 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
     return row;
   };
 
-  const exportarExcel = () => {
+  /* ---- opções de exportação (janela única): agrupamento + ordenação ---- */
+  const [showExport, setShowExport] = useState(false);
+  const EXP_PADRAO = { formato: "pdf", agrupar: "socio", ordenar: "nomeAZ", titulos: true };
+  const [exp, setExp] = useState(EXP_PADRAO);
+
+  const AGRUPAR_OPC = [["nenhum", "Sem agrupamento"], ["socio", "Sócio"], ["idade", "Faixa de idade"], ["leilao", "Leilão"], ["situacao", "Situação (Ativo/Inativo)"], ["ondeEsta", "Onde está"], ["participacao", "Participação da SM"]];
+  const ORDENAR_OPC = [["nomeAZ", "Nome (A–Z)"], ["nomeZA", "Nome (Z–A)"], ["idadeAsc", "Idade crescente"], ["idadeDesc", "Idade decrescente"], ["compraRecente", "Data de compra (mais recente)"], ["compraAntiga", "Data de compra (mais antiga)"], ["partDesc", "Participação da SM (maior → menor)"], ["valorDesc", "Valor (maior → menor)"]];
+  const PREFIXO_GRUPO = { socio: "SÓCIO", idade: "FAIXA DE IDADE", leilao: "LEILÃO", situacao: "SITUAÇÃO", ondeEsta: "ONDE ESTÁ", participacao: "PARTICIPAÇÃO DA SM" };
+  const ORDEM_IDADE = ["Até 12 meses", "13 a 24 meses", "25 a 36 meses", "37 a 48 meses", "49 a 60 meses", "Acima de 60 meses", "Idade não informada"];
+  const FAIXAS_PART = [["100%", (p) => p >= 100], ["75% a 99%", (p) => p >= 75 && p < 100], ["50% a 74%", (p) => p >= 50 && p < 75], ["25% a 49%", (p) => p >= 25 && p < 50], ["1% a 24%", (p) => p >= 1 && p < 25], ["0% (sem participação)", (p) => p < 1]];
+
+  // chaves de grupo de um registro (sócio pode gerar várias — aparece em mais de um grupo, sem duplicar no total)
+  const grupoKeysDe = (a, modo) => {
+    switch (modo) {
+      case "socio": { const s = (a.sociedadeAtual || a.socios || []).filter(Boolean).map((x) => x.nome).filter(Boolean); return s.length ? s : ["Sem sócio informado"]; }
+      case "idade": { const m = mesesDe(a.nascimento); if (m == null) return ["Idade não informada"]; if (m <= 12) return ["Até 12 meses"]; if (m <= 24) return ["13 a 24 meses"]; if (m <= 36) return ["25 a 36 meses"]; if (m <= 48) return ["37 a 48 meses"]; if (m <= 60) return ["49 a 60 meses"]; return ["Acima de 60 meses"]; }
+      case "leilao": return [a.leilao ? a.leilao : "Sem leilão informado"];
+      case "situacao": return [estaAtivo(a) ? "Ativos" : "Inativos"];
+      case "ondeEsta": return [a.ondeEsta ? a.ondeEsta : "Sem localização informada"];
+      case "participacao": { const p = participacaoAtual(a); const f = FAIXAS_PART.find((z) => z[1](p)); return [f ? f[0] : "0% (sem participação)"]; }
+      default: return ["Todos os registros"];
+    }
+  };
+
+  const ordenarLista = (arr, modo) => {
+    const c = [...arr];
+    const mes = (a) => { const m = mesesDe(a.nascimento); return m == null ? null : m; };
+    const est = (a) => finance(a).totalEstimado;
+    const cmpNome = (a, b) => lc(a.nome).localeCompare(lc(b.nome), "pt-BR");
+    switch (modo) {
+      case "nomeZA": c.sort((a, b) => cmpNome(b, a)); break;
+      case "idadeAsc": c.sort((a, b) => { const x = mes(a), y = mes(b); if (x == null && y == null) return cmpNome(a, b); if (x == null) return 1; if (y == null) return -1; return x - y || cmpNome(a, b); }); break;
+      case "idadeDesc": c.sort((a, b) => { const x = mes(a), y = mes(b); if (x == null && y == null) return cmpNome(a, b); if (x == null) return 1; if (y == null) return -1; return y - x || cmpNome(a, b); }); break;
+      case "compraRecente": c.sort((a, b) => String(b.dataCompra || "").localeCompare(String(a.dataCompra || "")) || cmpNome(a, b)); break;
+      case "compraAntiga": c.sort((a, b) => { const av = a.dataCompra || "", bv = b.dataCompra || ""; if (!av && !bv) return cmpNome(a, b); if (!av) return 1; if (!bv) return -1; return av.localeCompare(bv) || cmpNome(a, b); }); break;
+      case "partDesc": c.sort((a, b) => participacaoAtual(b) - participacaoAtual(a) || cmpNome(a, b)); break;
+      case "valorDesc": c.sort((a, b) => est(b) - est(a) || cmpNome(a, b)); break;
+      default: c.sort(cmpNome); // nomeAZ
+    }
+    return c;
+  };
+
+  // monta os grupos ordenados (chaves em ordem lógica) já com os itens ordenados
+  const montarGrupos = (listaSel, modo, ordenar) => {
+    if (modo === "nenhum") return [{ titulo: "Todos os registros", itens: ordenarLista(listaSel, ordenar) }];
+    const map = new Map();
+    listaSel.forEach((a) => grupoKeysDe(a, modo).forEach((k) => { if (!map.has(k)) map.set(k, []); map.get(k).push(a); }));
+    let chaves = [...map.keys()];
+    if (modo === "idade") chaves = ORDEM_IDADE.filter((k) => map.has(k));
+    else if (modo === "situacao") chaves = ["Ativos", "Inativos"].filter((k) => map.has(k));
+    else if (modo === "participacao") chaves = FAIXAS_PART.map((f) => f[0]).filter((k) => map.has(k));
+    else { const sem = chaves.filter((k) => /^Sem /.test(k)); const outros = chaves.filter((k) => !/^Sem /.test(k)).sort((a, b) => lc(a).localeCompare(lc(b), "pt-BR")); chaves = [...outros, ...sem]; }
+    return chaves.map((k) => ({ titulo: (PREFIXO_GRUPO[modo] ? PREFIXO_GRUPO[modo] + ": " : "") + k, itens: ordenarLista(map.get(k), ordenar) }));
+  };
+
+  // totais gerais SEM duplicidade (sempre sobre os selecionados únicos)
+  const totaisGerais = () => {
+    const temFin = campos.estimado || campos.investido || campos.pago || campos.aberto;
+    let est = 0, inv = 0, pago = 0, aberto = 0;
+    selecionados.forEach((a) => { const f = finance(a); est += f.totalEstimado; inv += f.total; pago += f.pago; aberto += f.aberto; });
+    return { unicos: selecionados.length, temFin, est, inv, pago, aberto };
+  };
+
+  // cor pastel por categoria de campo (cabeçalhos/rótulos) — células de dados ficam brancas
+  const corCampoHex = (k) => {
+    if (/^(tipo|nome|registro|sexo|categoria|nascimento|situação|raça)/i.test(k)) return "E6F0E9"; // verde pastel — identificação
+    if (/sócio|sociedade|participa/i.test(k)) return "EFE8F5"; // lilás — sociedade
+    if (/valor|investido|estimado|pago|aberto|parcela|comiss/i.test(k)) return "E8F0FB"; // azul — financeiro
+    if (/leilão|vendedor|comprador|compra|aquisi|pai|mãe|avô|avó|genealóg|criatório|receptora|responsável|oócitos|embri|prenhez|previsão parto|data parto/i.test(k)) return "F3ECD9"; // bege — leilão/aquisição/reprodutivo
+    if (/onde|histór|obs|víde/i.test(k)) return "EFEFEF"; // cinza — complementar
+    return "F5F2EA";
+  };
+
+  const exportarExcel = (opts) => {
     if (!selecionados.length) return;
+    const o = opts || exp;
+    const grupos = montarGrupos(selecionados, o.agrupar, o.ordenar);
+
+    // colunas: união dos campos (mesma lógica de linhaDe) preservando a ordem
+    const linhasPorId = new Map();
+    const colset = [];
+    selecionados.forEach((a) => { const r = linhaDe(a); linhasPorId.set(a.id, r); Object.keys(r).forEach((k) => { if (!colset.includes(k)) colset.push(k); }); });
+    const C = colset.length || 1;
+
+    const aoa = []; const estilos = [];
+    const addRow = (arr, st) => { aoa.push(arr); estilos.push(st || {}); };
+    const verde = "1A4A2D", ouro = "C6A15B";
+
+    // título principal + meta
+    addRow(["RELATÓRIO SM AGROPECUÁRIA"], { 0: { font: { bold: true, sz: 14, color: { rgb: verde } } } });
+    const metaAgr = (AGRUPAR_OPC.find(([k]) => k === o.agrupar) || [])[1] || "";
+    const metaOrd = (ORDENAR_OPC.find(([k]) => k === o.ordenar) || [])[1] || "";
+    addRow([`Gerado em ${new Date().toLocaleDateString("pt-BR")} · ${selecionados.length} registro(s) único(s) · Agrupado por: ${metaAgr} · Ordenado por: ${metaOrd}`], { 0: { font: { italic: true, sz: 9, color: { rgb: "777777" } } } });
+    addRow([]);
+
+    grupos.forEach((g) => {
+      if (o.agrupar !== "nenhum") {
+        const barra = {}; for (let i = 0; i < C; i++) barra[i] = { fill: { fgColor: { rgb: o.titulos ? verde : "FFFFFF" } }, font: { bold: true, sz: 12, color: { rgb: o.titulos ? "FFFFFF" : verde } } };
+        addRow(colset.map((_, i) => (i === 0 ? `${g.titulo}  (${g.itens.length} registro(s))` : "")), barra);
+      }
+      // cabeçalho (cores pastéis por categoria)
+      const hst = {}; colset.forEach((k, i) => { hst[i] = { fill: { fgColor: { rgb: corCampoHex(k) } }, font: { bold: true, sz: 10, color: { rgb: "333333" } }, alignment: { wrapText: true, vertical: "center" } }; });
+      addRow(colset.slice(), hst);
+      // dados (células brancas, valores inalterados)
+      g.itens.forEach((a) => { const r = linhasPorId.get(a.id); addRow(colset.map((k) => (r[k] == null ? "" : r[k]))); });
+      addRow([]);
+    });
+
+    // total geral sem duplicidade
+    const T = totaisGerais();
+    addRow([`Total geral: ${T.unicos} registro(s) único(s)`], { 0: { font: { bold: true, sz: 11, color: { rgb: verde } } } });
+    if (T.temFin) addRow([`Estimado: ${fmt(T.est)}  ·  Investido: ${fmt(T.inv)}  ·  Pago: ${fmt(T.pago)}  ·  Em aberto: ${fmt(T.aberto)}`], { 0: { font: { sz: 10, color: { rgb: "555555" } } } });
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    estilos.forEach((st, r) => Object.entries(st).forEach(([c, s]) => { const addr = XLSX.utils.encode_cell({ r, c: +c }); if (ws[addr]) ws[addr].s = s; }));
+    ws["!cols"] = colset.map((k) => ({ wch: Math.min(Math.max(String(k).length + 2, 12), 38) }));
+
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(selecionados.map(linhaDe)), "Animais");
-    // aba de parcelas detalhada
+    XLSX.utils.book_append_sheet(wb, ws, "Relatório");
+
+    // abas detalhadas (preservadas como já existiam)
     if (campos.parcelas) {
       const rows = [];
       selecionados.forEach((a) => parcelasUnificadas(a).forEach((p) => rows.push({ Animal: a.nome, "Nº": p.numero, Vencimento: dataBR(p.venc), Valor: p.valor, Origem: p.valorAdic > 0 && p.valorBase > 0 ? "original+adicional" : p.valorAdic > 0 ? "adicional" : "original" })));
@@ -2057,24 +2173,24 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
       selecionados.forEach((a) => (a.comprasAdic || []).forEach((c) => rows.push({ Animal: a.nome, Data: dataBR(c.data), "% adquirida": num(c.pctAdicional), Valor: num(c.valor) || num(c.valorParcela) * num(c.parcelas), Parcelas: c.parcelas || "" })));
       if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Compras");
     }
-    XLSX.writeFile(wb, "relatorio-sm-sistema.xlsx");
+    XLSX.writeFile(wb, "relatorio-sm-agropecuaria.xlsx");
   };
 
-  const exportarPDF = () => {
+  const exportarPDF = (opts) => {
     if (!selecionados.length) return;
+    const o = opts || exp;
     const esc = (v) => String(v ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-    const blocos = selecionados.map((a) => {
+    // cartão de um registro — MESMO modelo atual, incluindo a genealogia (SVG)
+    const cardDe = (a) => {
       const row = linhaDe(a);
-      // no PDF, a genealogia vira o MESMO pedigree visual da ficha (SVG)
       const genKeys = ["Pai", "Mãe", "Registro da mãe", "Avô paterno", "Avó paterna", "Avô materno", "Avó materna", "Obs. genealógicas"];
-      const linhas = Object.entries(row).filter(([k]) => k !== "Nome" && k !== "Vídeos (links)" && !(campos.genealogia && genKeys.includes(k))).map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td>${esc(typeof v === "number" && /valor|investido|estimado|comiss|pago|aberto|parcela/i.test(k) ? fmt(v) : v)}</td></tr>`).join("");
-      // vídeos: links clicáveis (não texto solto)
+      const linhas = Object.entries(row).filter(([k]) => k !== "Nome" && k !== "Vídeos (links)" && !(campos.genealogia && genKeys.includes(k))).map(([k, v]) => `<tr><td class="k" style="background:#${corCampoHex(k)}">${esc(k)}</td><td>${esc(typeof v === "number" && /valor|investido|estimado|comiss|pago|aberto|parcela/i.test(k) ? fmt(v) : v)}</td></tr>`).join("");
       let linhaVideos = "";
       if (campos.videos) {
         const vids = videosLista(a);
         if (vids.length) {
           const itens = vids.map((v) => `<a href="${esc(v.url)}" style="color:#1d3a2b">${esc(v.tipo || "Vídeo")}: ${esc(v.url)}</a>`).join("<br>");
-          linhaVideos = `<tr><td class="k">Vídeos</td><td>${itens}</td></tr>`;
+          linhaVideos = `<tr><td class="k" style="background:#EFEFEF">Vídeos</td><td>${itens}</td></tr>`;
         }
       }
       let genBloco = "";
@@ -2083,16 +2199,35 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
         if (svg) genBloco = `<div class="gtit">Genealogia</div><div class="ped">${svg}<div class="ped-legend"><span><i class="sw m"></i> Macho</span><span><i class="sw f"></i> Fêmea</span><span class="side">◀ Paterno</span><span class="side">Materno ▶</span></div>${a.obsGen ? `<div class="gobs">Obs. genealógicas: ${esc(a.obsGen)}</div>` : ""}</div>`;
       }
       return `<div class="animal"><h2>${esc(a.nome)} <small>${esc(a.tipo)}</small></h2>${(linhas || linhaVideos) ? `<table>${linhas}${linhaVideos}</table>` : ""}${genBloco}</div>`;
+    };
+
+    const grupos = montarGrupos(selecionados, o.agrupar, o.ordenar);
+    const corpo = grupos.map((g) => {
+      const cards = g.itens.map(cardDe).join("");
+      if (o.agrupar === "nenhum") return `<section class="grupo">${cards}</section>`;
+      const tituloHtml = `<div class="grupo-tit${o.titulos ? "" : " plano"}">${esc(g.titulo)} <span>(${g.itens.length} registro(s))</span></div>`;
+      return `<section class="grupo">${tituloHtml}${cards}</section>`;
     }).join("");
-    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório SM sistema</title>
+
+    const T = totaisGerais();
+    const totalHtml = `<div class="totais"><b>Total geral:</b> ${T.unicos} registro(s) único(s)${T.temFin ? ` &nbsp;·&nbsp; Estimado ${esc(fmt(T.est))} &nbsp;·&nbsp; Pago ${esc(fmt(T.pago))} &nbsp;·&nbsp; Em aberto ${esc(fmt(T.aberto))}` : ""}</div>`;
+    const metaAgr = (AGRUPAR_OPC.find(([k]) => k === o.agrupar) || [])[1] || "";
+    const metaOrd = (ORDENAR_OPC.find(([k]) => k === o.ordenar) || [])[1] || "";
+
+    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório SM Agropecuária</title>
       <style>
         *{box-sizing:border-box} body{font-family:Georgia,serif;color:#22201a;margin:32px;max-width:900px}
-        h1{font-size:22px;border-bottom:2px solid #c6a15b;padding-bottom:8px}
-        .meta{color:#666;font-size:12px;margin-bottom:20px}
-        .animal{break-inside:avoid;margin:0 0 22px;border:1px solid #e5ddc9;border-radius:10px;padding:14px 16px}
+        h1{font-size:22px;border-bottom:2px solid #c6a15b;padding-bottom:8px;color:#1a4a2d}
+        .meta{color:#666;font-size:12px;margin-bottom:18px}
+        .grupo{margin-bottom:6px}
+        .grupo-tit{break-after:avoid;break-inside:avoid;page-break-after:avoid;background:#1a4a2d;color:#fff;border-left:5px solid #c6a15b;padding:9px 14px;border-radius:8px;margin:20px 0 12px;font-family:Arial,sans-serif;font-size:14px;font-weight:700;letter-spacing:.02em}
+        .grupo-tit span{color:#d9c38a;font-weight:600;font-size:12px}
+        .grupo-tit.plano{background:#fff;color:#1a4a2d;border:1px solid #e5ddc9;border-left:5px solid #c6a15b}
+        .grupo-tit.plano span{color:#9a7b3a}
+        .animal{break-inside:avoid;margin:0 0 14px;border:1px solid #e5ddc9;border-radius:10px;padding:14px 16px}
         .animal h2{font-size:16px;margin:0 0 10px;color:#1d3a2b} .animal h2 small{color:#9a7b3a;font-size:11px;text-transform:uppercase;letter-spacing:.08em}
         table{width:100%;border-collapse:collapse;font-family:Arial,sans-serif;font-size:12.5px}
-        td{padding:5px 8px;border-bottom:1px solid #f0ead9;vertical-align:top} td.k{color:#666;width:38%;font-weight:600}
+        td{padding:5px 8px;border-bottom:1px solid #f0ead9;vertical-align:top} td.k{color:#555;width:38%;font-weight:600}
         .gtit{font-family:Arial,sans-serif;font-size:12px;font-weight:700;color:#9a7b3a;text-transform:uppercase;letter-spacing:.08em;margin:14px 0 8px}
         .ped{break-inside:avoid;border:1px solid #ece3cf;border-radius:10px;padding:12px;background:#fffdf8}
         .ped svg{display:block;margin:0 auto}
@@ -2101,11 +2236,13 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
         .ped-legend .sw.m{background:#e8f0fb;border-color:#5b86cf} .ped-legend .sw.f{background:#fbe9f1;border-color:#cf7aa3}
         .ped-legend .side{color:#9a7b3a;font-weight:600}
         .gobs{font-size:11px;color:#555;background:#faf7f0;border:1px solid #ece3cf;border-radius:6px;padding:6px 8px;margin-top:10px}
-        @media print{body{margin:12mm} .animal{page-break-inside:avoid} .ped{page-break-inside:avoid}}
+        .totais{margin-top:18px;border-top:2px solid #c6a15b;padding-top:10px;font-family:Arial,sans-serif;font-size:12.5px;color:#333}
+        @media print{body{margin:12mm} .animal{page-break-inside:avoid} .ped{page-break-inside:avoid} .grupo-tit{page-break-after:avoid}}
       </style></head><body>
-      <h1>Relatório — SM sistema · Gado de Elite</h1>
-      <div class="meta">Gerado em ${new Date().toLocaleDateString("pt-BR")} · ${selecionados.length} animal(is)</div>
-      ${blocos}
+      <h1>Relatório — SM Agropecuária · Gado de Elite</h1>
+      <div class="meta">Gerado em ${new Date().toLocaleDateString("pt-BR")} · ${selecionados.length} registro(s) único(s) · Agrupado por: ${esc(metaAgr)} · Ordenado por: ${esc(metaOrd)}</div>
+      ${corpo}
+      ${totalHtml}
       <script>window.onload=function(){window.print()}</script></body></html>`;
     const w = window.open("", "_blank");
     if (w) { w.document.write(html); w.document.close(); }
@@ -2254,11 +2391,46 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
           {": "}{INFO_OPTS.filter(([k]) => campos[k]).map(([, l]) => l).join(", ") || "nenhum campo marcado"}.
         </p>
         <div className="rep-tools">
-          <button className="btn btn-gold" onClick={exportarExcel} disabled={!selecionados.length || !nCampos}>⤓ Exportar Excel (.xlsx)</button>
-          <button className="btn btn-ghost" onClick={exportarPDF} disabled={!selecionados.length || !nCampos}>🖨 Exportar PDF</button>
+          <button className="btn btn-gold" onClick={() => { setExp(EXP_PADRAO); setShowExport(true); }} disabled={!selecionados.length || !nCampos}>⤓ Exportar Relatório</button>
         </div>
-        {(!selecionados.length || !nCampos) && <p className="muted small">Selecione ao menos um animal e uma informação para exportar.</p>}
+        {(!selecionados.length || !nCampos) && <p className="muted small">Selecione ao menos um registro e uma informação para exportar.</p>}
       </div>
+
+      {showExport && (
+        <div className="modal-bg" onClick={(e) => { if (e.target === e.currentTarget) setShowExport(false); }}>
+          <div className="modal" style={{ width: "min(560px,100%)" }}>
+            <div className="modal-head"><h2>Exportar relatório</h2><button className="btn btn-mini" onClick={() => setShowExport(false)}>✕</button></div>
+            <div className="modal-body">
+              <p className="muted small" style={{ marginTop: 0 }}><b>{selecionados.length}</b> registro(s) selecionado(s) · <b>{nCampos}</b> grupo(s) de informação. Os filtros definem <b>quais</b> entram; as opções abaixo definem <b>como</b> aparecem.</p>
+
+              <div className="exp-campo"><label>Formato</label>
+                <div className="seg-group">{[["pdf", "PDF"], ["excel", "Excel"]].map(([k, l]) => <button key={k} className={`seg ${exp.formato === k ? "on" : ""}`} onClick={() => setExp((p) => ({ ...p, formato: k }))}>{l}</button>)}</div>
+              </div>
+
+              <div className="exp-campo"><label>Agrupar por</label>
+                <select className="rep-sel" value={exp.agrupar} onChange={(e) => setExp((p) => ({ ...p, agrupar: e.target.value }))}>
+                  {AGRUPAR_OPC.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                </select>
+              </div>
+
+              <div className="exp-campo"><label>Ordenar por</label>
+                <select className="rep-sel" value={exp.ordenar} onChange={(e) => setExp((p) => ({ ...p, ordenar: e.target.value }))}>
+                  {ORDENAR_OPC.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                </select>
+              </div>
+
+              <div className="exp-campo"><label>Separar grupos com títulos coloridos</label>
+                <div className="seg-group">{[["sim", true], ["não", false]].map(([l, v]) => <button key={l} className={`seg ${exp.titulos === v ? "on" : ""}`} onClick={() => setExp((p) => ({ ...p, titulos: v }))}>{l === "sim" ? "Sim" : "Não"}</button>)}</div>
+                {exp.agrupar === "nenhum" && <p className="muted small" style={{ margin: "6px 0 0" }}>Sem agrupamento selecionado — os títulos coloridos não se aplicam.</p>}
+              </div>
+            </div>
+            <div className="modal-foot">
+              <button className="btn btn-ghost" onClick={() => setShowExport(false)}>Cancelar</button>
+              <button className="btn btn-gold" onClick={() => { const o = exp; setShowExport(false); if (o.formato === "excel") exportarExcel(o); else exportarPDF(o); }}>Gerar relatório</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <BackupSecao db={db} onRestaurar={onRestaurar} isAdmin={isAdmin} usuario={usuario} ativos={ativos} />
     </section>
@@ -3261,6 +3433,8 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .x{border:0;background:#f0ead9;width:34px;height:34px;border-radius:9px;cursor:pointer;font-size:15px;color:var(--txt)}.x.abs{position:absolute;top:0;right:0}
 .modal-body{padding:22px 24px;max-height:calc(100vh - 200px);overflow:auto}
 .modal-foot{display:flex;justify-content:flex-end;gap:10px;padding:16px 24px;border-top:1px solid var(--line);background:#fff}
+.exp-campo{margin-bottom:16px}.exp-campo>label{display:block;font-size:13px;font-weight:600;color:var(--ink);margin-bottom:7px}
+.exp-campo .rep-sel{width:100%}.exp-campo .seg-group{width:100%}.exp-campo .seg-group .seg{flex:1}
 
 .fsec{margin-bottom:22px}
 .fsec-h{font-family:Fraunces,serif;font-size:15px;font-weight:600;color:var(--ink);padding-bottom:8px;margin-bottom:14px;border-bottom:1px solid var(--line);display:flex;align-items:center;flex-wrap:wrap}
