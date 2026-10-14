@@ -2147,7 +2147,13 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
 
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     estilos.forEach((st, r) => Object.entries(st).forEach(([c, s]) => { const addr = XLSX.utils.encode_cell({ r, c: +c }); if (ws[addr]) ws[addr].s = s; }));
-    ws["!cols"] = colset.map((k) => ({ wch: Math.min(Math.max(String(k).length + 2, 12), 38) }));
+    // AutoFit: largura de cada coluna pelo conteúdo real (cabeçalho + todas as células),
+    // considerando nomes longos de animais, sócios e leilões. Ignora as barras de título de grupo.
+    ws["!cols"] = colset.map((k) => {
+      let max = String(k).length;
+      selecionados.forEach((a) => { const r = linhasPorId.get(a.id); const v = r[k]; if (v != null && v !== "") { const len = String(v).length; if (len > max) max = len; } });
+      return { wch: Math.min(Math.max(max + 2, 10), 80) };
+    });
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Relatório");
