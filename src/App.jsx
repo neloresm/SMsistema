@@ -257,6 +257,20 @@ function participacaoAtual(a) {
   const adic = ((a && a.comprasAdic) || []).reduce((s, c) => s + num(c && c.pctAdicional), 0);
   return Math.max(0, Math.round((base + adic - pctVendida(a)) * 100) / 100);
 }
+/* ATIVO/INATIVO — regra: participação 0% => sempre inativo; senão respeita o status manual.
+   situacao: "Ativo" | "Inativo" (inativadoMotivo, inativadoEm opcionais). */
+function ehAtivo(a) {
+  if (!a || a.tipo !== "animal" || a.origem === "genealogia" || a.arquivada) return false;
+  if (participacaoAtual(a) <= 0) return false;         // 0% => inativo automático (regra obrigatória)
+  if (a.situacao === "Inativo") return false;          // inativado manualmente
+  return true;
+}
+// motivo "efetivo" da inatividade, para exibição
+function motivoInativo(a) {
+  if (participacaoAtual(a) <= 0) return a.inativadoMotivo || "Venda total da participação";
+  if (a.situacao === "Inativo") return a.inativadoMotivo || "Inativado manualmente";
+  return "";
+}
 /* normaliza uma lista de sócios em mapa {nomeLower: {nome, pct}} preservando nome original */
 function socMap(lista) {
   const m = {};
@@ -300,13 +314,14 @@ function validarVendaLinhas(socAtual, linhas) {
   }
   return "";
 }
-/* sociedade usada na venda: inclui o DONO ("Eu") como participante normal,
-   com a participação atual dele, se ainda não estiver listado por nome */
+/* sociedade usada na venda: inclui a SM AGROPECUÁRIA (dono) como participante,
+   com a participação atual dela, se ainda não estiver listada por nome */
+const EH_SM = (nome) => { const n = lc(nome); return n === "eu" || n === "eu (dono)" || n === "sm" || n === "sm agropecuária" || n === "sm agropecuaria"; };
 function sociedadeComDono(a) {
   const soc = ((a && (a.sociedadeAtual || a.socios)) || []).filter(Boolean).map((s) => ({ ...s }));
-  const temEu = soc.some((s) => lc(s.nome) === "eu" || lc(s.nome) === "eu (dono)");
-  if (temEu) return soc;
-  return [{ id: "eu", nome: "Eu", pct: participacaoAtual(a), obs: "" }, ...soc];
+  const temSM = soc.some((s) => EH_SM(s.nome));
+  if (temSM) return soc;
+  return [{ id: "sm", nome: "SM Agropecuária", pct: participacaoAtual(a), obs: "" }, ...soc];
 }
 /* resumo financeiro do animal (investido x vendido) */
 function resumoAnimal(a) {
@@ -347,7 +362,7 @@ const COMPRA = [
   ["vendedor", "Vendedor", "vendedor"], ["obsCompra", "Observações da compra", "textarea"],
 ];
 const PAGAMENTO = [
-  ["porcentagemComprada", "Porcentagem comprada (%)", "pct"],
+  ["porcentagemComprada", "Participação da SM (%)", "pct"],
   ["valorParcela", "Valor da parcela", "money"],
   ["parcelas", "Quantidade de parcelas", "number"],
   ["primeiroVenc", "Primeiro vencimento", "date"],
@@ -361,7 +376,9 @@ const SCHEMAS = {
       ["nome", "Nome do animal", "text"], ["registro", "Número de registro", "text"],
       ["raca", "Raça", "select", RACAS], ["sexo", "Sexo", "select", ["Fêmea", "Macho"]],
       ["nascimento", "Data de nascimento", "date"],
-      ["ondeEsta", "Onde está", "local"],
+      ["categoria", "Categoria", "select", ["", "Pista", "Doadora", "Reprodutor", "Matriz", "Aposentada"]],
+      ["origemAnimal", "Origem do animal", "select", ["", "Compra direta", "Nascimento de aspiração", "Nascimento de prenhez", "Outra origem"]],
+      ["ondeEsta", "Onde está", "local"], ["criatorio", "Criatório responsável", "local"],
     ]},
     { g: "Genealogia", gen: true, f: [
       ["pai", "Pai", "link"], ["mae", "Mãe", "link"],
@@ -1250,6 +1267,52 @@ function DescendenciaSecao({ a, ativos, onAbrir }) {
   );
 }
 
+/* -------------------------- seção Situação (Ativo/Inativo) ------------- */
+const MOTIVOS_INATIVO = ["Venda total da participação", "Falecimento", "Aposentadoria / fora de uso", "Outro motivo"];
+function SituacaoSecao({ a, onInativar, onReativar }) {
+  const [form, setForm] = useState(false);
+  const [motivo, setMotivo] = useState(MOTIVOS_INATIVO[0]);
+  const part = participacaoAtual(a);
+  const ativo = ehAtivo(a);
+  const part0 = part <= 0;
+  const faleceu = lc(a.inativadoMotivo || "").includes("falecimento");
+
+  return (
+    <div className="fsec">
+      <div className="fsec-h">Situação do animal</div>
+      <div className="sit-atual">
+        <span>Situação atual:</span> {ativo ? <Badge tone="pos">ATIVO</Badge> : <Badge tone="neg">INATIVO</Badge>}
+        {!ativo && <span className="muted small"> · {motivoInativo(a)}{a.inativadoEm ? ` (${dataBR(a.inativadoEm)})` : ""}</span>}
+        <span className="muted small"> · Participação da SM: <b className={part0 ? "neg" : "pos"}>{part}%</b></span>
+      </div>
+
+      {part0 && (
+        <p className="muted small" style={{ marginTop: 6 }}>Participação em 0% → o animal fica <b>inativo automaticamente</b>. Para reativar, registre uma participação maior que 0% (compra/recompra).</p>
+      )}
+
+      <div className="rep-tools" style={{ marginTop: 10 }}>
+        {ativo && !form && <button className="btn btn-ghost" onClick={() => { setForm(true); setMotivo(MOTIVOS_INATIVO[0]); }}>Inativar animal</button>}
+        {!ativo && !part0 && !faleceu && <button className="btn btn-gold" onClick={onReativar}>Reativar animal</button>}
+        {!ativo && faleceu && <span className="muted small">Inativado por falecimento — reativação exige correção administrativa (reative mudando o motivo no histórico, se foi engano).</span>}
+      </div>
+
+      {form && (
+        <div className="venda-form" style={{ marginTop: 8 }}>
+          <div className="grid">
+            <label className="field"><span>Motivo da inativação</span>
+              <select value={motivo} onChange={(e) => setMotivo(e.target.value)}>{MOTIVOS_INATIVO.map((m) => <option key={m}>{m}</option>)}</select></label>
+          </div>
+          <p className="muted small">Inativar <b>não</b> zera a participação nem apaga o histórico financeiro. O animal sai da contagem de ativos, mas continua consultável em "Inativos / Todos".</p>
+          <div className="rep-tools">
+            <button className="btn btn-gold" onClick={() => { onInativar(motivo); setForm(false); }}>Confirmar inativação</button>
+            <button className="btn btn-ghost" onClick={() => setForm(false)}>Cancelar</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------ ficha detalhe -------------------------- */
 function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onGerarPrenhez, onConfirm }) {
   useEffect(() => {
@@ -1318,6 +1381,10 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, canD
     onConfirm({ titulo: "Excluir esta venda?", mensagem: "A venda será removida e a sociedade será recalculada. Esta ação não pode ser desfeita.", usos: [], botoes: [{ label: "Excluir", tone: "danger", onClick: () => { delVendaExec(id); onConfirm(null); } }] });
   };
   const setSociedadeAtual = (linhas) => onUpdate({ ...a, sociedadeAtual: (linhas || []).filter((s) => s && (s.nome || s.pct)) });
+  const inativar = (motivo) => onUpdate({ ...a, situacao: "Inativo", inativadoMotivo: motivo, inativadoEm: today(),
+    historico: [...(a.historico || []), { id: uid(), data: today(), tipo: "Inativação", desc: `Inativado: ${motivo}`, responsavel: "" }] });
+  const reativar = () => onUpdate({ ...a, situacao: "Ativo", inativadoMotivo: "", inativadoEm: "",
+    historico: [...(a.historico || []), { id: uid(), data: today(), tipo: "Reativação", desc: "Reativado", responsavel: "" }] });
   const addPesagem = (p) => onUpdate({ ...a, pesagens: [...(a.pesagens || []), p] });
   const delPesagem = (id) => onUpdate({ ...a, pesagens: (a.pesagens || []).filter((p) => p.id !== id) });
 
@@ -1467,6 +1534,10 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, canD
 
           {(a.videos || []).some((v) => v && v.url) && (
             <div className="fsec"><div className="fsec-h">Vídeos</div><div className="videos-list">{a.videos.filter((v) => v && v.url).map((v) => <VideoBlock key={v.id} v={v} />)}</div></div>
+          )}
+
+          {a.tipo === "animal" && a.origem !== "genealogia" && (
+            <SituacaoSecao a={a} onInativar={inativar} onReativar={reativar} />
           )}
 
           {a.tipo === "animal" && a.origem !== "genealogia" && (
@@ -1863,7 +1934,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   // monta uma linha (objeto) para o animal conforme campos marcados
   const linhaDe = (a) => {
     const f = finance(a); const row = {};
-    if (campos.basico) { row["Tipo"] = a.tipo; row["Nome"] = a.nome; row["Registro"] = a.registro || ""; row["Sexo"] = a.sexo || ""; row["Categoria"] = a.categoria || a.raca || ""; row["Onde está"] = a.ondeEsta || ""; row["Nascimento"] = a.nascimento ? dataBR(a.nascimento) : ""; }
+    if (campos.basico) { row["Tipo"] = a.tipo; row["Nome"] = a.nome; row["Registro"] = a.registro || ""; row["Sexo"] = a.sexo || ""; row["Categoria"] = a.categoria || a.raca || ""; if (a.tipo === "animal") row["Situação"] = ehAtivo(a) ? "Ativo" : "Inativo"; row["Onde está"] = a.ondeEsta || ""; row["Nascimento"] = a.nascimento ? dataBR(a.nascimento) : ""; }
     else { row["Nome"] = a.nome; }
     if (campos.genealogia) { row["Pai"] = a.pai || a.touro || ""; row["Mãe"] = a.mae || a.doadora || ""; row["Registro da mãe"] = a.maeRegistro || a.regDoadora || ""; row["Avô paterno"] = a.avoPaterno || ""; row["Avó paterna"] = a.avoPaterna || ""; row["Avô materno"] = a.avoMaterno || ""; row["Avó materna"] = a.avoMaterna || ""; row["Obs. genealógicas"] = a.obsGen || ""; }
     if (campos.sociedade) row["Sociedade"] = socioStr(a);
@@ -2226,6 +2297,7 @@ export default function App() {
   const [novo, setNovo] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
   const [showAncestrais, setShowAncestrais] = useState(false);
+  const [filtroSit, setFiltroSit] = useState("ativos");   // ativos | inativos | todos
   const [privado, setPrivado] = useState(() => { try { return localStorage.getItem("sm_privado") === "1"; } catch (e) { return false; } });
   useEffect(() => { try { localStorage.setItem("sm_privado", privado ? "1" : "0"); } catch (e) {} }, [privado]);
   const money = (v) => (privado ? "R$ ••••••" : fmt(v));
@@ -2376,7 +2448,7 @@ export default function App() {
     return { qtd: doMes.length, total: doMes.reduce((s, p) => s + num(p.valor), 0), pagas: doMes.filter((p) => p.status === "pago").length };
   }, [parcelas]);
   const proximas = parcelas.filter((p) => p.status === "aberto" || p.status === "parcial").sort((a, b) => (a.venc || "").localeCompare(b.venc || "")).slice(0, 6);
-  const count = (t) => (ativos || []).filter((a) => a && a.tipo === t && a.origem !== "genealogia" && !a.arquivada).length;
+  const count = (t) => (ativos || []).filter((a) => a && a.tipo === t && a.origem !== "genealogia" && !a.arquivada && (t !== "animal" || ehAtivo(a))).length;
 
   const salvar = (d) => {
     // edição de pré-ficha: só atualiza a pré-ficha (não cria nada no banco principal)
@@ -2436,6 +2508,7 @@ export default function App() {
       nome: "", registro: "", raca: src.raca || "Nelore",
       sexo: ehPren ? "Fêmea" : "",                 // prenhez sempre fêmea; aspiração o usuário escolhe
       nascimento: "", status: "", ondeEsta: src.ondeEsta || "", criatorio: src.criatorio || "",
+      origemAnimal: src.tipo === "aspiracao" ? "Nascimento de aspiração" : "Nascimento de prenhez",
       // genealogia herdada
       pai: src.pai || src.touro || "", mae: src.doadora || "",
       maeRegistro: src.regDoadora || "",
@@ -2701,11 +2774,26 @@ export default function App() {
           </section>
         )}
 
-        {["animal", "prenhez", "aspiracao"].includes(view) && (
+        {["animal", "prenhez", "aspiracao"].includes(view) && (() => {
+          // conta ativos/inativos (só animais com cadastro próprio)
+          const baseAnim = view === "animal" ? visiveis.filter((a) => a.tipo === "animal" && !a.arquivada && (showAncestrais || a.origem !== "genealogia")) : [];
+          const nAtivos = baseAnim.filter(ehAtivo).length;
+          const nInativos = baseAnim.filter((a) => a.origem !== "genealogia" && !ehAtivo(a)).length;
+          const passaSit = (a) => view !== "animal" || filtroSit === "todos" || (filtroSit === "ativos" ? ehAtivo(a) : (a.origem !== "genealogia" && !ehAtivo(a)));
+          return (
           <section className="wrap">
-            {view === "animal" && <label className="toggle"><input type="checkbox" checked={showAncestrais} onChange={(e) => setShowAncestrais(e.target.checked)} /> Mostrar ancestrais cadastrados via genealogia</label>}
+            {view === "animal" && (
+              <div className="sit-bar">
+                <div className="seg-group">
+                  <button className={`seg ${filtroSit === "ativos" ? "on" : ""}`} onClick={() => setFiltroSit("ativos")}>Ativos ({nAtivos})</button>
+                  <button className={`seg ${filtroSit === "inativos" ? "on" : ""}`} onClick={() => setFiltroSit("inativos")}>Inativos ({nInativos})</button>
+                  <button className={`seg ${filtroSit === "todos" ? "on" : ""}`} onClick={() => setFiltroSit("todos")}>Todos ({nAtivos + nInativos})</button>
+                </div>
+                <label className="toggle"><input type="checkbox" checked={showAncestrais} onChange={(e) => setShowAncestrais(e.target.checked)} /> Mostrar ancestrais (genealogia)</label>
+              </div>
+            )}
             <div className="cards-grid">
-              {visiveis.filter((a) => a.tipo === view && !a.arquivada && (view !== "animal" || showAncestrais || a.origem !== "genealogia")).map((a) => {
+              {visiveis.filter((a) => a.tipo === view && !a.arquivada && (view !== "animal" || showAncestrais || a.origem !== "genealogia") && passaSit(a)).map((a) => {
                 const f = finance(a);
                 const ehAnimal = a.tipo === "animal";
                 const part = ehAnimal ? participacaoAtual(a) : null;
@@ -2715,7 +2803,7 @@ export default function App() {
                   <div className="asset-card" key={a.id} onClick={() => setAberto(a)} onKeyDown={(e) => { if (e.key === "Enter") setAberto(a); }} tabIndex={0} role="button" aria-label={`Abrir ${a.nome}`}>
                     <div className="asset-head">
                       <div className="asset-name serif">{a.nome || "—"}</div>
-                      {a.origem === "genealogia" ? <Badge tone="gold">ancestral</Badge> : (a.status && a.tipo !== "animal") ? <Badge tone={statusTone(a.status)}>{a.status}</Badge> : null}
+                      {a.origem === "genealogia" ? <Badge tone="gold">ancestral</Badge> : (ehAnimal && !ehAtivo(a)) ? <Badge tone="neg">inativo</Badge> : (a.status && a.tipo !== "animal") ? <Badge tone={statusTone(a.status)}>{a.status}</Badge> : null}
                     </div>
                     <div className="asset-tags">
                       {a.registro && <span className="tag">Reg. {a.registro}</span>}
@@ -2734,12 +2822,13 @@ export default function App() {
                   </div>
                 );
               })}
-              {visiveis.filter((a) => a.tipo === view && !a.arquivada && (view !== "animal" || showAncestrais || a.origem !== "genealogia")).length === 0 && (
-                <div className="empty">Nenhum registro. {soSocio ? "Você não participa de ativos deste tipo." : "Use “+ Novo cadastro”."}</div>
+              {visiveis.filter((a) => a.tipo === view && !a.arquivada && (view !== "animal" || showAncestrais || a.origem !== "genealogia") && passaSit(a)).length === 0 && (
+                <div className="empty">Nenhum registro {view === "animal" && filtroSit !== "todos" ? `(${filtroSit})` : ""}. {soSocio ? "Você não participa de ativos deste tipo." : "Use “+ Novo cadastro”."}</div>
               )}
             </div>
           </section>
-        )}
+          );
+        })()}
 
         {view === "socios" && (
           <section className="wrap">
@@ -3111,6 +3200,10 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .repro-kpi span{font-size:12px;color:var(--muted)}
 .repro-kpi b{font-size:24px;font-family:Fraunces,serif;color:var(--ink)}
 .repro-kpi b.gold{color:#8a6a2c}.repro-kpi b.neg{color:var(--neg)}
+.sit-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:4px}
+.seg-group{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:#fff}
+.seg-group .seg{border:0;border-right:1px solid var(--line)}.seg-group .seg:last-child{border-right:0}.seg-group .seg.on{background:var(--forest);color:#fff}
+.sit-atual{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:14px}
 .card-acts{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
 .btn-del{display:inline-flex;align-items:center;gap:6px;background:transparent;border:1px solid var(--line);color:var(--muted);padding:7px 12px;border-radius:9px;font-size:12.5px;cursor:pointer;font-family:inherit;transition:.15s}
 .btn-del:hover{border-color:var(--neg);color:var(--neg);background:rgba(176,74,58,.05)}
