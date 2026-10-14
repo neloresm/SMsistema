@@ -1904,6 +1904,15 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const [tipoBusca, setTipoBusca] = useState("geral");
   const [q, setQ] = useState("");
   const [campos, setCampos] = useState({ basico: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, reprodutivo: false, videos: false, obs: false });
+  const ADV_VAZIO = { situacao: "ativos", sexo: [], faixas: [], nascDe: "", nascAte: "", socios: [], partMin: "", partMax: "", comSociedade: false, part100: false, leiloes: [], vendedor: "", comprador: "", compraDe: "", compraAte: "", aquisicao: [], ondeEsta: "", estMin: "", estMax: "", pagoMin: "", pagoMax: "", abertoMin: "", abertoMax: "" };
+  const [adv, setAdv] = useState(ADV_VAZIO);
+  const [painelAberto, setPainelAberto] = useState(false);
+
+  // listas auxiliares para os filtros
+  const sociosOpc = useMemo(() => { const s = new Set(); (ativos || []).forEach((a) => (a && (a.sociedadeAtual || a.socios) || []).forEach((x) => x && x.nome && s.add(x.nome))); return [...s].sort(); }, [ativos]);
+  const leiloesOpc = useMemo(() => { const s = new Set(); (ativos || []).forEach((a) => a && a.leilao && s.add(a.leilao)); return [...s].sort(); }, [ativos]);
+  const FAIXAS_IDADE = [["<1", "< 1 ano", 0, 12], ["1-2", "1 a 2 anos", 12, 24], ["2-4", "2 a 4 anos", 24, 48], ["4-6", "4 a 6 anos", 48, 72], ["6-8", "6 a 8 anos", 72, 96], ["8+", "+ 8 anos", 96, Infinity]];
+  const AQUISICOES = ["Compra direta", "Nascimento de aspiração", "Nascimento de prenhez", "Outra origem"];
 
   // base: apenas registros com cadastro próprio (exclui ancestrais só-genealogia e arquivados)
   const base = (lista || []).filter((a) => a && a.origem !== "genealogia" && !a.arquivada);
@@ -1921,7 +1930,64 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
       default: try { return norm(JSON.stringify(a)).includes(nq); } catch (e) { return false; }
     }
   };
-  const listaF = base.filter(matchTipo);
+
+  // filtros avançados: dentro do mesmo campo = OU; entre campos = E
+  const matchAvancado = (a) => {
+    // situação (só afeta animais)
+    if (a.tipo === "animal") {
+      if (adv.situacao === "ativos" && !ehAtivo(a)) return false;
+      if (adv.situacao === "inativos" && ehAtivo(a)) return false;
+    }
+    if (adv.sexo.length && !adv.sexo.some((x) => lc(a.sexo).startsWith(lc(x).charAt(0)))) return false;
+    if (adv.faixas.length) { const m = mesesDe(a.nascimento); const ok = m != null && adv.faixas.some((fk) => { const f = FAIXAS_IDADE.find((z) => z[0] === fk); return f && m >= f[2] && m < f[3]; }); if (!ok) return false; }
+    if (adv.nascDe && (!a.nascimento || a.nascimento < adv.nascDe)) return false;
+    if (adv.nascAte && (!a.nascimento || a.nascimento > adv.nascAte)) return false;
+    if (adv.socios.length) { const soc = (a.sociedadeAtual || a.socios || []); if (!adv.socios.some((n) => soc.some((s) => lc(s.nome) === lc(n)))) return false; }
+    const part = participacaoAtual(a);
+    if (adv.partMin !== "" && part < num(adv.partMin)) return false;
+    if (adv.partMax !== "" && part > num(adv.partMax)) return false;
+    if (adv.comSociedade && !((a.sociedadeAtual || a.socios || []).filter(Boolean).length > 0)) return false;
+    if (adv.part100 && part !== 100) return false;
+    if (adv.leiloes.length && !adv.leiloes.some((l) => lc(a.leilao) === lc(l))) return false;
+    if (adv.vendedor && !norm(a.vendedor).includes(norm(adv.vendedor))) return false;
+    if (adv.comprador && !vendasDo(a).some((v) => norm(v.comprador).includes(norm(adv.comprador)))) return false;
+    if (adv.compraDe && (!a.dataCompra || a.dataCompra < adv.compraDe)) return false;
+    if (adv.compraAte && (!a.dataCompra || a.dataCompra > adv.compraAte)) return false;
+    if (adv.aquisicao.length && !adv.aquisicao.some((t) => lc(a.origemAnimal) === lc(t))) return false;
+    if (adv.ondeEsta && !norm(a.ondeEsta).includes(norm(adv.ondeEsta))) return false;
+    const f = finance(a);
+    if (adv.estMin !== "" && f.totalEstimado < num(adv.estMin)) return false;
+    if (adv.estMax !== "" && f.totalEstimado > num(adv.estMax)) return false;
+    if (adv.pagoMin !== "" && f.pago < num(adv.pagoMin)) return false;
+    if (adv.pagoMax !== "" && f.pago > num(adv.pagoMax)) return false;
+    if (adv.abertoMin !== "" && f.aberto < num(adv.abertoMin)) return false;
+    if (adv.abertoMax !== "" && f.aberto > num(adv.abertoMax)) return false;
+    return true;
+  };
+
+  // conta filtros ativos (para o resumo e as etiquetas)
+  const chipsAtivos = [];
+  if (adv.situacao !== "ativos") chipsAtivos.push({ k: "situacao", label: `Situação: ${adv.situacao}`, clear: () => setAdv((p) => ({ ...p, situacao: "ativos" })) });
+  adv.sexo.forEach((x) => chipsAtivos.push({ k: "sexo" + x, label: `Sexo: ${x}`, clear: () => setAdv((p) => ({ ...p, sexo: p.sexo.filter((z) => z !== x) })) }));
+  adv.faixas.forEach((x) => { const f = FAIXAS_IDADE.find((z) => z[0] === x); chipsAtivos.push({ k: "faixa" + x, label: `Idade: ${f ? f[1] : x}`, clear: () => setAdv((p) => ({ ...p, faixas: p.faixas.filter((z) => z !== x) })) }); });
+  if (adv.nascDe || adv.nascAte) chipsAtivos.push({ k: "nasc", label: `Nasc.: ${adv.nascDe ? dataBR(adv.nascDe) : "…"}–${adv.nascAte ? dataBR(adv.nascAte) : "…"}`, clear: () => setAdv((p) => ({ ...p, nascDe: "", nascAte: "" })) });
+  adv.socios.forEach((x) => chipsAtivos.push({ k: "soc" + x, label: `Sócio: ${x}`, clear: () => setAdv((p) => ({ ...p, socios: p.socios.filter((z) => z !== x) })) }));
+  if (adv.partMin !== "" || adv.partMax !== "") chipsAtivos.push({ k: "part", label: `Participação: ${adv.partMin || 0}%–${adv.partMax || 100}%`, clear: () => setAdv((p) => ({ ...p, partMin: "", partMax: "" })) });
+  if (adv.comSociedade) chipsAtivos.push({ k: "comsoc", label: "Com sociedade", clear: () => setAdv((p) => ({ ...p, comSociedade: false })) });
+  if (adv.part100) chipsAtivos.push({ k: "p100", label: "Participação 100%", clear: () => setAdv((p) => ({ ...p, part100: false })) });
+  adv.leiloes.forEach((x) => chipsAtivos.push({ k: "lei" + x, label: `Leilão: ${x}`, clear: () => setAdv((p) => ({ ...p, leiloes: p.leiloes.filter((z) => z !== x) })) }));
+  if (adv.vendedor) chipsAtivos.push({ k: "vend", label: `Vendedor: ${adv.vendedor}`, clear: () => setAdv((p) => ({ ...p, vendedor: "" })) });
+  if (adv.comprador) chipsAtivos.push({ k: "comp", label: `Comprador: ${adv.comprador}`, clear: () => setAdv((p) => ({ ...p, comprador: "" })) });
+  if (adv.compraDe || adv.compraAte) chipsAtivos.push({ k: "compra", label: `Compra: ${adv.compraDe ? dataBR(adv.compraDe) : "…"}–${adv.compraAte ? dataBR(adv.compraAte) : "…"}`, clear: () => setAdv((p) => ({ ...p, compraDe: "", compraAte: "" })) });
+  adv.aquisicao.forEach((x) => chipsAtivos.push({ k: "aq" + x, label: `Origem: ${x}`, clear: () => setAdv((p) => ({ ...p, aquisicao: p.aquisicao.filter((z) => z !== x) })) }));
+  if (adv.ondeEsta) chipsAtivos.push({ k: "onde", label: `Onde está: ${adv.ondeEsta}`, clear: () => setAdv((p) => ({ ...p, ondeEsta: adv.ondeEsta ? "" : "" })) });
+  if (adv.estMin !== "" || adv.estMax !== "") chipsAtivos.push({ k: "est", label: `Valor est.: ${fmt(num(adv.estMin))}–${adv.estMax ? fmt(num(adv.estMax)) : "…"}`, clear: () => setAdv((p) => ({ ...p, estMin: "", estMax: "" })) });
+  if (adv.pagoMin !== "" || adv.pagoMax !== "") chipsAtivos.push({ k: "pg", label: `Pago: ${fmt(num(adv.pagoMin))}–${adv.pagoMax ? fmt(num(adv.pagoMax)) : "…"}`, clear: () => setAdv((p) => ({ ...p, pagoMin: "", pagoMax: "" })) });
+  if (adv.abertoMin !== "" || adv.abertoMax !== "") chipsAtivos.push({ k: "ab", label: `Em aberto: ${fmt(num(adv.abertoMin))}–${adv.abertoMax ? fmt(num(adv.abertoMax)) : "…"}`, clear: () => setAdv((p) => ({ ...p, abertoMin: "", abertoMax: "" })) });
+
+  const listaF = base.filter((a) => matchTipo(a) && matchAvancado(a));
+  const limparFiltros = () => { setAdv(ADV_VAZIO); setQ(""); setTipoBusca("geral"); };
+  const toggleArr = (campo, valor) => setAdv((p) => ({ ...p, [campo]: p[campo].includes(valor) ? p[campo].filter((z) => z !== valor) : [...p[campo], valor] }));
 
   const [sel, setSel] = useState(() => new Set(base.map((a) => a.id)));
   const selecionados = listaF.filter((a) => sel.has(a.id));
@@ -2049,8 +2115,90 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
           </select>
           <input className="rep-inp" value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Pesquisar por ${(BUSCA_TIPOS.find(([k]) => k === tipoBusca) || [])[1] || "Geral"}…`} />
           {q && <button className="btn btn-ghost" onClick={() => setQ("")}>limpar</button>}
+          <button className={`btn ${painelAberto ? "btn-gold" : "btn-ghost"}`} onClick={() => setPainelAberto((v) => !v)}>⚙ Filtros avançados{chipsAtivos.length ? ` (${chipsAtivos.length})` : ""}</button>
         </div>
-        <p className="muted small" style={{ marginTop: 6 }}>{nq ? `${listaF.length} resultado(s) para “${q}” em ${(BUSCA_TIPOS.find(([k]) => k === tipoBusca) || [])[1]}.` : "Sem busca: todos os cadastros próprios aparecem abaixo."}</p>
+
+        <div className="rep-resumo">
+          <b>{listaF.length}</b> animal(is) encontrado(s){chipsAtivos.length ? ` — ${chipsAtivos.length} filtro(s) aplicado(s)` : ""}
+          {(chipsAtivos.length || q) ? <button className="btn btn-mini" style={{ marginLeft: 10 }} onClick={limparFiltros}>Limpar filtros</button> : null}
+        </div>
+
+        {chipsAtivos.length > 0 && (
+          <div className="filtro-chips">
+            {chipsAtivos.map((c) => <span className="fchip" key={c.k}>{c.label}<button onClick={c.clear}>✕</button></span>)}
+          </div>
+        )}
+
+        {painelAberto && (
+          <div className="adv-panel">
+            {/* Identificação */}
+            <div className="adv-grupo"><div className="adv-tit">Identificação</div>
+              <div className="adv-row">
+                <div className="adv-campo"><label>Situação</label>
+                  <div className="seg-group sm">{[["ativos", "Ativos"], ["inativos", "Inativos"], ["todos", "Todos"]].map(([k, l]) => <button key={k} className={`seg ${adv.situacao === k ? "on" : ""}`} onClick={() => setAdv((p) => ({ ...p, situacao: k }))}>{l}</button>)}</div>
+                </div>
+                <div className="adv-campo"><label>Sexo</label>
+                  <div className="chip-opts">{["Fêmea", "Macho"].map((x) => <button key={x} className={`chip-opt ${adv.sexo.includes(x) ? "on" : ""}`} onClick={() => toggleArr("sexo", x)}>{x}</button>)}</div>
+                </div>
+              </div>
+              <div className="adv-campo"><label>Faixa de idade</label>
+                <div className="chip-opts">{FAIXAS_IDADE.map(([k, l]) => <button key={k} className={`chip-opt ${adv.faixas.includes(k) ? "on" : ""}`} onClick={() => toggleArr("faixas", k)}>{l}</button>)}</div>
+              </div>
+              <div className="adv-row">
+                <div className="adv-campo"><label>Nascimento de</label><input type="date" value={adv.nascDe} onChange={(e) => setAdv((p) => ({ ...p, nascDe: e.target.value }))} /></div>
+                <div className="adv-campo"><label>até</label><input type="date" value={adv.nascAte} onChange={(e) => setAdv((p) => ({ ...p, nascAte: e.target.value }))} /></div>
+              </div>
+            </div>
+
+            {/* Sociedade */}
+            <div className="adv-grupo"><div className="adv-tit">Sociedade</div>
+              {sociosOpc.length > 0 && <div className="adv-campo"><label>Sócios (qualquer um)</label>
+                <div className="chip-opts">{sociosOpc.map((x) => <button key={x} className={`chip-opt ${adv.socios.includes(x) ? "on" : ""}`} onClick={() => toggleArr("socios", x)}>{x}</button>)}</div></div>}
+              <div className="adv-row">
+                <div className="adv-campo"><label>Participação da SM mín. (%)</label><input type="number" step="any" value={adv.partMin} onChange={(e) => setAdv((p) => ({ ...p, partMin: e.target.value }))} /></div>
+                <div className="adv-campo"><label>máx. (%)</label><input type="number" step="any" value={adv.partMax} onChange={(e) => setAdv((p) => ({ ...p, partMax: e.target.value }))} /></div>
+              </div>
+              <div className="chip-opts">
+                <button className={`chip-opt ${adv.comSociedade ? "on" : ""}`} onClick={() => setAdv((p) => ({ ...p, comSociedade: !p.comSociedade }))}>Com sociedade</button>
+                <button className={`chip-opt ${adv.part100 ? "on" : ""}`} onClick={() => setAdv((p) => ({ ...p, part100: !p.part100 }))}>Participação 100%</button>
+              </div>
+            </div>
+
+            {/* Leilões e compras */}
+            <div className="adv-grupo"><div className="adv-tit">Leilões e compras</div>
+              {leiloesOpc.length > 0 && <div className="adv-campo"><label>Leilões (qualquer um)</label>
+                <div className="chip-opts">{leiloesOpc.map((x) => <button key={x} className={`chip-opt ${adv.leiloes.includes(x) ? "on" : ""}`} onClick={() => toggleArr("leiloes", x)}>{x}</button>)}</div></div>}
+              <div className="adv-row">
+                <div className="adv-campo"><label>Vendedor</label><input value={adv.vendedor} onChange={(e) => setAdv((p) => ({ ...p, vendedor: e.target.value }))} /></div>
+                <div className="adv-campo"><label>Comprador</label><input value={adv.comprador} onChange={(e) => setAdv((p) => ({ ...p, comprador: e.target.value }))} /></div>
+              </div>
+              <div className="adv-row">
+                <div className="adv-campo"><label>Compra de</label><input type="date" value={adv.compraDe} onChange={(e) => setAdv((p) => ({ ...p, compraDe: e.target.value }))} /></div>
+                <div className="adv-campo"><label>até</label><input type="date" value={adv.compraAte} onChange={(e) => setAdv((p) => ({ ...p, compraAte: e.target.value }))} /></div>
+              </div>
+              <div className="adv-campo"><label>Tipo de aquisição</label>
+                <div className="chip-opts">{AQUISICOES.map((x) => <button key={x} className={`chip-opt ${adv.aquisicao.includes(x) ? "on" : ""}`} onClick={() => toggleArr("aquisicao", x)}>{x}</button>)}</div></div>
+            </div>
+
+            {/* Financeiro + localização */}
+            <div className="adv-grupo"><div className="adv-tit">Financeiro e localização</div>
+              <div className="adv-row">
+                <div className="adv-campo"><label>Valor estimado mín.</label><input type="number" step="any" value={adv.estMin} onChange={(e) => setAdv((p) => ({ ...p, estMin: e.target.value }))} /></div>
+                <div className="adv-campo"><label>máx.</label><input type="number" step="any" value={adv.estMax} onChange={(e) => setAdv((p) => ({ ...p, estMax: e.target.value }))} /></div>
+              </div>
+              <div className="adv-row">
+                <div className="adv-campo"><label>Valor pago mín.</label><input type="number" step="any" value={adv.pagoMin} onChange={(e) => setAdv((p) => ({ ...p, pagoMin: e.target.value }))} /></div>
+                <div className="adv-campo"><label>Em aberto mín.</label><input type="number" step="any" value={adv.abertoMin} onChange={(e) => setAdv((p) => ({ ...p, abertoMin: e.target.value }))} /></div>
+              </div>
+              <div className="adv-campo"><label>Onde está</label><input value={adv.ondeEsta} onChange={(e) => setAdv((p) => ({ ...p, ondeEsta: e.target.value }))} /></div>
+            </div>
+
+            <div className="rep-tools">
+              <button className="btn btn-gold" onClick={() => setPainelAberto(false)}>Aplicar filtros</button>
+              <button className="btn btn-ghost" onClick={limparFiltros}>Limpar filtros</button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -3154,6 +3302,21 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .rep-busca{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .rep-sel{padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;font-size:14px;min-width:150px}
 .rep-inp{flex:1;min-width:180px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:14px}
+.rep-resumo{margin-top:10px;font-size:14px;color:var(--ink)}.rep-resumo b{font-size:16px;color:var(--forest)}
+.filtro-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.fchip{display:inline-flex;align-items:center;gap:6px;background:var(--paper);border:1px solid var(--line);border-radius:999px;padding:4px 6px 4px 11px;font-size:12.5px;color:var(--ink)}
+.fchip button{border:0;background:#e6ddc9;color:#6a5;border-radius:50%;width:17px;height:17px;cursor:pointer;font-size:10px;line-height:1;color:#7a6a3a}
+.fchip button:hover{background:var(--neg);color:#fff}
+.adv-panel{margin-top:14px;border-top:1px solid var(--line);padding-top:14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
+.adv-grupo{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.adv-tit{font-size:12px;font-weight:700;color:#9a7b3a;text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px}
+.adv-row{display:flex;gap:10px;flex-wrap:wrap}.adv-row .adv-campo{flex:1;min-width:110px}
+.adv-campo{margin-bottom:10px}.adv-campo label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px}
+.adv-campo input{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:14px;background:#fff}
+.chip-opts{display:flex;flex-wrap:wrap;gap:6px}
+.chip-opt{border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 12px;font-size:12.5px;cursor:pointer;font-family:inherit;color:var(--muted);transition:.12s}
+.chip-opt:hover{border-color:var(--gold)}.chip-opt.on{background:var(--forest);border-color:var(--forest);color:#fff}
+.seg-group.sm .seg{padding:7px 13px;font-size:13px}
 .aud-resumo{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;margin-top:4px}
 .aud-resumo>div{background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:2px}
 .pes-kpis{display:flex;flex-wrap:wrap;gap:10px;margin-top:4px}
