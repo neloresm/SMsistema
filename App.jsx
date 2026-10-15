@@ -59,6 +59,24 @@ function mesesDe(nasc) {
   if (h.getDate() < d.getDate()) m--;
   return m < 0 ? null : m;
 }
+// idade em anos e meses completos, calculada na data de geração (sem arredondar).
+// Lê a data por partes (aaaa-mm-dd) para não sofrer com fuso horário.
+function idadeTexto(nasc) {
+  if (!nasc) return "";
+  const p = String(nasc).slice(0, 10).split("-").map(Number);
+  const [y, mo, da] = p;
+  if (!y || !mo || !da) return "";
+  const h = new Date();
+  let m = (h.getFullYear() - y) * 12 + (h.getMonth() + 1 - mo);
+  if (h.getDate() < da) m--;
+  if (m < 0) return "";
+  const anos = Math.floor(m / 12), meses = m % 12;
+  const ya = anos === 1 ? "1 ano" : `${anos} anos`;
+  const ma = meses === 1 ? "1 mês" : `${meses} meses`;
+  if (anos > 0 && meses > 0) return `${ya} e ${ma}`;
+  if (anos > 0) return ya;        // anos exatos → só anos
+  return ma;                      // menos de 1 ano → só meses
+}
 // dias entre duas datas ISO (aaaa-mm-dd)
 function diasEntre(a, b) {
   if (!a || !b) return null;
@@ -378,7 +396,7 @@ const SCHEMAS = {
       ["nascimento", "Data de nascimento", "date"],
       ["categoria", "Categoria", "select", ["", "Pista", "Doadora", "Reprodutor", "Matriz", "Aposentada"]],
       ["origemAnimal", "Origem do animal", "select", ["", "Compra direta", "Nascimento de aspiração", "Nascimento de prenhez", "Outra origem"]],
-      ["ondeEsta", "Onde está", "local"], ["criatorio", "Criatório responsável", "local"],
+      ["ondeEsta", "Criatório responsável", "local"],
     ]},
     { g: "Genealogia", gen: true, f: [
       ["pai", "Pai", "link"], ["mae", "Mãe", "link"],
@@ -401,10 +419,10 @@ const SCHEMAS = {
       ["doadora", "Mãe doadora", "link"], ["regDoadora", "Registro da mãe doadora", "text"],
       ["pai", "Pai", "link"],
       ["qtd", "Quantidade de prenhezes", "number"],
-      ["status", "Status", "select", STATUS_PRENHEZ], ["ondeEsta", "Onde está", "local"],
+      ["status", "Status", "select", STATUS_PRENHEZ], ["ondeEsta", "Criatório responsável", "local"],
     ]},
     { g: "Acompanhamento reprodutivo", f: [
-      ["criatorio", "Criatório responsável", "local"], ["responsavel", "Responsável pelo acompanhamento", "text"],
+      ["responsavel", "Responsável pelo acompanhamento", "text"],
       ["receptora", "Receptora (identificação)", "text"],
       ["dataTE", "Data da transferência do embrião", "date"], ["dataConfirmacao", "Data de confirmação", "date"],
       ["previsaoParto", "Previsão de parto", "date"], ["dataParto", "Data real do parto", "date"],
@@ -423,10 +441,10 @@ const SCHEMAS = {
       ["doadora", "Mãe doadora", "link"], ["regDoadora", "Registro da mãe doadora", "text"],
       ["pai", "Pai (se houver)", "link"],
       ["qtd", "Quantidade", "number"],
-      ["status", "Status", "select", STATUS_ASP], ["ondeEsta", "Onde está", "local"],
+      ["status", "Status", "select", STATUS_ASP], ["ondeEsta", "Criatório responsável", "local"],
     ]},
     { g: "Acompanhamento reprodutivo", f: [
-      ["criatorio", "Criatório responsável", "local"], ["responsavel", "Responsável pelo acompanhamento", "text"],
+      ["responsavel", "Responsável pelo acompanhamento", "text"],
       ["dataAspiracao", "Data realizada da aspiração", "date"],
       ["oocitos", "Oócitos coletados", "number"], ["embrioes", "Embriões produzidos", "number"],
       ["embrioesTransf", "Embriões transferidos", "number"], ["embrioesArmaz", "Embriões armazenados", "number"],
@@ -581,8 +599,9 @@ function statusTone(s) {
   if (["parcial", "aberto", "aguardando", "avaliação", "aposentada"].some((x) => v.includes(x))) return "amber";
   return "gold";
 }
-const KPI = ({ label, value, sub, tone }) => (
-  <div className="kpi"><div className="kpi-label">{label}</div>
+const KPI = ({ label, value, sub, tone, icon, onClick }) => (
+  <div className={`kpi ${onClick ? "clk" : ""}`} onClick={onClick} role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined} onKeyDown={onClick ? (e) => { if (e.key === "Enter") onClick(); } : undefined}>
+    <div className="kpi-top">{icon && <span className="kpi-ic">{icon}</span>}<div className="kpi-label">{label}</div></div>
     <div className={`kpi-value ${tone || ""}`}>{value}</div>{sub && <div className="kpi-sub">{sub}</div>}</div>
 );
 
@@ -1475,11 +1494,11 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, canD
 
           <div className="fsec"><div className="fsec-h">Dados</div>
             <div className="info-grid">
-              {a.tipo === "animal" && <><Info l="Onde está" v={a.ondeEsta} /><Info l="Sexo" v={a.sexo} /><Info l="Nascimento" v={dataBR(a.nascimento)} />{a.maeRegistro && <Info l="Registro da mãe" v={a.maeRegistro} />}</>}
+              {a.tipo === "animal" && <><Info l="Criatório responsável" v={a.ondeEsta} /><Info l="Sexo" v={a.sexo} /><Info l="Nascimento" v={dataBR(a.nascimento)} />{a.maeRegistro && <Info l="Registro da mãe" v={a.maeRegistro} />}</>}
               {a.tipo === "prenhez" && <><Info l="Mãe doadora" v={a.doadora} /><Info l="Registro da mãe" v={a.regDoadora} /><Info l="Pai" v={a.pai} />
-                <Info l="Quantidade" v={qtdRestante(a)} /><Info l="Onde está" v={a.ondeEsta} /></>}
+                <Info l="Quantidade" v={qtdRestante(a)} /><Info l="Criatório responsável" v={a.ondeEsta} /></>}
               {a.tipo === "aspiracao" && <><Info l="Mãe doadora" v={a.doadora} /><Info l="Registro da mãe" v={a.regDoadora} /><Info l="Pai" v={a.pai} />
-                <Info l="Quantidade" v={qtdRestante(a)} /><Info l="Onde está" v={a.ondeEsta} /></>}
+                <Info l="Quantidade" v={qtdRestante(a)} /><Info l="Criatório responsável" v={a.ondeEsta} /></>}
               <Info l="Leilão / origem" v={a.leilao} /><Info l="Vendedor" v={a.vendedor} /><Info l="Data da compra" v={dataBR(a.dataCompra)} />
             </div>
             {a.obs && <p className="obs">{a.obs}</p>}
@@ -1840,7 +1859,7 @@ function UsersView({ meId }) {
 
 /* ============================ RELATÓRIOS =============================== */
 const INFO_OPTS = [
-  ["basico", "Dados básicos do animal"], ["genealogia", "Genealogia"], ["sociedade", "Sociedade / cotas"],
+  ["basico", "Dados básicos do animal"], ["idade", "Idade (anos e meses)"], ["genealogia", "Genealogia"], ["sociedade", "Sociedade / cotas"],
   ["participacao", "Participação atual"], ["estimado", "Valor estimado"], ["investido", "Valor total investido"],
   ["pago", "Valor pago"], ["aberto", "Valor em aberto"], ["parcelas", "Parcelas"], ["comissao", "Comissão"],
   ["compras", "Compras"], ["vendas", "Vendas"], ["prenhezVinc", "Prenhezes vinculadas"],
@@ -1902,7 +1921,7 @@ const EYE_OFF = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stro
 
 function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const [q, setQ] = useState("");
-  const [campos, setCampos] = useState({ basico: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, reprodutivo: false, videos: false, obs: false });
+  const [campos, setCampos] = useState({ basico: true, idade: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, reprodutivo: false, videos: false, obs: false });
   const ADV_VAZIO = { tipoReg: "animal", situacao: "ativos", sexo: [], faixas: [], nascDe: "", nascAte: "", socios: [], partMin: "", partMax: "", comSociedade: false, part100: false, leiloes: [], vendedor: "", comprador: "", compraDe: "", compraAte: "", aquisicao: [], ondeEsta: "", estMin: "", estMax: "", pagoMin: "", pagoMax: "", abertoMin: "", abertoMax: "" };
   const [adv, setAdv] = useState(ADV_VAZIO);
   const [painelAberto, setPainelAberto] = useState(false);
@@ -1986,7 +2005,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   if (adv.comprador) chipsAtivos.push({ k: "comp", label: `Comprador: ${adv.comprador}`, clear: () => setAdv((p) => ({ ...p, comprador: "" })) });
   if (adv.compraDe || adv.compraAte) chipsAtivos.push({ k: "compra", label: `Compra: ${adv.compraDe ? dataBR(adv.compraDe) : "…"}–${adv.compraAte ? dataBR(adv.compraAte) : "…"}`, clear: () => setAdv((p) => ({ ...p, compraDe: "", compraAte: "" })) });
   adv.aquisicao.forEach((x) => chipsAtivos.push({ k: "aq" + x, label: `Origem: ${x}`, clear: () => setAdv((p) => ({ ...p, aquisicao: p.aquisicao.filter((z) => z !== x) })) }));
-  if (adv.ondeEsta) chipsAtivos.push({ k: "onde", label: `Onde está: ${adv.ondeEsta}`, clear: () => setAdv((p) => ({ ...p, ondeEsta: adv.ondeEsta ? "" : "" })) });
+  if (adv.ondeEsta) chipsAtivos.push({ k: "onde", label: `Criatório: ${adv.ondeEsta}`, clear: () => setAdv((p) => ({ ...p, ondeEsta: adv.ondeEsta ? "" : "" })) });
   if (adv.estMin !== "" || adv.estMax !== "") chipsAtivos.push({ k: "est", label: `Valor est.: ${fmt(num(adv.estMin))}–${adv.estMax ? fmt(num(adv.estMax)) : "…"}`, clear: () => setAdv((p) => ({ ...p, estMin: "", estMax: "" })) });
   if (adv.pagoMin !== "" || adv.pagoMax !== "") chipsAtivos.push({ k: "pg", label: `Pago: ${fmt(num(adv.pagoMin))}–${adv.pagoMax ? fmt(num(adv.pagoMax)) : "…"}`, clear: () => setAdv((p) => ({ ...p, pagoMin: "", pagoMax: "" })) });
   if (adv.abertoMin !== "" || adv.abertoMax !== "") chipsAtivos.push({ k: "ab", label: `Em aberto: ${fmt(num(adv.abertoMin))}–${adv.abertoMax ? fmt(num(adv.abertoMax)) : "…"}`, clear: () => setAdv((p) => ({ ...p, abertoMin: "", abertoMax: "" })) });
@@ -2006,8 +2025,9 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   // monta uma linha (objeto) para o animal conforme campos marcados
   const linhaDe = (a) => {
     const f = finance(a); const row = {};
-    if (campos.basico) { row["Tipo"] = a.tipo; row["Nome"] = a.nome; row["Registro"] = a.registro || ""; row["Sexo"] = a.sexo || ""; row["Categoria"] = a.categoria || a.raca || ""; if (a.tipo === "animal") row["Situação"] = ehAtivo(a) ? "Ativo" : "Inativo"; row["Onde está"] = a.ondeEsta || ""; row["Nascimento"] = a.nascimento ? dataBR(a.nascimento) : ""; }
+    if (campos.basico) { row["Tipo"] = a.tipo; row["Nome"] = a.nome; row["Registro"] = a.registro || ""; row["Sexo"] = a.sexo || ""; row["Categoria"] = a.categoria || a.raca || ""; if (a.tipo === "animal") row["Situação"] = ehAtivo(a) ? "Ativo" : "Inativo"; row["Criatório responsável"] = a.ondeEsta || ""; row["Nascimento"] = a.nascimento ? dataBR(a.nascimento) : ""; }
     else { row["Nome"] = a.nome; }
+    if (campos.idade) row["Idade"] = idadeTexto(a.nascimento); // sempre logo após o Nascimento (ou após o Nome, se Básicos estiver off)
     if (campos.genealogia) { row["Pai"] = a.pai || a.touro || ""; row["Mãe"] = a.mae || a.doadora || ""; row["Registro da mãe"] = a.maeRegistro || a.regDoadora || ""; row["Avô paterno"] = a.avoPaterno || ""; row["Avó paterna"] = a.avoPaterna || ""; row["Avô materno"] = a.avoMaterno || ""; row["Avó materna"] = a.avoMaterna || ""; row["Obs. genealógicas"] = a.obsGen || ""; }
     if (campos.sociedade) row["Sociedade"] = socioStr(a);
     if (campos.participacao) row["Participação atual (%)"] = participacaoAtual(a);
@@ -2023,7 +2043,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
     if (campos.aspiracaoVinc) row["Aspirações vinculadas"] = aspVinculadas(a, ativos).map((x) => x.nome).join("; ");
     if (campos.historico) row["Histórico financeiro"] = (a.historico || []).map((h) => `${dataBR(h.data)}: ${h.desc || h.tipo}`).join(" | ");
     if (campos.reprodutivo) {
-      row["Criatório"] = a.criatorio || "";
+      row["Criatório"] = a.ondeEsta || a.criatorio || "";
       if (a.tipo === "prenhez") { row["Previsão parto"] = a.previsaoParto ? dataBR(a.previsaoParto) : ""; row["Data parto"] = a.dataParto ? dataBR(a.dataParto) : ""; row["Receptora"] = a.receptora || ""; row["Responsável"] = a.responsavel || ""; }
       if (a.tipo === "aspiracao") { row["Oócitos"] = a.oocitos || ""; row["Embriões"] = a.embrioes || ""; row["Embriões transf."] = a.embrioesTransf || ""; row["Prenhezes conf."] = a.prenhezesConf || ""; }
     }
@@ -2037,9 +2057,9 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const EXP_PADRAO = { formato: "pdf", agrupar: "socio", ordenar: "nomeAZ", titulos: true };
   const [exp, setExp] = useState(EXP_PADRAO);
 
-  const AGRUPAR_OPC = [["nenhum", "Sem agrupamento"], ["socio", "Sócio"], ["idade", "Faixa de idade"], ["leilao", "Leilão"], ["situacao", "Situação (Ativo/Inativo)"], ["ondeEsta", "Onde está"], ["participacao", "Participação da SM"]];
+  const AGRUPAR_OPC = [["nenhum", "Sem agrupamento"], ["socio", "Sócio"], ["idade", "Faixa de idade"], ["leilao", "Leilão"], ["situacao", "Situação (Ativo/Inativo)"], ["ondeEsta", "Criatório"], ["participacao", "Participação da SM"]];
   const ORDENAR_OPC = [["nomeAZ", "Nome (A–Z)"], ["nomeZA", "Nome (Z–A)"], ["idadeAsc", "Idade crescente"], ["idadeDesc", "Idade decrescente"], ["compraRecente", "Data de compra (mais recente)"], ["compraAntiga", "Data de compra (mais antiga)"], ["partDesc", "Participação da SM (maior → menor)"], ["valorDesc", "Valor (maior → menor)"]];
-  const PREFIXO_GRUPO = { socio: "SÓCIO", idade: "FAIXA DE IDADE", leilao: "LEILÃO", situacao: "SITUAÇÃO", ondeEsta: "ONDE ESTÁ", participacao: "PARTICIPAÇÃO DA SM" };
+  const PREFIXO_GRUPO = { socio: "SÓCIO", idade: "FAIXA DE IDADE", leilao: "LEILÃO", situacao: "SITUAÇÃO", ondeEsta: "CRIATÓRIO", participacao: "PARTICIPAÇÃO DA SM" };
   const ORDEM_IDADE = ["Até 12 meses", "13 a 24 meses", "25 a 36 meses", "37 a 48 meses", "49 a 60 meses", "Acima de 60 meses", "Idade não informada"];
   const FAIXAS_PART = [["100%", (p) => p >= 100], ["75% a 99%", (p) => p >= 75 && p < 100], ["50% a 74%", (p) => p >= 50 && p < 75], ["25% a 49%", (p) => p >= 25 && p < 50], ["1% a 24%", (p) => p >= 1 && p < 25], ["0% (sem participação)", (p) => p < 1]];
 
@@ -2050,7 +2070,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
       case "idade": { const m = mesesDe(a.nascimento); if (m == null) return ["Idade não informada"]; if (m <= 12) return ["Até 12 meses"]; if (m <= 24) return ["13 a 24 meses"]; if (m <= 36) return ["25 a 36 meses"]; if (m <= 48) return ["37 a 48 meses"]; if (m <= 60) return ["49 a 60 meses"]; return ["Acima de 60 meses"]; }
       case "leilao": return [a.leilao ? a.leilao : "Sem leilão informado"];
       case "situacao": return [estaAtivo(a) ? "Ativos" : "Inativos"];
-      case "ondeEsta": return [a.ondeEsta ? a.ondeEsta : "Sem localização informada"];
+      case "ondeEsta": return [a.ondeEsta ? a.ondeEsta : "Sem criatório informado"];
       case "participacao": { const p = participacaoAtual(a); const f = FAIXAS_PART.find((z) => z[1](p)); return [f ? f[0] : "0% (sem participação)"]; }
       default: return ["Todos os registros"];
     }
@@ -2097,7 +2117,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
 
   // cor pastel por categoria de campo (cabeçalhos/rótulos) — células de dados ficam brancas
   const corCampoHex = (k) => {
-    if (/^(tipo|nome|registro|sexo|categoria|nascimento|situação|raça)/i.test(k)) return "E6F0E9"; // verde pastel — identificação
+    if (/^(tipo|nome|registro|sexo|categoria|nascimento|idade|situação|raça)/i.test(k)) return "E6F0E9"; // verde pastel — identificação
     if (/sócio|sociedade|participa/i.test(k)) return "EFE8F5"; // lilás — sociedade
     if (/valor|investido|estimado|pago|aberto|parcela|comiss/i.test(k)) return "E8F0FB"; // azul — financeiro
     if (/leilão|vendedor|comprador|compra|aquisi|pai|mãe|avô|avó|genealóg|criatório|receptora|responsável|oócitos|embri|prenhez|previsão parto|data parto/i.test(k)) return "F3ECD9"; // bege — leilão/aquisição/reprodutivo
@@ -2147,7 +2167,18 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
 
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     estilos.forEach((st, r) => Object.entries(st).forEach(([c, s]) => { const addr = XLSX.utils.encode_cell({ r, c: +c }); if (ws[addr]) ws[addr].s = s; }));
-    ws["!cols"] = colset.map((k) => ({ wch: Math.min(Math.max(String(k).length + 2, 12), 38) }));
+    // AutoFit: largura de cada coluna pelo conteúdo real (cabeçalho + todas as células).
+    // A coluna A também precisa caber as barras de título de grupo (ex.: "SÓCIO: NELORE LUCENTE (12)"),
+    // que ficam exatamente nessa coluna — por isso antes apareciam cortadas.
+    const tituloGrupoMax = (o.agrupar !== "nenhum")
+      ? grupos.reduce((mx, g) => Math.max(mx, `${g.titulo}  (${g.itens.length} registro(s))`.length), 0)
+      : 0;
+    ws["!cols"] = colset.map((k, idx) => {
+      let max = String(k).length;
+      selecionados.forEach((a) => { const r = linhasPorId.get(a.id); const v = r[k]; if (v != null && v !== "") { const len = String(v).length; if (len > max) max = len; } });
+      if (idx === 0 && tituloGrupoMax > max) max = tituloGrupoMax; // inclui o texto do título de grupo na coluna A
+      return { wch: Math.min(Math.max(max + 2, 10), 80) };
+    });
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Relatório");
@@ -2326,8 +2357,8 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
             </div>
 
             {/* Localização */}
-            <div className="adv-grupo"><div className="adv-tit">Localização</div>
-              <div className="adv-campo"><label>Onde está</label><input value={adv.ondeEsta} onChange={(e) => setAdv((p) => ({ ...p, ondeEsta: e.target.value }))} /></div>
+            <div className="adv-grupo"><div className="adv-tit">Criatório</div>
+              <div className="adv-campo"><label>Criatório</label><input value={adv.ondeEsta} onChange={(e) => setAdv((p) => ({ ...p, ondeEsta: e.target.value }))} /></div>
             </div>
 
             {/* Financeiro */}
@@ -2442,6 +2473,25 @@ function BackupSecao({ db, onRestaurar, isAdmin, usuario, ativos }) {
   const [msg, setMsg] = useState("");
   const [pendente, setPendente] = useState(null);   // conteúdo aguardando confirmação de restauro
   const inputRef = useRef(null);
+  // --- backups automáticos na nuvem (tabela app_backups, criada pelo script do Supabase) ---
+  const [autoList, setAutoList] = useState(null);    // null = carregando; [] = sem cópias
+  const [autoErro, setAutoErro] = useState(false);   // true = tabela ainda não existe (script não rodado)
+  const carregarAuto = async () => {
+    try {
+      const { data, error } = await supabase.from("app_backups").select("id, origem, criado_em").order("criado_em", { ascending: false }).limit(30);
+      if (error) { setAutoErro(true); setAutoList([]); return; }
+      setAutoErro(false); setAutoList(data || []);
+    } catch (e) { setAutoErro(true); setAutoList([]); }
+  };
+  useEffect(() => { carregarAuto(); }, []);
+  const restaurarNuvem = async (id) => {
+    setMsg("");
+    try {
+      const { data, error } = await supabase.from("app_backups").select("value, criado_em").eq("id", id).maybeSingle();
+      if (error || !data || !data.value) { setMsg("Não consegui carregar essa cópia."); return; }
+      setPendente({ dados: JSON.parse(data.value), nome: "Backup automático da nuvem", quando: data.criado_em });
+    } catch (e) { setMsg("Não consegui carregar essa cópia."); }
+  };
 
   const contar = (b) => ({
     animais: (b.ativos || []).filter((a) => a && a.tipo === "animal").length,
@@ -2519,6 +2569,30 @@ function BackupSecao({ db, onRestaurar, isAdmin, usuario, ativos }) {
           </div>
         </div>
       )}
+
+      <div className="card-h" style={{ marginTop: 20 }}>☁️ Backups automáticos (nuvem)</div>
+      {autoList === null ? (
+        <p className="muted small" style={{ marginTop: -4 }}>Carregando…</p>
+      ) : autoErro ? (
+        <p className="muted small" style={{ marginTop: -4 }}>Os backups automáticos ainda não foram ativados no servidor. Depois de rodar o script no Supabase, as cópias diárias aparecem aqui sozinhas.</p>
+      ) : autoList.length === 0 ? (
+        <p className="muted small" style={{ marginTop: -4 }}>Nenhuma cópia automática ainda. A primeira aparece na próxima execução diária (ou assim que o script for rodado).</p>
+      ) : (
+        <>
+          <p className="muted small" style={{ marginTop: -4 }}>Último backup automático: <b>{new Date(autoList[0].criado_em).toLocaleString("pt-BR")}</b>. São guardadas as últimas {autoList.length} cópias (uma por dia).</p>
+          <div className="tbl-wrap"><table className="tbl">
+            <thead><tr><th>Data e hora</th><th>Origem</th><th></th></tr></thead>
+            <tbody>{autoList.map((b) => (
+              <tr key={b.id}>
+                <td>{new Date(b.criado_em).toLocaleString("pt-BR")}</td>
+                <td>{b.origem === "manual" ? "Manual" : "Automático"}</td>
+                <td style={{ whiteSpace: "nowrap" }}>{isAdmin && <button className="btn btn-mini" onClick={() => restaurarNuvem(b.id)}>Restaurar esta cópia</button>}</td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+          <p className="muted small" style={{ marginTop: 8 }}>Restaurar substitui os dados atuais da sua conta pelos da cópia escolhida — o sistema pede confirmação antes.</p>
+        </>
+      )}
     </div>
   );
 }
@@ -2545,7 +2619,7 @@ function CriatoriosView({ criatorios, ativos, socioNames, onSalvar, onExcluir, o
     <section className="wrap">
       <div className="card">
         <div className="card-h">Criatórios Parceiros <span className="muted">({(criatorios || []).length})</span></div>
-        <p className="muted small" style={{ marginTop: -4 }}>Onde seus animais, prenhezes e aspirações estão sob responsabilidade de parceiros. Vincule preenchendo o <b>Criatório responsável</b> (ou "Onde está") nas fichas.</p>
+        <p className="muted small" style={{ marginTop: -4 }}>Onde seus animais, prenhezes e aspirações estão sob responsabilidade de parceiros. Vincule preenchendo o <b>Criatório responsável</b> nas fichas.</p>
         <button className="btn btn-gold" style={{ marginTop: 8 }} onClick={() => setForm({ id: uid(), nome: "", contato: "", tel: "", obs: "", contatos: [] })}>+ Novo criatório</button>
       </div>
 
@@ -2634,6 +2708,50 @@ function CriatoriosView({ criatorios, ativos, socioNames, onSalvar, onExcluir, o
 }
 
 /* ================================= APP ================================= */
+/* --------------------------- Lixeira de animais ------------------------ */
+function LixeiraView({ lixeira, onRestaurar, onExcluirDefinitivo }) {
+  const RETENCAO = 30; // dias de referência para recuperação
+  const diasRestantes = (iso) => {
+    if (!iso) return null;
+    const dias = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+    return Math.max(0, RETENCAO - dias);
+  };
+  const itens = (lixeira || []).slice().sort((a, b) => String(b.__deletedAt || "").localeCompare(String(a.__deletedAt || "")));
+  return (
+    <section className="wrap">
+      <div className="card">
+        <div className="card-h">Lixeira de animais <span className="muted">({itens.length})</span></div>
+        <p className="muted small" style={{ marginTop: -4 }}>
+          Animais excluídos ficam aqui e podem ser restaurados com todas as informações (genealogia, sociedade, participação, compras, vendas, parcelas e históricos). A exclusão permanente é feita só manualmente, por você. Nada é apagado automaticamente.
+        </p>
+        {itens.length === 0 ? (
+          <p className="muted small">A lixeira está vazia.</p>
+        ) : (
+          <div className="tbl-wrap"><table className="tbl">
+            <thead><tr><th>Nome</th><th>RG</th><th>Excluído em</th><th>Por</th><th>Prazo p/ recuperar</th><th></th></tr></thead>
+            <tbody>{itens.map((a) => {
+              const dr = diasRestantes(a.__deletedAt);
+              return (
+                <tr key={a.id}>
+                  <td>{a.nome || "(sem nome)"}</td>
+                  <td>{a.registro || "—"}</td>
+                  <td>{a.__deletedAt ? dataBR(String(a.__deletedAt).slice(0, 10)) : "—"}</td>
+                  <td>{a.__deletedBy || "—"}</td>
+                  <td>{dr == null ? "—" : `${dr} dia(s)`}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <button className="btn btn-gold btn-mini" onClick={() => onRestaurar(a.id)}>Restaurar</button>{" "}
+                    <button className="btn-del" onClick={() => onExcluirDefinitivo(a.id)}>Excluir definitivamente</button>
+                  </td>
+                </tr>
+              );
+            })}</tbody>
+          </table></div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default function App() {
   const [db, setDb] = useState(SEED);
   const [view, setView] = useState("dashboard");
@@ -2644,6 +2762,11 @@ export default function App() {
   const [navOpen, setNavOpen] = useState(false);
   const [showAncestrais, setShowAncestrais] = useState(false);
   const [filtroSit, setFiltroSit] = useState("ativos");   // ativos | inativos | todos
+  // filtros do Painel (afetam inteligência financeira e composição do plantel)
+  const [dfSituacao, setDfSituacao] = useState("ativos");
+  const [dfSocio, setDfSocio] = useState("");
+  const [dfCriatorio, setDfCriatorio] = useState("");
+  const [dfPeriodo, setDfPeriodo] = useState("12m");
   const [privado, setPrivado] = useState(() => { try { return localStorage.getItem("sm_privado") === "1"; } catch (e) { return false; } });
   useEffect(() => { try { localStorage.setItem("sm_privado", privado ? "1" : "0"); } catch (e) {} }, [privado]);
   const money = (v) => (privado ? "R$ ••••••" : fmt(v));
@@ -2657,6 +2780,14 @@ export default function App() {
   const dbRef = useRef(null);
   const lastWrite = useRef(0);
   const firstSave = useRef(true);
+  // --- estado de salvamento na nuvem (indicador) ---
+  const [saveStatus, setSaveStatus] = useState("idle"); // idle|pending|saving|saved|error|offline
+  const saveTimer = useRef(null);
+  const saveSeq = useRef(0);        // sequência monotônica: impede gravação antiga sobrescrever recente
+  const latestJson = useRef("");    // último db serializado (pendente de gravação)
+  const flushNext = useRef(false);  // próxima gravação é imediata (ações críticas)
+  const revRef = useRef(null);      // versão da linha na nuvem que carreguei (null = ainda não existe)
+  const [conflito, setConflito] = useState(false); // outro aparelho gravou enquanto eu editava
 
   /* carregar banco (compartilhado → antigo pessoal → seed) e sessão salva */
   /* garante que o banco tenha todas as coleções, mesmo vindo de versões antigas */
@@ -2673,6 +2804,7 @@ export default function App() {
       prefichas: Array.isArray(base.prefichas) ? base.prefichas.filter(Boolean) : [],
       migracoes: Array.isArray(base.migracoes) ? base.migracoes.filter(Boolean) : [],
       criatorios: Array.isArray(base.criatorios) ? base.criatorios.filter(Boolean) : [],
+      lixeira: Array.isArray(base.lixeira) ? base.lixeira.filter(Boolean) : [],
     };
   };
 
@@ -2707,46 +2839,164 @@ export default function App() {
     let alive = true;
     (async () => {
       try {
-        const { data } = await supabase.from("app_data").select("value").eq("user_id", session.user.id).maybeSingle();
+        const { data } = await supabase.from("app_data").select("value, rev").eq("user_id", session.user.id).maybeSingle();
         if (!alive) return;
         // usuário novo (sem linha própria) começa ZERADO — nunca vê dados de outro usuário
         const base = normalizeDb(data && data.value ? JSON.parse(data.value) : {});
         setDb(base); dbRef.current = JSON.stringify(base);
+        revRef.current = data ? (typeof data.rev === "number" ? data.rev : 0) : null; // null = ainda não há linha
       } catch (e) {
-        const base = normalizeDb({}); setDb(base); dbRef.current = JSON.stringify(base);
+        const base = normalizeDb({}); setDb(base); dbRef.current = JSON.stringify(base); revRef.current = null;
       }
       if (alive) setDataReady(true);
     })();
     return () => { alive = false; };
   }, [session, aprovado]);
 
-  /* ---- salvar na nuvem a cada mudança (na linha do próprio usuário) ---- */
+  /* ---- gravação real na nuvem, com confirmação do Supabase ---- */
+  const temPendencia = () => !!latestJson.current && latestJson.current !== dbRef.current;
+  const doSave = async () => {
+    if (!session) return;
+    const json = latestJson.current;
+    if (!json) return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) { setSaveStatus("offline"); return; }
+    const seq = ++saveSeq.current;
+    const uid = session.user.id;
+    setSaveStatus("saving");
+    try {
+      // controle de concorrência otimista: só grava se a versão na nuvem ainda for a que carreguei
+      if (revRef.current == null) {
+        // ainda não existe linha para este usuário → cria
+        const { data, error } = await supabase.from("app_data").insert({ user_id: uid, value: json, rev: 0, updated_at: new Date().toISOString() }).select("rev");
+        if (seq !== saveSeq.current) return;
+        if (error) {
+          if (error.code === "23505") { setConflito(true); setSaveStatus("error"); return; } // outro aparelho criou primeiro
+          setSaveStatus("error"); return;
+        }
+        revRef.current = (data && data[0] && typeof data[0].rev === "number") ? data[0].rev : 0;
+      } else {
+        const alvo = revRef.current;
+        const { data, error } = await supabase.from("app_data")
+          .update({ value: json, rev: alvo + 1, updated_at: new Date().toISOString() })
+          .eq("user_id", uid).eq("rev", alvo).select("rev");
+        if (seq !== saveSeq.current) return;
+        if (error) { setSaveStatus("error"); return; }
+        if (!data || data.length === 0) { setConflito(true); setSaveStatus("error"); return; } // versão mudou = CONFLITO (não sobrescreve)
+        revRef.current = data[0].rev;
+      }
+      dbRef.current = json; lastWrite.current = Date.now();
+      setSaveStatus(temPendencia() ? "pending" : "saved");
+    } catch (e) {
+      if (seq === saveSeq.current) setSaveStatus("error");
+    }
+  };
+
+  // baixa a versão mais recente da nuvem (descartando as minhas alterações não gravadas)
+  const atualizarDaNuvem = async () => {
+    if (!session) return;
+    try {
+      const { data } = await supabase.from("app_data").select("value, rev").eq("user_id", session.user.id).maybeSingle();
+      if (data && data.value) {
+        dbRef.current = data.value; latestJson.current = data.value;
+        revRef.current = typeof data.rev === "number" ? data.rev : 0;
+        setDb(normalizeDb(JSON.parse(data.value)));
+      }
+      setConflito(false); setSaveStatus("saved");
+    } catch (e) { setSaveStatus("error"); }
+  };
+
+  // mantém as minhas e grava por cima (opção consciente do usuário no aviso de conflito)
+  const sobrescreverComMinhas = async () => {
+    if (!session) return;
+    setConflito(false); setSaveStatus("saving");
+    try {
+      const { data: atual } = await supabase.from("app_data").select("rev").eq("user_id", session.user.id).maybeSingle();
+      const base = atual && typeof atual.rev === "number" ? atual.rev : (revRef.current || 0);
+      const json = latestJson.current;
+      const { data, error } = await supabase.from("app_data")
+        .update({ value: json, rev: base + 1, updated_at: new Date().toISOString() })
+        .eq("user_id", session.user.id).select("rev");
+      if (error || !data || data.length === 0) { setSaveStatus("error"); return; }
+      revRef.current = data[0].rev; dbRef.current = json; lastWrite.current = Date.now();
+      setSaveStatus("saved");
+    } catch (e) { setSaveStatus("error"); }
+  };
+
+  // baixa um arquivo com o estado atual (minhas alterações), para não perder nada antes de decidir
+  const baixarLocalBackup = () => {
+    try {
+      const backup = { _tipo: "sm-sistema-backup", _versao: 1, _data: new Date().toISOString(), _por: (profile && profile.nome) || "", dados: db };
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url; link.download = `minhas-alteracoes-sm-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link); link.click(); document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {}
+  };
+
+  /* ---- salvar na nuvem com pequeno atraso (debounce ~1s); ações críticas salvam na hora ---- */
   useEffect(() => {
     if (!dataReady || !session) return;
-    if (firstSave.current) { firstSave.current = false; return; }
     const json = JSON.stringify(db);
-    dbRef.current = json; lastWrite.current = Date.now();
-    (async () => {
-      try { await supabase.from("app_data").upsert({ user_id: session.user.id, value: json, updated_at: new Date().toISOString() }, { onConflict: "user_id" }); } catch (e) {}
-    })();
+    if (firstSave.current) { firstSave.current = false; latestJson.current = json; dbRef.current = json; return; }
+    latestJson.current = json;
+    setSaveStatus("pending");
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const imediato = flushNext.current; flushNext.current = false;
+    saveTimer.current = setTimeout(() => { doSave(); }, imediato ? 0 : 1000);
+    return () => {};
   }, [db, dataReady, session]);
+
+  // "Salvo" volta a sumir depois de alguns segundos (sem alarmes repetitivos)
+  useEffect(() => {
+    if (saveStatus !== "saved") return;
+    const t = setTimeout(() => setSaveStatus((s) => (s === "saved" ? "idle" : s)), 2500);
+    return () => clearTimeout(t);
+  }, [saveStatus]);
+
+  // reage a conexão: ao voltar a internet, tenta gravar o que ficou pendente
+  useEffect(() => {
+    const onOnline = () => { if (temPendencia()) doSave(); };
+    const onOffline = () => { if (temPendencia()) setSaveStatus("offline"); };
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => { window.removeEventListener("online", onOnline); window.removeEventListener("offline", onOffline); };
+  }, [session]);
+
+  // evita perda silenciosa ao fechar/trocar de aba com alterações pendentes
+  useEffect(() => {
+    const flush = () => { if (temPendencia()) { if (saveTimer.current) clearTimeout(saveTimer.current); doSave(); } };
+    const onVis = () => { if (document.visibilityState === "hidden") flush(); };
+    const onBefore = (e) => { if (temPendencia()) { flush(); e.preventDefault(); e.returnValue = ""; } };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", onBefore);
+    return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("pagehide", flush); window.removeEventListener("beforeunload", onBefore); };
+  }, [session]);
+
+  const tentarSalvarAgora = () => { if (saveTimer.current) clearTimeout(saveTimer.current); doSave(); };
 
   /* ---- sincronização: puxa mudanças do MESMO usuário (outros aparelhos) a cada 5s ---- */
   useEffect(() => {
     if (!dataReady || !session) return;
     const t = setInterval(async () => {
-      if (form || aberto || novo) return;
+      if (form || aberto || novo || conflito) return;
       if (Date.now() - lastWrite.current < 3000) return;
+      if (temPendencia() || saveStatus === "saving" || saveStatus === "error" || saveStatus === "offline") return; // nunca descarta alteração local não gravada
       try {
-        const { data } = await supabase.from("app_data").select("value").eq("user_id", session.user.id).maybeSingle();
+        const { data } = await supabase.from("app_data").select("value, rev").eq("user_id", session.user.id).maybeSingle();
         if (data && data.value && data.value !== dbRef.current) {
-          dbRef.current = data.value;
+          dbRef.current = data.value; latestJson.current = data.value;
+          revRef.current = typeof data.rev === "number" ? data.rev : revRef.current;
           setDb(normalizeDb(JSON.parse(data.value)));
+        } else if (data && typeof data.rev === "number") {
+          revRef.current = data.rev; // mantém a versão em dia mesmo sem mudança de conteúdo
         }
       } catch (e) {}
     }, 5000);
     return () => clearInterval(t);
-  }, [dataReady, form, aberto, novo, session]);
+  }, [dataReady, form, aberto, novo, session, saveStatus, conflito]);
 
   const logout = async () => { try { await supabase.auth.signOut(); } catch (e) {} };
 
@@ -2797,6 +3047,7 @@ export default function App() {
   const count = (t) => (ativos || []).filter((a) => a && a.tipo === t && a.origem !== "genealogia" && !a.arquivada && (t !== "animal" || ehAtivo(a))).length;
 
   const salvar = (d) => {
+    flushNext.current = true; // concluir cadastro = gravação imediata
     // edição de pré-ficha: só atualiza a pré-ficha (não cria nada no banco principal)
     if (d.__pref) {
       const prefId = d.__pref; const dados = { ...d }; delete dados.__pref; delete dados.__fromOrigem; delete dados.origemLabel;
@@ -2842,7 +3093,7 @@ export default function App() {
     });
     setForm(null); setAberto(d);
   };
-  const updateAtivo = (d) => { if (d.tipo === "prenhez" || d.tipo === "aspiracao") d = { ...d, nome: rotuloReprod(d) }; setDb((p) => ({ ...p, ativos: p.ativos.map((a) => (a.id === d.id ? d : a)) })); setAberto(d); };
+  const updateAtivo = (d) => { flushNext.current = true; if (d.tipo === "prenhez" || d.tipo === "aspiracao") d = { ...d, nome: rotuloReprod(d) }; setDb((p) => ({ ...p, ativos: p.ativos.map((a) => (a.id === d.id ? d : a)) })); setAberto(d); };
 
   /* botão "Nasceu": monta um novo animal já preenchido com genealogia + sociedade + origem */
   const nascer = (src) => {
@@ -2885,7 +3136,36 @@ export default function App() {
     setAberto(null);
     setForm({ tipo: "prenhez", initial: nova });
   };
-  const excluir = (id) => { setDb((p) => ({ ...p, ativos: p.ativos.filter((a) => a.id !== id) })); setAberto(null); };
+  // excluir = mover para a LIXEIRA (exclusão lógica). O animal sai das listagens,
+  // mas é guardado inteiro (genealogia, sociedade, participação, compras, vendas,
+  // parcelas, históricos) para poder ser restaurado. Não apaga nada de outros animais.
+  const excluir = (id) => {
+    flushNext.current = true;
+    setDb((p) => {
+      const alvo = (p.ativos || []).find((a) => a && a.id === id);
+      if (!alvo) return p;
+      const reg = { ...alvo, __deletedAt: new Date().toISOString(), __deletedBy: (profile && profile.nome) || "" };
+      return { ...p, ativos: p.ativos.filter((a) => a.id !== id), lixeira: [...(p.lixeira || []), reg] };
+    });
+    setAberto(null);
+  };
+  // restaurar da lixeira: volta ao sistema com as informações preservadas
+  const restaurarAnimal = (id) => {
+    flushNext.current = true;
+    setDb((p) => {
+      const reg = (p.lixeira || []).find((a) => a && a.id === id);
+      if (!reg) return p;
+      const limpo = { ...reg }; delete limpo.__deletedAt; delete limpo.__deletedBy;
+      return { ...p, lixeira: (p.lixeira || []).filter((a) => a.id !== id), ativos: [...(p.ativos || []), limpo] };
+    });
+  };
+  // exclusão permanente: só manual, com confirmação específica (nunca automática)
+  const excluirDefinitivo = (id) => setConfirmar({
+    titulo: "Excluir definitivamente?",
+    mensagem: "Este animal será removido em definitivo da lixeira e NÃO poderá mais ser recuperado pelo sistema. Esta ação não pode ser desfeita.",
+    usos: [],
+    botoes: [{ label: "Excluir para sempre", tone: "danger", onClick: () => { flushNext.current = true; setDb((p) => ({ ...p, lixeira: (p.lixeira || []).filter((a) => a.id !== id) })); setConfirmar(null); } }],
+  });
 
 
   const [confirmar, setConfirmar] = useState(null);
@@ -2984,6 +3264,76 @@ export default function App() {
   }, [ativos]);
   const PIE = ["#C6A15B", "#2F5D45", "#7A5230", "#9BB39F", "#E0C079", "#4A4A4A"];
 
+  /* ===================== PAINEL — filtros e agregações ===================== */
+  const dfMatch = (a) => {
+    if (dfSocio && !((a.sociedadeAtual || a.socios || []).some((s) => s && lc(s.nome) === lc(dfSocio)))) return false;
+    if (dfCriatorio && lc((a.ondeEsta || a.criatorio || "")) !== lc(dfCriatorio)) return false;
+    if (dfSituacao !== "todos" && a.tipo === "animal") { const at = ehAtivo(a); if (dfSituacao === "ativos" && !at) return false; if (dfSituacao === "inativos" && at) return false; }
+    return true;
+  };
+  const dfAtivo = dfSituacao !== "todos" || !!dfSocio || !!dfCriatorio;
+  const fReais = useMemo(() => reais.filter(dfMatch), [ativos, dfSituacao, dfSocio, dfCriatorio]);
+  const fAnimais = useMemo(() => fReais.filter((a) => a.tipo === "animal"), [fReais]);
+
+  // listas para os seletores de filtro
+  const sociosDash = useMemo(() => { const s = new Set(); reais.forEach((a) => (a.sociedadeAtual || a.socios || []).forEach((x) => x && x.nome && s.add(x.nome))); return [...s].sort((x, y) => lc(x).localeCompare(lc(y))); }, [ativos]);
+  const criatoriosDash = useMemo(() => { const s = new Set(); reais.forEach((a) => { const c = (a.ondeEsta || a.criatorio || "").trim(); if (c) s.add(c); }); return [...s].sort((x, y) => lc(x).localeCompare(lc(y))); }, [ativos]);
+
+  // KPIs financeiros (respeitam os filtros do painel)
+  const fKpis = useMemo(() => { const acc = { total: 0, pago: 0, aberto: 0, patrimonio: 0 }; fReais.forEach((a) => { const f = finance(a); acc.total += f.total; acc.pago += f.pago; acc.aberto += f.aberto; acc.patrimonio += f.totalEstimado; }); return acc; }, [fReais]);
+
+  // contagens do rebanho (sempre o total real, não dependem dos filtros)
+  const nAtivos = useMemo(() => (ativos || []).filter((a) => a && a.tipo === "animal" && a.origem !== "genealogia" && !a.arquivada && ehAtivo(a)).length, [ativos]);
+  const nInativos = useMemo(() => (ativos || []).filter((a) => a && a.tipo === "animal" && a.origem !== "genealogia" && !a.arquivada && !ehAtivo(a)).length, [ativos]);
+
+  // investimentos da SM ASSOCIADOS a cada sócio (um animal com vários sócios aparece em cada — a soma entre sócios NÃO é o total)
+  const porSocio = useMemo(() => {
+    const m = new Map();
+    fAnimais.forEach((a) => { const inv = finance(a).total; (a.sociedadeAtual || a.socios || []).filter(Boolean).forEach((s) => { if (!s.nome) return; if (!m.has(s.nome)) m.set(s.nome, { nome: s.nome, qtd: 0, invest: 0 }); const o = m.get(s.nome); o.qtd += 1; o.invest += inv; }); });
+    return [...m.values()].sort((x, y) => y.invest - x.invest);
+  }, [fAnimais]);
+
+  // investimentos por criatório (campo único "Criatório responsável" = ondeEsta) — cada animal em um grupo só
+  const porCriatorio = useMemo(() => {
+    const m = new Map();
+    fAnimais.forEach((a) => { const c = (a.ondeEsta || a.criatorio || "").trim() || "Sem criatório informado"; if (!m.has(c)) m.set(c, { nome: c, qtd: 0, invest: 0 }); const o = m.get(c); o.qtd += 1; o.invest += finance(a).total; });
+    return [...m.values()].sort((x, y) => y.invest - x.invest);
+  }, [fAnimais]);
+
+  // distribuição por participação da SM (só animais ativos no conjunto filtrado)
+  const porParticipacao = useMemo(() => {
+    const faixas = [["100%", (p) => p >= 100], ["75–99%", (p) => p >= 75 && p < 100], ["50–74%", (p) => p >= 50 && p < 75], ["25–49%", (p) => p >= 25 && p < 50], ["1–24%", (p) => p >= 1 && p < 25]];
+    const base = fAnimais.filter((a) => ehAtivo(a));
+    return faixas.map(([name, fn]) => ({ name, value: base.filter((a) => fn(participacaoAtual(a))).length })).filter((x) => x.value > 0);
+  }, [fAnimais]);
+
+  // idade do plantel no conjunto filtrado
+  const plantelF = useMemo(() => {
+    const comIdade = fAnimais.filter((a) => participacaoAtual(a) > 0).map((a) => mesesDe(a.nascimento)).filter((m) => m != null && m >= 0);
+    const faixasDef = [["< 1 ano", 0, 12], ["1 a 2", 12, 24], ["2 a 4", 24, 48], ["4 a 6", 48, 72], ["6 a 8", 72, 96], ["+ 8", 96, Infinity]];
+    return faixasDef.map(([name, lo, hi]) => ({ name, value: comIdade.filter((m) => m >= lo && m < hi).length })).filter((x) => x.value > 0);
+  }, [fAnimais]);
+
+  // evolução financeira (previsto x realizado) por mês, respeitando filtros e período
+  const evolucao = useMemo(() => {
+    const by = {};
+    fReais.forEach((a) => { parcelasPorMes(a).forEach((mo) => { if (!mo.ym) return; if (!by[mo.ym]) by[mo.ym] = { ym: mo.ym, previsto: 0, pago: 0 }; by[mo.ym].previsto += num(mo.total); by[mo.ym].pago += num(mo.pago); }); });
+    let arr = Object.values(by).sort((x, y) => x.ym.localeCompare(y.ym));
+    const now = new Date();
+    const ymNow = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+    if (dfPeriodo === "6m" || dfPeriodo === "12m") {
+      const n = dfPeriodo === "6m" ? 6 : 12;
+      const lim = new Date(now.getFullYear(), now.getMonth() - (n - 1), 1);
+      const ymLim = lim.getFullYear() + "-" + String(lim.getMonth() + 1).padStart(2, "0");
+      arr = arr.filter((x) => x.ym >= ymLim && x.ym <= ymNow);
+    } else if (dfPeriodo === "ano") {
+      arr = arr.filter((x) => x.ym.startsWith(String(now.getFullYear())));
+    }
+    return arr.map((x) => ({ ...x, mes: mesLabel(x.ym) }));
+  }, [fReais, dfPeriodo]);
+
+  const limparFiltrosDash = () => { setDfSituacao("ativos"); setDfSocio(""); setDfCriatorio(""); setDfPeriodo("12m"); };
+
   const exportCSV = () => {
     const rows = [["Tipo", "Nome", "Status", "Cota (R$)", "Total estimado", "Pago", "Em aberto"]];
     visiveis.forEach((a) => { const f = finance(a); rows.push([a.tipo, a.nome, a.status || "", f.cota, f.totalEstimado, f.pago, f.aberto]); });
@@ -3006,8 +3356,9 @@ export default function App() {
   }, [qBusca, ativos, db.socios, db.leiloes]);
 
   const nav = [["dashboard", "◆", "Painel"], ["animal", "❖", "Animais"], ["prenhez", "◗", "Prenhezes"], ["aspiracao", "✧", "Aspirações"],
-    ["pendencias", "⬣", "Pendências"], ["criatorios", "⌂", "Criatórios"], ["socios", "◎", "Sócios"], ["parcelas", "▤", "Parcelas"], ["leiloes", "⚑", "Leilões"], ["relatorios", "▦", "Relatórios"],
+    ["pendencias", "⬣", "Pendências"], ["criatorios", "⌂", "Criatórios"], ["socios", "◎", "Sócios"], ["parcelas", "▤", "Parcelas"], ["leiloes", "⚑", "Leilões"], ["relatorios", "▦", "Relatórios"], ["lixeira", "🗑", "Lixeira"],
     ...(isAdmin ? [["usuarios", "◐", "Usuários"]] : [])];
+  const nLixeira = (db.lixeira || []).length;
 
   if (!authReady) return <div className="auth-bg"><style>{CSS}</style><div className="auth-card"><div className="auth-brand"><div className="brand-mark">SM</div><div><div className="serif auth-title">SM sistema</div><div className="brand-sub">Gado de Elite</div></div></div><div className="auth-note">Carregando…</div></div></div>;
   if (recovering && session) return <NovaSenha onDone={() => setRecovering(false)} />;
@@ -3017,16 +3368,35 @@ export default function App() {
   if (!profile.aprovado) return <Pendente nome={profile.nome} onLogout={logout} />;
   if (!dataReady) return <div className="auth-bg"><style>{CSS}</style><div className="auth-card"><div className="auth-brand"><div className="brand-mark">SM</div><div><div className="serif auth-title">SM sistema</div><div className="brand-sub">Gado de Elite</div></div></div><div className="auth-note">Carregando dados…</div></div></div>;
 
+  const SAVE_INFO = {
+    pending: { cls: "pend", txt: "Alterações pendentes", ic: "●" },
+    saving: { cls: "saving", txt: "Salvando…", ic: "⟳" },
+    saved: { cls: "ok", txt: "Salvo", ic: "✓" },
+    error: { cls: "err", txt: "Erro ao salvar", ic: "⚠" },
+    offline: { cls: "off", txt: "Sem conexão", ic: "⚠" },
+  };
+  const saveChip = (() => {
+    const info = SAVE_INFO[saveStatus];
+    if (!info) return null;
+    const podeTentar = saveStatus === "error" || saveStatus === "offline";
+    return (
+      <span className={`save-chip ${info.cls}`} title={saveStatus === "error" ? "Se o erro continuar, saia e faça login novamente." : ""}>
+        <span className="save-ic">{info.ic}</span>{info.txt}
+        {podeTentar && <button className="save-retry" onClick={tentarSalvarAgora}>Tentar de novo</button>}
+      </span>
+    );
+  })();
+
   return (
     <div className="app">
       <style>{CSS}</style>
-      <div className="topbar"><button className="burger" onClick={() => setNavOpen((v) => !v)}>☰</button><div className="brand-mini serif">SM sistema</div></div>
+      <div className="topbar"><button className="burger" onClick={() => setNavOpen((v) => !v)}>☰</button><div className="brand-mini serif">SM sistema</div>{saveChip}</div>
 
       <aside className={`side ${navOpen ? "open" : ""}`}>
         <div className="brand"><div className="brand-mark">SM</div><div><div className="serif brand-name">SM sistema</div><div className="brand-sub">Gado de Elite</div></div></div>
         <nav>{nav.map(([k, ic, l]) => (
           <button key={k} className={`nav-item ${view === k ? "on" : ""}`} onClick={() => { setView(k); setNavOpen(false); }}>
-            <span className="nav-ic">{ic}</span>{l}{["animal", "prenhez", "aspiracao"].includes(k) && <span className="nav-count">{count(k)}</span>}</button>
+            <span className="nav-ic">{ic}</span>{l}{["animal", "prenhez", "aspiracao"].includes(k) && <span className="nav-count">{count(k)}</span>}{k === "lixeira" && nLixeira > 0 && <span className="nav-count">{nLixeira}</span>}</button>
         ))}</nav>
         <div className="side-foot">
           <div className="user-box"><div className="user-name">{profile.nome || profile.email}</div><div className="user-role">{profile.role}</div></div>
@@ -3038,6 +3408,7 @@ export default function App() {
         <header className="head">
           <div><div className="eyebrow">Plataforma de gestão</div><h1 className="serif">{nav.find((n) => n[0] === view)?.[2]}</h1></div>
           <div className="head-tools">
+            <span className="save-chip-desk">{saveChip}</span>
             <input className="search" placeholder="Buscar animal, prenhez, sócio, leilão…" value={busca} onChange={(e) => setBusca(e.target.value)} />
             {!soSocio && <button className="btn btn-gold" onClick={() => setNovo(true)}>+ Novo cadastro</button>}
           </div>
@@ -3064,58 +3435,120 @@ export default function App() {
         })()}
 
         {view === "dashboard" && !qBusca && (
-          <section className="wrap">
+          <section className="wrap dash">
             <div className="dash-head">
-              <h1 className="dash-title serif">Painel</h1>
+              <div><div className="eyebrow">Gestão patrimonial</div><h1 className="dash-title serif">Painel</h1></div>
               <button className="eye-btn" onClick={() => setPrivado((p) => !p)} title={privado ? "Mostrar valores" : "Ocultar valores"} aria-label={privado ? "Mostrar valores" : "Ocultar valores"}>
                 {privado ? EYE_OFF : EYE_ON}<span>{privado ? "Mostrar valores" : "Ocultar valores"}</span>
               </button>
             </div>
-            <div className="kpi-row"><KPI label="Animais" value={count("animal")} /><KPI label="Prenhezes" value={count("prenhez")} /><KPI label="Aspirações" value={count("aspiracao")} /><KPI label="Patrimônio estimado" value={money(kpis.patrimonio)} tone="gold" /></div>
-            <div className="kpi-row"><KPI label="Total investido" value={money(kpis.total)} /><KPI label="Já pago" value={money(kpis.pago)} tone="pos" /><KPI label="Em aberto" value={money(kpis.aberto)} tone="neg" /><KPI label="Parcelas do mês" value={money(parcelasMes.total)} tone="gold" sub={`${parcelasMes.qtd} parcela(s) · ${parcelasMes.pagas} paga(s)`} /></div>
+
+            {/* ÁREA 1 — VISÃO GERAL */}
+            <div className="kpi-row">
+              <KPI label="Patrimônio estimado" value={money(fKpis.patrimonio)} tone="gold" icon="◆" />
+              <KPI label="Total investido" value={money(fKpis.total)} icon="▣" />
+              <KPI label="Já pago" value={money(fKpis.pago)} tone="pos" icon="✓" />
+              <KPI label="Em aberto" value={money(fKpis.aberto)} tone="neg" icon="◷" sub={`Parcelas do mês: ${money(parcelasMes.total)} · ${parcelasMes.pagas}/${parcelasMes.qtd} pagas`} />
+            </div>
+            <div className="kpi-row">
+              <KPI label="Animais ativos" value={nAtivos} icon="❖" onClick={() => { setFiltroSit("ativos"); setView("animal"); }} />
+              <KPI label="Animais inativos" value={nInativos} icon="❖" onClick={() => { setFiltroSit("inativos"); setView("animal"); }} />
+              <KPI label="Prenhezes" value={count("prenhez")} icon="◗" onClick={() => setView("prenhez")} />
+              <KPI label="Aspirações" value={count("aspiracao")} icon="✧" onClick={() => setView("aspiracao")} />
+            </div>
+
+            {/* FILTROS */}
+            <div className="dash-filtros">
+              <span className="df-tit">Filtros</span>
+              <div className="seg-group sm">{[["todos", "Todos"], ["ativos", "Ativos"], ["inativos", "Inativos"]].map(([k, l]) => <button key={k} className={`seg ${dfSituacao === k ? "on" : ""}`} onClick={() => setDfSituacao(k)}>{l}</button>)}</div>
+              <select className="df-sel" value={dfSocio} onChange={(e) => setDfSocio(e.target.value)}><option value="">Todos os sócios</option>{sociosDash.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+              <select className="df-sel" value={dfCriatorio} onChange={(e) => setDfCriatorio(e.target.value)}><option value="">Todos os criatórios</option>{criatoriosDash.map((c) => <option key={c} value={c}>{c}</option>)}</select>
+              {dfAtivo && <button className="btn btn-mini" onClick={limparFiltrosDash}>Limpar filtros</button>}
+              <span className="df-hint">afetam as seções Inteligência financeira e Composição do plantel</span>
+            </div>
+
+            {/* ÁREA 2 — INTELIGÊNCIA FINANCEIRA */}
+            <div className="dash-sec-tit">Inteligência financeira</div>
+            <div className="card">
+              <div className="card-h card-h-flex"><span>Evolução financeira</span>
+                <span className="seg-group sm">{[["6m", "6 meses"], ["12m", "12 meses"], ["ano", "Ano atual"], ["tudo", "Tudo"]].map(([k, l]) => <button key={k} className={`seg ${dfPeriodo === k ? "on" : ""}`} onClick={() => setDfPeriodo(k)}>{l}</button>)}</span>
+              </div>
+              {evolucao.length > 0 ? (
+                <ResponsiveContainer width="100%" height={250}><BarChart data={evolucao} margin={{ left: 6, right: 10, top: 6 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="mes" tick={{ fontSize: 10.5, fill: "#5a5346" }} />
+                  <YAxis tick={{ fontSize: 11, fill: "#5a5346" }} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} />
+                  <Tooltip formatter={(v, n) => [money(v), n === "previsto" ? "Previsto" : "Realizado"]} /><Legend formatter={(v) => (v === "previsto" ? "Previsto" : "Realizado")} />
+                  <Bar dataKey="previsto" name="previsto" fill="#5AA07B" radius={[5, 5, 0, 0]} /><Bar dataKey="pago" name="pago" fill="#103D30" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer>
+              ) : <p className="muted small">Nenhuma parcela no período selecionado.</p>}
+              <p className="muted small" style={{ marginTop: 6 }}>Previsto = parcelas com vencimento no mês. Realizado = parcelas registradas como pagas.</p>
+            </div>
+
             <div className="cols-2">
-              <div className="card"><div className="card-h">Investimento por tipo de ativo</div>
-                <ResponsiveContainer width="100%" height={230}><BarChart data={invTipo} margin={{ left: 10, right: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="name" tick={{ fontSize: 11, fill: "#5a5346" }} />
-                  <YAxis tick={{ fontSize: 11, fill: "#5a5346" }} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} /><Tooltip formatter={(v) => money(v)} />
-                  <Bar dataKey="value" fill="#C6A15B" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></div>
-              <div className="card"><div className="card-h">Idade do Plantel</div>
-                <div className="plantel-media">Idade média do plantel: <b>{plantel.mediaTxt}</b></div>
-                {plantel.total > 0 ? (
-                  <ResponsiveContainer width="100%" height={200}><BarChart data={plantel.faixas} margin={{ left: 6, right: 10, top: 6 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="name" tick={{ fontSize: 10.5, fill: "#5a5346" }} interval={0} /><YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#5a5346" }} />
-                    <Tooltip formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#1d3a2b" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>
-                ) : <p className="muted small">Nenhum animal com data de nascimento válida para calcular.</p>}
-                <div className="plantel-info">
-                  {plantel.novo && <span>Mais novo: <b>{plantel.novo.a.nome}</b> ({idade(plantel.novo.a.nascimento)})</span>}
-                  {plantel.velho && <span>Mais velho: <b>{plantel.velho.a.nome}</b> ({idade(plantel.velho.a.nascimento)})</span>}
-                  <span>Considerados: <b>{plantel.total}</b></span>
-                  <span>Sem data: <b>{plantel.semData}</b></span>
-                </div>
+              <div className="card"><div className="card-h">Investimentos por sociedade</div>
+                {porSocio.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={Math.max(150, Math.min(porSocio.length, 8) * 40)}><BarChart data={porSocio.slice(0, 8)} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" horizontal={false} /><XAxis type="number" tick={{ fontSize: 10.5, fill: "#5a5346" }} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} />
+                    <YAxis type="category" dataKey="nome" width={100} tick={{ fontSize: 10.5, fill: "#5a5346" }} /><Tooltip formatter={(v, n, p) => [money(v), `${p && p.payload ? p.payload.qtd : 0} animal(is)`]} />
+                    <Bar dataKey="invest" fill="#17634A" radius={[0, 6, 6, 0]} cursor="pointer" onClick={(d) => d && d.nome && (setBusca(d.nome), setView("animal"))} /></BarChart></ResponsiveContainer>
+                ) : <p className="muted small">Nenhum sócio no conjunto filtrado.</p>}
+                <p className="muted small" style={{ marginTop: 6 }}>Investimentos da SM <b>associados</b> a cada sócio. Um animal com vários sócios aparece em mais de um — a soma entre sócios não é o patrimônio total. Clique para ver os animais.</p>
+              </div>
+              <div className="card"><div className="card-h">Investimentos por criatório</div>
+                {porCriatorio.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={Math.max(150, Math.min(porCriatorio.length, 8) * 40)}><BarChart data={porCriatorio.slice(0, 8)} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" horizontal={false} /><XAxis type="number" tick={{ fontSize: 10.5, fill: "#5a5346" }} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} />
+                    <YAxis type="category" dataKey="nome" width={100} tick={{ fontSize: 10.5, fill: "#5a5346" }} /><Tooltip formatter={(v, n, p) => [money(v), `${p && p.payload ? p.payload.qtd : 0} animal(is)`]} />
+                    <Bar dataKey="invest" fill="#2E8560" radius={[0, 6, 6, 0]} cursor="pointer" onClick={(d) => d && d.nome && d.nome !== "Sem criatório informado" && (setBusca(d.nome), setView("animal"))} /></BarChart></ResponsiveContainer>
+                ) : <p className="muted small">Nenhum criatório no conjunto filtrado.</p>}
+                <p className="muted small" style={{ marginTop: 6 }}>Cada animal entra em um criatório só (sem dupla contagem).</p>
               </div>
             </div>
+
+            {/* ÁREA 3 — COMPOSIÇÃO DO PLANTEL */}
+            <div className="dash-sec-tit">Composição do plantel</div>
+            <div className="cols-2">
+              <div className="card"><div className="card-h">Por faixa de idade</div>
+                <div className="plantel-media">Idade média: <b>{plantel.mediaTxt}</b></div>
+                {plantelF.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={200}><BarChart data={plantelF} margin={{ left: 6, right: 10, top: 6 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="name" tick={{ fontSize: 10.5, fill: "#5a5346" }} interval={0} /><YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#5a5346" }} />
+                    <Tooltip formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#103D30" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>
+                ) : <p className="muted small">Nenhum animal com data de nascimento válida.</p>}
+              </div>
+              <div className="card"><div className="card-h">Por participação da SM</div>
+                {porParticipacao.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={200}><BarChart data={porParticipacao} margin={{ left: 6, right: 10, top: 6 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="name" tick={{ fontSize: 10.5, fill: "#5a5346" }} interval={0} /><YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#5a5346" }} />
+                    <Tooltip formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#6E9C84" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>
+                ) : <p className="muted small">Nenhum animal ativo no conjunto filtrado.</p>}
+              </div>
+            </div>
+
+            {/* ÁREA 4 — PENDÊNCIAS E ATENÇÃO */}
+            <div className="dash-sec-tit">Pendências e atenção</div>
             <div className="cols-2">
               <div className="card"><div className="card-h">Próximas parcelas</div>
                 <table className="tbl"><thead><tr><th>Ativo</th><th>Nº</th><th>Venc.</th><th>Valor</th></tr></thead>
                   <tbody>{proximas.map((p, i) => <tr key={i}><td>{p.ativoNome}</td><td>{p.numero}</td><td>{dataBR(p.venc)}</td><td>{money(p.valor)}</td></tr>)}
                     {proximas.length === 0 && <tr><td colSpan={4} className="muted">Nenhuma parcela em aberto.</td></tr>}</tbody></table></div>
-              <div className="card"><div className="card-h">Maiores ativos</div>
-                <table className="tbl"><thead><tr><th>Ativo</th><th>Tipo</th><th>Total estimado</th></tr></thead>
-                  <tbody>{reais.slice().sort((a, b) => finance(b).totalEstimado - finance(a).totalEstimado).slice(0, 6).map((a) => (
-                    <tr key={a.id} className="clk" onClick={() => setAberto(a)}><td>{a.nome}</td><td><Badge tone="gold">{a.tipo}</Badge></td><td>{money(finance(a).totalEstimado)}</td></tr>))}</tbody></table></div>
+              <div className="card"><div className="card-h">Acompanhamento reprodutivo</div>
+                <div className="repro-kpis">
+                  <button className="repro-kpi" onClick={() => setView("aspiracao")}><span>Aspirações em andamento</span><b>{reprod.aspAndamento.length}</b></button>
+                  <button className="repro-kpi" onClick={() => setView("prenhez")}><span>Prenhezes confirmadas</span><b>{reprod.confirmadas.length}</b></button>
+                  <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Partos próximos</span><b className={reprod.proximas.length ? "gold" : ""}>{reprod.proximas.length}</b></button>
+                  <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Partos atrasados</span><b className={reprod.atrasadas.length ? "neg" : ""}>{reprod.atrasadas.length}</b></button>
+                  <button className="repro-kpi" onClick={() => setView("prenhez")}><span>Nascimentos aguardando</span><b className={reprod.aguardando.length ? "gold" : ""}>{reprod.aguardando.length}</b></button>
+                  <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Pendências totais</span><b className={reprod.pendencias.length ? "gold" : ""}>{reprod.pendencias.length}</b></button>
+                </div>
+              </div>
             </div>
 
-            <div className="card">
-              <div className="card-h">Acompanhamento Reprodutivo</div>
-              <div className="repro-kpis">
-                <button className="repro-kpi" onClick={() => setView("aspiracao")}><span>Aspirações em andamento</span><b>{reprod.aspAndamento.length}</b></button>
-                <button className="repro-kpi" onClick={() => setView("prenhez")}><span>Prenhezes confirmadas</span><b>{reprod.confirmadas.length}</b></button>
-                <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Partos próximos</span><b className={reprod.proximas.length ? "gold" : ""}>{reprod.proximas.length}</b></button>
-                <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Partos atrasados</span><b className={reprod.atrasadas.length ? "neg" : ""}>{reprod.atrasadas.length}</b></button>
-                <button className="repro-kpi" onClick={() => setView("prenhez")}><span>Nascimentos aguardando</span><b className={reprod.aguardando.length ? "gold" : ""}>{reprod.aguardando.length}</b></button>
-                <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Pendências totais</span><b className={reprod.pendencias.length ? "gold" : ""}>{reprod.pendencias.length}</b></button>
-              </div>
-              <p className="muted small" style={{ marginTop: 10 }}>Clique num indicador para ver os registros. Os partos são calculados pela <b>previsão de parto</b> que você preencher nas prenhezes.</p>
+            {/* ÁREA 5 — ACESSOS RÁPIDOS */}
+            <div className="dash-sec-tit">Acessos rápidos</div>
+            <div className="dash-atalhos">
+              {[["animal", "❖", "Animais"], ["prenhez", "◗", "Prenhezes"], ["aspiracao", "✧", "Aspirações"], ["relatorios", "▦", "Relatórios"], ["criatorios", "⌂", "Criatórios"], ["lixeira", "🗑", "Lixeira"]].map(([k, ic, l]) => (
+                <button key={k} className="dash-atalho" onClick={() => setView(k)}><span className="da-ic">{ic}</span>{l}</button>
+              ))}
             </div>
           </section>
         )}
@@ -3288,6 +3721,10 @@ export default function App() {
           <RelatoriosView lista={ativos} ativos={ativos} db={db} onRestaurar={(novo) => { setDb(normalizeDb(novo)); }} isAdmin={isAdmin} usuario={profile && profile.nome} />
         )}
 
+        {view === "lixeira" && (
+          <LixeiraView lixeira={db.lixeira || []} onRestaurar={restaurarAnimal} onExcluirDefinitivo={excluirDefinitivo} />
+        )}
+
         {view === "usuarios" && isAdmin && (
           <UsersView meId={session.user.id} />
         )}
@@ -3329,6 +3766,26 @@ export default function App() {
             <div className="confirm-acts">
               <button className="btn btn-ghost" onClick={() => setConfirmar(null)}>Cancelar</button>
               {confirmar.botoes.map((b, i) => <button key={i} className={`btn ${b.tone === "danger" ? "btn-danger" : b.tone === "gold" ? "btn-gold" : "btn-ghost"}`} onClick={b.onClick}>{b.label}</button>)}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {conflito && (
+        <div className="modal-bg">
+          <div className="modal confirm" onClick={(e) => e.stopPropagation()}>
+            <div className="confirm-h">Alterações em outro aparelho</div>
+            <p className="confirm-msg">
+              Enquanto você editava, este cadastro foi salvo em <b>outro aparelho</b> (ou outro navegador). Para <b>não apagar</b> o trabalho do outro, escolha o que fazer:
+              <br /><br />
+              • <b>Baixar as minhas</b> guarda um arquivo com o que você alterou, para não perder nada.<br />
+              • <b>Usar a versão mais recente</b> traz o que está na nuvem (descarta suas alterações ainda não gravadas).<br />
+              • <b>Manter as minhas</b> grava as suas por cima da versão do outro aparelho.
+            </p>
+            <div className="confirm-acts">
+              <button className="btn btn-ghost" onClick={baixarLocalBackup}>Baixar as minhas (backup)</button>
+              <button className="btn btn-gold" onClick={atualizarDaNuvem}>Usar a versão mais recente</button>
+              <button className="btn btn-danger" onClick={sobrescreverComMinhas}>Manter as minhas (sobrescrever)</button>
             </div>
           </div>
         </div>
@@ -3386,6 +3843,21 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .kpi-value{font-family:Fraunces,serif;font-size:26px;font-weight:600;margin-top:6px;color:var(--ink)}
 .kpi-value.gold{color:#a9843f}.kpi-value.pos{color:var(--pos)}.kpi-value.neg{color:var(--neg)}
 .kpi-sub{font-size:12px;color:var(--muted);margin-top:3px}
+.kpi-top{display:flex;align-items:center;gap:7px}
+.kpi-ic{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:7px;background:var(--paper);border:1px solid var(--line);color:#9a7b3a;font-size:12px}
+.kpi.clk{cursor:pointer}.kpi.clk:hover{box-shadow:var(--shadow-md,0 6px 18px rgba(0,0,0,.08));transform:translateY(-1px);border-color:var(--gold)}
+
+/* painel — seções, filtros, atalhos */
+.dash-sec-tit{font-family:Fraunces,serif;font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:#9a7b3a;margin:26px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.dash-filtros{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:10px 14px;margin-top:4px}
+.dash-filtros .df-tit{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.df-sel{padding:7px 10px;border:1px solid var(--line);border-radius:9px;background:#fff;font-size:13px;max-width:200px}
+.df-hint{font-size:11.5px;color:var(--muted);font-style:italic;margin-left:auto}
+.card-h-flex{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.dash-atalhos{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.dash-atalho{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;font-size:14px;font-weight:600;color:var(--ink);cursor:pointer;font-family:inherit;transition:.15s}
+.dash-atalho:hover{border-color:var(--gold);box-shadow:var(--shadow-sm);transform:translateY(-1px)}
+.dash-atalho .da-ic{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:9px;background:var(--paper);color:#9a7b3a;font-size:15px}
 
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px}
 .card-h{font-family:Fraunces,serif;font-size:18px;font-weight:600;margin-bottom:14px;color:var(--ink)}
@@ -3645,6 +4117,18 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .burger{display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.16);border-radius:11px;color:#fff;font-size:20px;line-height:1;cursor:pointer;transition:transform .12s ease,background .15s ease;flex-shrink:0}
 .burger:hover{background:rgba(255,255,255,.18)}.burger:active{transform:scale(.93)}
 .brand-mini{font-size:19px;font-weight:600;letter-spacing:.01em}.scrim{display:none}
+/* indicador de salvamento */
+.save-chip{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding:5px 11px;border-radius:999px;border:1px solid var(--line);background:#fff;white-space:nowrap}
+.save-chip .save-ic{font-size:12px;line-height:1}
+.save-chip.pend{color:#8a6a2c;border-color:#e4d4a8;background:#fbf6e9}
+.save-chip.saving{color:#5a5346;border-color:var(--line);background:#f6f3ec}
+.save-chip.ok{color:#256b45;border-color:#bfe0cc;background:#eef7f1}
+.save-chip.err,.save-chip.off{color:#9a2b2b;border-color:#e6b9b9;background:#fbeeee}
+.save-retry{margin-left:4px;border:0;background:#9a2b2b;color:#fff;border-radius:999px;padding:3px 9px;font-size:11.5px;font-weight:600;cursor:pointer;font-family:inherit}
+.save-retry:hover{background:#7f2020}
+.topbar .save-chip{margin-left:auto;background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.22);color:#fff}
+.topbar .save-chip.ok{color:#d6f3e1}.topbar .save-chip.pend{color:#f3e3b8}.topbar .save-chip.err,.topbar .save-chip.off{color:#ffd9d9}
+.save-chip-desk{display:inline-flex}
 
 /* ===================== Responsivo ===================== */
 /* ===================== refinamento visual (estético) ================== */
@@ -3688,6 +4172,7 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 }
 @media(max-width:860px){
   .topbar{display:flex}
+  .save-chip-desk{display:none}
   .side{position:fixed;left:0;top:0;bottom:0;z-index:80;transform:translateX(-100%);transition:transform .28s cubic-bezier(.4,0,.2,1);box-shadow:0 0 60px rgba(0,0,0,.45);width:min(280px,84vw)}
   .side.open{transform:translateX(0)}
   .scrim{display:block;position:fixed;inset:0;background:rgba(10,12,10,.46);z-index:75;animation:scrimIn .2s ease}
@@ -3717,4 +4202,112 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
   .tbl{font-size:13px}.tbl th,.tbl td{padding:8px}
 }
 @media print{.side,.topbar,.head-tools,.rep-tools,.btn{display:none!important}.main{padding:0}}
+
+/* ===== DESIGN PREMIUM "LUXURY TECH" — mármore verde + dourado + marfim =====
+   Só estética (cores, degradês, profundidade). Nenhuma mudança de layout,
+   posição, tipografia, ícone, dado ou funcionalidade. */
+:root,.app{
+  --g-black:#05160F; --g-forest:#0C3826; --g-emerald:#135A40; --g-mid:#2E8560;
+  --g-sage:#4E8C68; --g-pastel:#C3D7BC; --g-gold:#C09A49; --g-champ:#E6CB8A;
+  --marfim:#ECE7D8; --g-ivory:#F7F3E9;
+}
+
+/* dígitos alinhados (ar de instrumento financeiro) em todo o sistema */
+.kpi-value,.tbl,.repro-kpi b,.rep-resumo b,.plantel-media b,.hbar-val{font-variant-numeric:tabular-nums}
+
+/* FUNDO — marfim encorpado com mármore claro discreto */
+.app{
+  background:
+    linear-gradient(107deg, transparent 49.5%, rgba(78,140,104,.06) 50%, transparent 50.6%),
+    radial-gradient(58% 44% at 0% 0%, rgba(19,90,64,.11), transparent 60%),
+    radial-gradient(50% 40% at 100% 100%, rgba(192,154,73,.11), transparent 60%),
+    var(--marfim);
+  background-attachment:fixed;
+}
+
+/* MENU LATERAL — mármore verde profundo com veios dourados finos */
+.side{
+  background:
+    linear-gradient(103deg, transparent 37.5%, rgba(192,154,73,.12) 38.6%, transparent 39.4%),
+    linear-gradient(123deg, transparent 60%, rgba(230,203,138,.08) 61%, transparent 61.8%),
+    linear-gradient(97deg, transparent 72%, rgba(192,154,73,.06) 72.7%, transparent 73.3%),
+    radial-gradient(135% 85% at 12% 0%, rgba(22,106,76,.55), transparent 58%),
+    radial-gradient(95% 70% at 98% 100%, rgba(192,154,73,.10), transparent 55%),
+    linear-gradient(165deg, #0a2a20 0%, #0C3826 42%, #05160F 100%);
+  box-shadow:inset -1px 0 0 rgba(255,255,255,.06), 2px 0 30px rgba(0,0,0,.24);
+}
+.nav-item{transition:background .18s,color .18s,box-shadow .18s}
+.nav-item.on{background:linear-gradient(90deg, rgba(192,154,73,.28), rgba(22,106,76,.34));box-shadow:inset 3px 0 0 var(--g-gold)}
+.nav-item.on .nav-ic{color:var(--g-champ)}
+.brand-mark{box-shadow:0 4px 16px rgba(192,154,73,.36)}
+
+/* BARRA SUPERIOR (celular) */
+.topbar{
+  background:
+    linear-gradient(103deg, transparent 54%, rgba(230,203,138,.09) 55%, transparent 55.8%),
+    radial-gradient(120% 130% at 8% 0%, rgba(22,106,76,.62), transparent 60%),
+    linear-gradient(120deg, #0C3826, #05160F);
+}
+
+/* CARDS — superfície clara com profundidade, encosto verde sutil e fio dourado no topo */
+.card{
+  position:relative;border-color:var(--line);
+  background:linear-gradient(180deg, rgba(19,90,64,.055), transparent 78px), linear-gradient(180deg, #ffffff 0%, var(--g-ivory) 100%);
+  box-shadow:0 14px 34px rgba(12,48,32,.11), inset 0 1px 0 rgba(255,255,255,.7);
+}
+.card::after{content:"";position:absolute;left:0;right:0;top:0;height:2px;pointer-events:none;background:linear-gradient(90deg, transparent, rgba(192,154,73,.5), transparent)}
+/* marcador verde antes dos títulos de card do painel (exceto o cabeçalho com seletor) */
+.dash .card-h:not(.card-h-flex){display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.dash .card-h:not(.card-h-flex)::before{content:"";width:4px;height:15px;border-radius:2px;background:linear-gradient(var(--g-mid),var(--g-emerald));flex:none}
+.kpi{background:linear-gradient(180deg, #ffffff 0%, var(--g-ivory) 100%)}
+
+/* FAIXA PATRIMONIAL — a 1ª linha de KPIs vira UMA faixa escura unida */
+.dash .dash-head + .kpi-row{
+  gap:0;border-radius:16px;overflow:hidden;position:relative;
+  border:1px solid rgba(192,154,73,.34);
+  box-shadow:0 26px 60px rgba(5,22,15,.40);
+  background:
+    radial-gradient(120% 140% at 6% 0%, rgba(22,106,76,.78), transparent 62%),
+    linear-gradient(135deg, #05160F 0%, #0C3826 50%, #14583F 128%);
+}
+.dash .dash-head + .kpi-row::after{content:"";position:absolute;left:0;right:0;top:0;height:2px;pointer-events:none;background:linear-gradient(90deg, transparent, rgba(192,154,73,.6), transparent)}
+.dash .dash-head + .kpi-row .kpi{background:transparent;border:0;border-radius:0;box-shadow:none}
+.dash .dash-head + .kpi-row .kpi:hover{transform:none;box-shadow:none}
+.dash .dash-head + .kpi-row .kpi + .kpi{box-shadow:inset 1px 0 0 rgba(192,154,73,.22)}
+.dash .dash-head + .kpi-row .kpi:nth-child(4){background:linear-gradient(155deg,#F0E6C7 0%,#E2C786 100%)}
+/* texto claro nos três primeiros instrumentos */
+.dash .dash-head + .kpi-row .kpi:nth-child(-n+3) .kpi-label{color:rgba(255,255,255,.74)}
+.dash .dash-head + .kpi-row .kpi:nth-child(-n+3) .kpi-value{color:#fff}
+.dash .dash-head + .kpi-row .kpi:nth-child(1) .kpi-value{color:var(--g-champ)}
+.dash .dash-head + .kpi-row .kpi:nth-child(-n+3) .kpi-sub{color:rgba(255,255,255,.60)}
+.dash .dash-head + .kpi-row .kpi:nth-child(-n+3) .kpi-ic{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.22);color:var(--g-champ)}
+.dash .dash-head + .kpi-row .kpi:nth-child(-n+3)::before{background:linear-gradient(var(--g-champ),var(--g-gold))}
+/* 4º instrumento (champagne): tons quentes escuros para contraste */
+.dash .dash-head + .kpi-row .kpi:nth-child(4) .kpi-label{color:#6a521f}
+.dash .dash-head + .kpi-row .kpi:nth-child(4) .kpi-value{color:#7a4a28}
+.dash .dash-head + .kpi-row .kpi:nth-child(4) .kpi-sub{color:#7d6a3c}
+.dash .dash-head + .kpi-row .kpi:nth-child(4) .kpi-ic{background:rgba(150,110,30,.16);border-color:rgba(150,110,30,.42);color:#7a5c1e}
+
+/* 2ª linha (contagens) — tiles com traço verde→dourado no topo */
+.dash .kpi-row + .kpi-row .kpi{position:relative}
+.dash .kpi-row + .kpi-row .kpi::after{content:"";position:absolute;left:16px;right:16px;top:0;height:2px;border-radius:2px;pointer-events:none;background:linear-gradient(90deg,var(--g-emerald),var(--g-gold));opacity:.55}
+
+/* detalhe dourado nos títulos de seção */
+.dash-sec-tit{position:relative;border-bottom-color:var(--line)}
+.dash-sec-tit::after{content:"";position:absolute;left:0;bottom:-1px;width:46px;height:2px;border-radius:2px;background:linear-gradient(90deg, var(--g-gold), var(--g-champ))}
+
+/* filtros do painel — vidro fosco */
+.dash-filtros{background:linear-gradient(180deg, rgba(255,255,255,.74), rgba(247,243,233,.62));-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+
+/* atalhos e detalhes */
+.dash-atalho{background:linear-gradient(180deg, #ffffff 0%, var(--g-ivory) 100%)}
+.dash-atalho:hover{border-color:var(--g-gold)}
+.side-foot{box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+.tbl-wrap{box-shadow:inset 0 1px 0 rgba(255,255,255,.65), var(--shadow-sm)}
+
+/* seleções/estados ativos em verde (segmentos, chips) */
+.seg-group .seg.on{background:linear-gradient(135deg, var(--g-emerald), var(--g-mid));color:#fff}
+.chip-opt.on{background:linear-gradient(135deg, var(--g-emerald), var(--g-mid));border-color:var(--g-emerald)}
+
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
 `;
