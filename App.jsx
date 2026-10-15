@@ -3438,8 +3438,7 @@ export default function App() {
 
         {view === "dashboard" && !qBusca && (
           <section className="wrap dash">
-            <div className="dash-head">
-              <div><div className="eyebrow">Gestão patrimonial</div><h1 className="dash-title serif">Painel</h1></div>
+            <div className="dash-head" style={{ justifyContent: "flex-end" }}>
               <button className="eye-btn" onClick={() => setPrivado((p) => !p)} title={privado ? "Mostrar valores" : "Ocultar valores"} aria-label={privado ? "Mostrar valores" : "Ocultar valores"}>
                 {privado ? EYE_OFF : EYE_ON}<span>{privado ? "Mostrar valores" : "Ocultar valores"}</span>
               </button>
