@@ -2769,6 +2769,14 @@ export default function App() {
   const [dfPeriodo, setDfPeriodo] = useState("12m");
   // sempre que ENTRAR no Painel, o filtro de situação volta a ATIVOS (padrão), sem guardar a última escolha
   useEffect(() => { if (view === "dashboard") setDfSituacao("ativos"); }, [view]);
+  // celular: quando o menu-gaveta está aberto, trava a rolagem do fundo (não trava no desktop)
+  useEffect(() => {
+    if (navOpen) {
+      const antes = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      return () => { document.body.style.overflow = antes; };
+    }
+  }, [navOpen]);
   const [privado, setPrivado] = useState(() => { try { return localStorage.getItem("sm_privado") === "1"; } catch (e) { return false; } });
   useEffect(() => { try { localStorage.setItem("sm_privado", privado ? "1" : "0"); } catch (e) {} }, [privado]);
   const money = (v) => (privado ? "R$ ••••••" : fmt(v));
@@ -4173,12 +4181,15 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 }
 @media(max-width:860px){
   .topbar{display:flex}
+  /* iPhone: a barra verde vai até o topo da tela, mas o ☰ e o nome descem
+     abaixo do relógio/status (área segura). Zero no Android/sem notch. */
+  .topbar{padding-top:calc(10px + env(safe-area-inset-top,0px));padding-left:calc(14px + env(safe-area-inset-left,0px));padding-right:calc(14px + env(safe-area-inset-right,0px))}
   .save-chip-desk{display:none}
-  .side{position:fixed;left:0;top:0;bottom:0;z-index:80;transform:translateX(-100%);transition:transform .28s cubic-bezier(.4,0,.2,1);box-shadow:0 0 60px rgba(0,0,0,.45);width:min(280px,84vw)}
+  .side{position:fixed;left:0;top:0;bottom:0;z-index:80;transform:translateX(-100%);transition:transform .28s cubic-bezier(.4,0,.2,1);box-shadow:0 0 60px rgba(0,0,0,.45);width:min(280px,84vw);padding-top:env(safe-area-inset-top,0px)}
   .side.open{transform:translateX(0)}
   .scrim{display:block;position:fixed;inset:0;background:rgba(10,12,10,.46);z-index:75;animation:scrimIn .2s ease}
   @keyframes scrimIn{from{opacity:0}to{opacity:1}}
-  .main{padding:78px 16px 56px}.head h1{font-size:27px}
+  .main{padding:78px 16px 56px;padding-top:calc(78px + env(safe-area-inset-top,0px))}.head h1{font-size:27px}
   .ficha .ficha-hero{flex-direction:column}
   /* toque confortável e sem zoom automático no iOS (fontes >=16px) */
   .field input,.field select,.field textarea,.socio-row input,.socio-row select,.search,.auto input,.mini-inp,.mini-sel{font-size:16px}
@@ -4310,5 +4321,19 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .seg-group .seg.on{background:linear-gradient(135deg, var(--g-emerald), var(--g-mid));color:#fff}
 .chip-opt.on{background:linear-gradient(135deg, var(--g-emerald), var(--g-mid));border-color:var(--g-emerald)}
 
+/* ===== PAINEL NO CELULAR — organização da faixa patrimonial =====
+   Só vale em tela estreita (≤560px). O desktop fica 100% intacto.
+   Patrimônio (1º) e Em aberto (4º) ocupam a largura toda; Investido e
+   Pago ficam lado a lado no meio. Divisores redesenhados pra leitura. */
+@media(max-width:560px){
+  .dash .dash-head + .kpi-row{grid-template-columns:1fr 1fr}
+  .dash .dash-head + .kpi-row .kpi:nth-child(1),
+  .dash .dash-head + .kpi-row .kpi:nth-child(4){grid-column:1 / -1}
+  .dash .dash-head + .kpi-row .kpi{padding:15px 16px}
+  .dash .dash-head + .kpi-row .kpi + .kpi{box-shadow:none}
+  .dash .dash-head + .kpi-row .kpi:nth-child(2){box-shadow:inset 0 1px 0 rgba(192,154,73,.22)}
+  .dash .dash-head + .kpi-row .kpi:nth-child(3){box-shadow:inset 0 1px 0 rgba(192,154,73,.22), inset 1px 0 0 rgba(192,154,73,.22)}
+  .dash .dash-head + .kpi-row .kpi:nth-child(4){box-shadow:inset 0 1px 0 rgba(120,90,30,.20)}
+}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 `;
