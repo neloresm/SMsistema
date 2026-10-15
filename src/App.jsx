@@ -2763,10 +2763,12 @@ export default function App() {
   const [showAncestrais, setShowAncestrais] = useState(false);
   const [filtroSit, setFiltroSit] = useState("ativos");   // ativos | inativos | todos
   // filtros do Painel (afetam inteligência financeira e composição do plantel)
-  const [dfSituacao, setDfSituacao] = useState("todos");
+  const [dfSituacao, setDfSituacao] = useState("ativos");
   const [dfSocio, setDfSocio] = useState("");
   const [dfCriatorio, setDfCriatorio] = useState("");
   const [dfPeriodo, setDfPeriodo] = useState("12m");
+  // sempre que ENTRAR no Painel, o filtro de situação volta a ATIVOS (padrão), sem guardar a última escolha
+  useEffect(() => { if (view === "dashboard") setDfSituacao("ativos"); }, [view]);
   const [privado, setPrivado] = useState(() => { try { return localStorage.getItem("sm_privado") === "1"; } catch (e) { return false; } });
   useEffect(() => { try { localStorage.setItem("sm_privado", privado ? "1" : "0"); } catch (e) {} }, [privado]);
   const money = (v) => (privado ? "R$ ••••••" : fmt(v));
@@ -3332,7 +3334,7 @@ export default function App() {
     return arr.map((x) => ({ ...x, mes: mesLabel(x.ym) }));
   }, [fReais, dfPeriodo]);
 
-  const limparFiltrosDash = () => { setDfSituacao("todos"); setDfSocio(""); setDfCriatorio(""); setDfPeriodo("12m"); };
+  const limparFiltrosDash = () => { setDfSituacao("ativos"); setDfSocio(""); setDfCriatorio(""); setDfPeriodo("12m"); };
 
   const exportCSV = () => {
     const rows = [["Tipo", "Nome", "Status", "Cota (R$)", "Total estimado", "Pago", "Em aberto"]];
@@ -3436,8 +3438,7 @@ export default function App() {
 
         {view === "dashboard" && !qBusca && (
           <section className="wrap dash">
-            <div className="dash-head">
-              <div><div className="eyebrow">Gestão patrimonial</div><h1 className="dash-title serif">Painel</h1></div>
+            <div className="dash-head" style={{ justifyContent: "flex-end" }}>
               <button className="eye-btn" onClick={() => setPrivado((p) => !p)} title={privado ? "Mostrar valores" : "Ocultar valores"} aria-label={privado ? "Mostrar valores" : "Ocultar valores"}>
                 {privado ? EYE_OFF : EYE_ON}<span>{privado ? "Mostrar valores" : "Ocultar valores"}</span>
               </button>
