@@ -2767,6 +2767,8 @@ export default function App() {
   const [dfSocio, setDfSocio] = useState("");
   const [dfCriatorio, setDfCriatorio] = useState("");
   const [dfPeriodo, setDfPeriodo] = useState("12m");
+  // sempre que ENTRAR no Painel, o filtro de situação volta a ATIVOS (padrão), sem guardar a última escolha
+  useEffect(() => { if (view === "dashboard") setDfSituacao("ativos"); }, [view]);
   const [privado, setPrivado] = useState(() => { try { return localStorage.getItem("sm_privado") === "1"; } catch (e) { return false; } });
   useEffect(() => { try { localStorage.setItem("sm_privado", privado ? "1" : "0"); } catch (e) {} }, [privado]);
   const money = (v) => (privado ? "R$ ••••••" : fmt(v));
