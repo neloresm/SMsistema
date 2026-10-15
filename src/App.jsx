@@ -2664,6 +2664,50 @@ function CriatoriosView({ criatorios, ativos, socioNames, onSalvar, onExcluir, o
 }
 
 /* ================================= APP ================================= */
+/* --------------------------- Lixeira de animais ------------------------ */
+function LixeiraView({ lixeira, onRestaurar, onExcluirDefinitivo }) {
+  const RETENCAO = 30; // dias de referência para recuperação
+  const diasRestantes = (iso) => {
+    if (!iso) return null;
+    const dias = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+    return Math.max(0, RETENCAO - dias);
+  };
+  const itens = (lixeira || []).slice().sort((a, b) => String(b.__deletedAt || "").localeCompare(String(a.__deletedAt || "")));
+  return (
+    <section className="wrap">
+      <div className="card">
+        <div className="card-h">Lixeira de animais <span className="muted">({itens.length})</span></div>
+        <p className="muted small" style={{ marginTop: -4 }}>
+          Animais excluídos ficam aqui e podem ser restaurados com todas as informações (genealogia, sociedade, participação, compras, vendas, parcelas e históricos). A exclusão permanente é feita só manualmente, por você. Nada é apagado automaticamente.
+        </p>
+        {itens.length === 0 ? (
+          <p className="muted small">A lixeira está vazia.</p>
+        ) : (
+          <div className="tbl-wrap"><table className="tbl">
+            <thead><tr><th>Nome</th><th>RG</th><th>Excluído em</th><th>Por</th><th>Prazo p/ recuperar</th><th></th></tr></thead>
+            <tbody>{itens.map((a) => {
+              const dr = diasRestantes(a.__deletedAt);
+              return (
+                <tr key={a.id}>
+                  <td>{a.nome || "(sem nome)"}</td>
+                  <td>{a.registro || "—"}</td>
+                  <td>{a.__deletedAt ? dataBR(String(a.__deletedAt).slice(0, 10)) : "—"}</td>
+                  <td>{a.__deletedBy || "—"}</td>
+                  <td>{dr == null ? "—" : `${dr} dia(s)`}</td>
+                  <td style={{ whiteSpace: "nowrap" }}>
+                    <button className="btn btn-gold btn-mini" onClick={() => onRestaurar(a.id)}>Restaurar</button>{" "}
+                    <button className="btn-del" onClick={() => onExcluirDefinitivo(a.id)}>Excluir definitivamente</button>
+                  </td>
+                </tr>
+              );
+            })}</tbody>
+          </table></div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 export default function App() {
   const [db, setDb] = useState(SEED);
   const [view, setView] = useState("dashboard");
@@ -2687,6 +2731,12 @@ export default function App() {
   const dbRef = useRef(null);
   const lastWrite = useRef(0);
   const firstSave = useRef(true);
+  // --- estado de salvamento na nuvem (indicador) ---
+  const [saveStatus, setSaveStatus] = useState("idle"); // idle|pending|saving|saved|error|offline
+  const saveTimer = useRef(null);
+  const saveSeq = useRef(0);        // sequência monotônica: impede gravação antiga sobrescrever recente
+  const latestJson = useRef("");    // último db serializado (pendente de gravação)
+  const flushNext = useRef(false);  // próxima gravação é imediata (ações críticas)
 
   /* carregar banco (compartilhado → antigo pessoal → seed) e sessão salva */
   /* garante que o banco tenha todas as coleções, mesmo vindo de versões antigas */
@@ -2703,6 +2753,7 @@ export default function App() {
       prefichas: Array.isArray(base.prefichas) ? base.prefichas.filter(Boolean) : [],
       migracoes: Array.isArray(base.migracoes) ? base.migracoes.filter(Boolean) : [],
       criatorios: Array.isArray(base.criatorios) ? base.criatorios.filter(Boolean) : [],
+      lixeira: Array.isArray(base.lixeira) ? base.lixeira.filter(Boolean) : [],
     };
   };
 
@@ -2750,16 +2801,67 @@ export default function App() {
     return () => { alive = false; };
   }, [session, aprovado]);
 
-  /* ---- salvar na nuvem a cada mudança (na linha do próprio usuário) ---- */
+  /* ---- gravação real na nuvem, com confirmação do Supabase ---- */
+  const temPendencia = () => !!latestJson.current && latestJson.current !== dbRef.current;
+  const doSave = async () => {
+    if (!session) return;
+    const json = latestJson.current;
+    if (!json) return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) { setSaveStatus("offline"); return; }
+    const seq = ++saveSeq.current;
+    setSaveStatus("saving");
+    try {
+      const { error } = await supabase.from("app_data").upsert({ user_id: session.user.id, value: json, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+      if (seq !== saveSeq.current) return;           // uma gravação mais nova começou: ignora este resultado
+      if (error) { setSaveStatus("error"); return; } // mantém pendência; usuário pode "tentar de novo"
+      dbRef.current = json; lastWrite.current = Date.now();
+      setSaveStatus(temPendencia() ? "pending" : "saved");
+    } catch (e) {
+      if (seq === saveSeq.current) setSaveStatus("error");
+    }
+  };
+
+  /* ---- salvar na nuvem com pequeno atraso (debounce ~1s); ações críticas salvam na hora ---- */
   useEffect(() => {
     if (!dataReady || !session) return;
-    if (firstSave.current) { firstSave.current = false; return; }
     const json = JSON.stringify(db);
-    dbRef.current = json; lastWrite.current = Date.now();
-    (async () => {
-      try { await supabase.from("app_data").upsert({ user_id: session.user.id, value: json, updated_at: new Date().toISOString() }, { onConflict: "user_id" }); } catch (e) {}
-    })();
+    if (firstSave.current) { firstSave.current = false; latestJson.current = json; dbRef.current = json; return; }
+    latestJson.current = json;
+    setSaveStatus("pending");
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const imediato = flushNext.current; flushNext.current = false;
+    saveTimer.current = setTimeout(() => { doSave(); }, imediato ? 0 : 1000);
+    return () => {};
   }, [db, dataReady, session]);
+
+  // "Salvo" volta a sumir depois de alguns segundos (sem alarmes repetitivos)
+  useEffect(() => {
+    if (saveStatus !== "saved") return;
+    const t = setTimeout(() => setSaveStatus((s) => (s === "saved" ? "idle" : s)), 2500);
+    return () => clearTimeout(t);
+  }, [saveStatus]);
+
+  // reage a conexão: ao voltar a internet, tenta gravar o que ficou pendente
+  useEffect(() => {
+    const onOnline = () => { if (temPendencia()) doSave(); };
+    const onOffline = () => { if (temPendencia()) setSaveStatus("offline"); };
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    return () => { window.removeEventListener("online", onOnline); window.removeEventListener("offline", onOffline); };
+  }, [session]);
+
+  // evita perda silenciosa ao fechar/trocar de aba com alterações pendentes
+  useEffect(() => {
+    const flush = () => { if (temPendencia()) { if (saveTimer.current) clearTimeout(saveTimer.current); doSave(); } };
+    const onVis = () => { if (document.visibilityState === "hidden") flush(); };
+    const onBefore = (e) => { if (temPendencia()) { flush(); e.preventDefault(); e.returnValue = ""; } };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", onBefore);
+    return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("pagehide", flush); window.removeEventListener("beforeunload", onBefore); };
+  }, [session]);
+
+  const tentarSalvarAgora = () => { if (saveTimer.current) clearTimeout(saveTimer.current); doSave(); };
 
   /* ---- sincronização: puxa mudanças do MESMO usuário (outros aparelhos) a cada 5s ---- */
   useEffect(() => {
@@ -2767,16 +2869,17 @@ export default function App() {
     const t = setInterval(async () => {
       if (form || aberto || novo) return;
       if (Date.now() - lastWrite.current < 3000) return;
+      if (temPendencia() || saveStatus === "saving" || saveStatus === "error" || saveStatus === "offline") return; // nunca descarta alteração local não gravada
       try {
         const { data } = await supabase.from("app_data").select("value").eq("user_id", session.user.id).maybeSingle();
         if (data && data.value && data.value !== dbRef.current) {
-          dbRef.current = data.value;
+          dbRef.current = data.value; latestJson.current = data.value;
           setDb(normalizeDb(JSON.parse(data.value)));
         }
       } catch (e) {}
     }, 5000);
     return () => clearInterval(t);
-  }, [dataReady, form, aberto, novo, session]);
+  }, [dataReady, form, aberto, novo, session, saveStatus]);
 
   const logout = async () => { try { await supabase.auth.signOut(); } catch (e) {} };
 
@@ -2827,6 +2930,7 @@ export default function App() {
   const count = (t) => (ativos || []).filter((a) => a && a.tipo === t && a.origem !== "genealogia" && !a.arquivada && (t !== "animal" || ehAtivo(a))).length;
 
   const salvar = (d) => {
+    flushNext.current = true; // concluir cadastro = gravação imediata
     // edição de pré-ficha: só atualiza a pré-ficha (não cria nada no banco principal)
     if (d.__pref) {
       const prefId = d.__pref; const dados = { ...d }; delete dados.__pref; delete dados.__fromOrigem; delete dados.origemLabel;
@@ -2872,7 +2976,7 @@ export default function App() {
     });
     setForm(null); setAberto(d);
   };
-  const updateAtivo = (d) => { if (d.tipo === "prenhez" || d.tipo === "aspiracao") d = { ...d, nome: rotuloReprod(d) }; setDb((p) => ({ ...p, ativos: p.ativos.map((a) => (a.id === d.id ? d : a)) })); setAberto(d); };
+  const updateAtivo = (d) => { flushNext.current = true; if (d.tipo === "prenhez" || d.tipo === "aspiracao") d = { ...d, nome: rotuloReprod(d) }; setDb((p) => ({ ...p, ativos: p.ativos.map((a) => (a.id === d.id ? d : a)) })); setAberto(d); };
 
   /* botão "Nasceu": monta um novo animal já preenchido com genealogia + sociedade + origem */
   const nascer = (src) => {
@@ -2915,7 +3019,36 @@ export default function App() {
     setAberto(null);
     setForm({ tipo: "prenhez", initial: nova });
   };
-  const excluir = (id) => { setDb((p) => ({ ...p, ativos: p.ativos.filter((a) => a.id !== id) })); setAberto(null); };
+  // excluir = mover para a LIXEIRA (exclusão lógica). O animal sai das listagens,
+  // mas é guardado inteiro (genealogia, sociedade, participação, compras, vendas,
+  // parcelas, históricos) para poder ser restaurado. Não apaga nada de outros animais.
+  const excluir = (id) => {
+    flushNext.current = true;
+    setDb((p) => {
+      const alvo = (p.ativos || []).find((a) => a && a.id === id);
+      if (!alvo) return p;
+      const reg = { ...alvo, __deletedAt: new Date().toISOString(), __deletedBy: (profile && profile.nome) || "" };
+      return { ...p, ativos: p.ativos.filter((a) => a.id !== id), lixeira: [...(p.lixeira || []), reg] };
+    });
+    setAberto(null);
+  };
+  // restaurar da lixeira: volta ao sistema com as informações preservadas
+  const restaurarAnimal = (id) => {
+    flushNext.current = true;
+    setDb((p) => {
+      const reg = (p.lixeira || []).find((a) => a && a.id === id);
+      if (!reg) return p;
+      const limpo = { ...reg }; delete limpo.__deletedAt; delete limpo.__deletedBy;
+      return { ...p, lixeira: (p.lixeira || []).filter((a) => a.id !== id), ativos: [...(p.ativos || []), limpo] };
+    });
+  };
+  // exclusão permanente: só manual, com confirmação específica (nunca automática)
+  const excluirDefinitivo = (id) => setConfirmar({
+    titulo: "Excluir definitivamente?",
+    mensagem: "Este animal será removido em definitivo da lixeira e NÃO poderá mais ser recuperado pelo sistema. Esta ação não pode ser desfeita.",
+    usos: [],
+    botoes: [{ label: "Excluir para sempre", tone: "danger", onClick: () => { flushNext.current = true; setDb((p) => ({ ...p, lixeira: (p.lixeira || []).filter((a) => a.id !== id) })); setConfirmar(null); } }],
+  });
 
 
   const [confirmar, setConfirmar] = useState(null);
@@ -3036,8 +3169,9 @@ export default function App() {
   }, [qBusca, ativos, db.socios, db.leiloes]);
 
   const nav = [["dashboard", "◆", "Painel"], ["animal", "❖", "Animais"], ["prenhez", "◗", "Prenhezes"], ["aspiracao", "✧", "Aspirações"],
-    ["pendencias", "⬣", "Pendências"], ["criatorios", "⌂", "Criatórios"], ["socios", "◎", "Sócios"], ["parcelas", "▤", "Parcelas"], ["leiloes", "⚑", "Leilões"], ["relatorios", "▦", "Relatórios"],
+    ["pendencias", "⬣", "Pendências"], ["criatorios", "⌂", "Criatórios"], ["socios", "◎", "Sócios"], ["parcelas", "▤", "Parcelas"], ["leiloes", "⚑", "Leilões"], ["relatorios", "▦", "Relatórios"], ["lixeira", "🗑", "Lixeira"],
     ...(isAdmin ? [["usuarios", "◐", "Usuários"]] : [])];
+  const nLixeira = (db.lixeira || []).length;
 
   if (!authReady) return <div className="auth-bg"><style>{CSS}</style><div className="auth-card"><div className="auth-brand"><div className="brand-mark">SM</div><div><div className="serif auth-title">SM sistema</div><div className="brand-sub">Gado de Elite</div></div></div><div className="auth-note">Carregando…</div></div></div>;
   if (recovering && session) return <NovaSenha onDone={() => setRecovering(false)} />;
@@ -3047,16 +3181,35 @@ export default function App() {
   if (!profile.aprovado) return <Pendente nome={profile.nome} onLogout={logout} />;
   if (!dataReady) return <div className="auth-bg"><style>{CSS}</style><div className="auth-card"><div className="auth-brand"><div className="brand-mark">SM</div><div><div className="serif auth-title">SM sistema</div><div className="brand-sub">Gado de Elite</div></div></div><div className="auth-note">Carregando dados…</div></div></div>;
 
+  const SAVE_INFO = {
+    pending: { cls: "pend", txt: "Alterações pendentes", ic: "●" },
+    saving: { cls: "saving", txt: "Salvando…", ic: "⟳" },
+    saved: { cls: "ok", txt: "Salvo", ic: "✓" },
+    error: { cls: "err", txt: "Erro ao salvar", ic: "⚠" },
+    offline: { cls: "off", txt: "Sem conexão", ic: "⚠" },
+  };
+  const saveChip = (() => {
+    const info = SAVE_INFO[saveStatus];
+    if (!info) return null;
+    const podeTentar = saveStatus === "error" || saveStatus === "offline";
+    return (
+      <span className={`save-chip ${info.cls}`} title={saveStatus === "error" ? "Se o erro continuar, saia e faça login novamente." : ""}>
+        <span className="save-ic">{info.ic}</span>{info.txt}
+        {podeTentar && <button className="save-retry" onClick={tentarSalvarAgora}>Tentar de novo</button>}
+      </span>
+    );
+  })();
+
   return (
     <div className="app">
       <style>{CSS}</style>
-      <div className="topbar"><button className="burger" onClick={() => setNavOpen((v) => !v)}>☰</button><div className="brand-mini serif">SM sistema</div></div>
+      <div className="topbar"><button className="burger" onClick={() => setNavOpen((v) => !v)}>☰</button><div className="brand-mini serif">SM sistema</div>{saveChip}</div>
 
       <aside className={`side ${navOpen ? "open" : ""}`}>
         <div className="brand"><div className="brand-mark">SM</div><div><div className="serif brand-name">SM sistema</div><div className="brand-sub">Gado de Elite</div></div></div>
         <nav>{nav.map(([k, ic, l]) => (
           <button key={k} className={`nav-item ${view === k ? "on" : ""}`} onClick={() => { setView(k); setNavOpen(false); }}>
-            <span className="nav-ic">{ic}</span>{l}{["animal", "prenhez", "aspiracao"].includes(k) && <span className="nav-count">{count(k)}</span>}</button>
+            <span className="nav-ic">{ic}</span>{l}{["animal", "prenhez", "aspiracao"].includes(k) && <span className="nav-count">{count(k)}</span>}{k === "lixeira" && nLixeira > 0 && <span className="nav-count">{nLixeira}</span>}</button>
         ))}</nav>
         <div className="side-foot">
           <div className="user-box"><div className="user-name">{profile.nome || profile.email}</div><div className="user-role">{profile.role}</div></div>
@@ -3068,6 +3221,7 @@ export default function App() {
         <header className="head">
           <div><div className="eyebrow">Plataforma de gestão</div><h1 className="serif">{nav.find((n) => n[0] === view)?.[2]}</h1></div>
           <div className="head-tools">
+            <span className="save-chip-desk">{saveChip}</span>
             <input className="search" placeholder="Buscar animal, prenhez, sócio, leilão…" value={busca} onChange={(e) => setBusca(e.target.value)} />
             {!soSocio && <button className="btn btn-gold" onClick={() => setNovo(true)}>+ Novo cadastro</button>}
           </div>
@@ -3316,6 +3470,10 @@ export default function App() {
 
         {view === "relatorios" && (
           <RelatoriosView lista={ativos} ativos={ativos} db={db} onRestaurar={(novo) => { setDb(normalizeDb(novo)); }} isAdmin={isAdmin} usuario={profile && profile.nome} />
+        )}
+
+        {view === "lixeira" && (
+          <LixeiraView lixeira={db.lixeira || []} onRestaurar={restaurarAnimal} onExcluirDefinitivo={excluirDefinitivo} />
         )}
 
         {view === "usuarios" && isAdmin && (
@@ -3675,6 +3833,18 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .burger{display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.16);border-radius:11px;color:#fff;font-size:20px;line-height:1;cursor:pointer;transition:transform .12s ease,background .15s ease;flex-shrink:0}
 .burger:hover{background:rgba(255,255,255,.18)}.burger:active{transform:scale(.93)}
 .brand-mini{font-size:19px;font-weight:600;letter-spacing:.01em}.scrim{display:none}
+/* indicador de salvamento */
+.save-chip{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600;padding:5px 11px;border-radius:999px;border:1px solid var(--line);background:#fff;white-space:nowrap}
+.save-chip .save-ic{font-size:12px;line-height:1}
+.save-chip.pend{color:#8a6a2c;border-color:#e4d4a8;background:#fbf6e9}
+.save-chip.saving{color:#5a5346;border-color:var(--line);background:#f6f3ec}
+.save-chip.ok{color:#256b45;border-color:#bfe0cc;background:#eef7f1}
+.save-chip.err,.save-chip.off{color:#9a2b2b;border-color:#e6b9b9;background:#fbeeee}
+.save-retry{margin-left:4px;border:0;background:#9a2b2b;color:#fff;border-radius:999px;padding:3px 9px;font-size:11.5px;font-weight:600;cursor:pointer;font-family:inherit}
+.save-retry:hover{background:#7f2020}
+.topbar .save-chip{margin-left:auto;background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.22);color:#fff}
+.topbar .save-chip.ok{color:#d6f3e1}.topbar .save-chip.pend{color:#f3e3b8}.topbar .save-chip.err,.topbar .save-chip.off{color:#ffd9d9}
+.save-chip-desk{display:inline-flex}
 
 /* ===================== Responsivo ===================== */
 /* ===================== refinamento visual (estético) ================== */
@@ -3718,6 +3888,7 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 }
 @media(max-width:860px){
   .topbar{display:flex}
+  .save-chip-desk{display:none}
   .side{position:fixed;left:0;top:0;bottom:0;z-index:80;transform:translateX(-100%);transition:transform .28s cubic-bezier(.4,0,.2,1);box-shadow:0 0 60px rgba(0,0,0,.45);width:min(280px,84vw)}
   .side.open{transform:translateX(0)}
   .scrim{display:block;position:fixed;inset:0;background:rgba(10,12,10,.46);z-index:75;animation:scrimIn .2s ease}
