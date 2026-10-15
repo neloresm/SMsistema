@@ -1,4 +1,4 @@
-/* SM-BUILD: mobile-safearea-v2-2026-10-15 */
+/* SM-BUILD: mobile-safearea-v3-2026-10-15 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
@@ -487,7 +487,7 @@ function diasAteParto(a) {
   const hoje = new Date(today() + "T00:00:00");
   const prev = new Date(a.previsaoParto + "T00:00:00");
   return Math.round((prev - hoje) / 86400000);
-}	
+}
 // a prenhez ainda está "em andamento" (não pariu, não perdeu, não concluiu/vendeu)?
 function prenhezAtiva(a) {
   if (!a || a.tipo !== "prenhez" || a.arquivada) return false;
@@ -4199,7 +4199,9 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
   .pstatus{padding:6px 14px;font-size:12.5px}.seg{padding:11px 18px}
 }
 @media(max-width:560px){
-  .main{padding:14px 12px 52px}
+  /* reserva a altura do cabeçalho fixo + área segura do iPhone, senão o
+     título e a barra de busca ficam escondidos atrás da barra verde */
+  .main{padding:14px 12px 52px;padding-top:calc(76px + env(safe-area-inset-top,0px))}
   .head{flex-direction:column;align-items:stretch;gap:12px}
   .head-tools{width:100%}.search{flex:1}.head-tools .btn{width:100%}
   .head h1{font-size:24px}
