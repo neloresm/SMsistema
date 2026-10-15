@@ -59,6 +59,24 @@ function mesesDe(nasc) {
   if (h.getDate() < d.getDate()) m--;
   return m < 0 ? null : m;
 }
+// idade em anos e meses completos, calculada na data de geração (sem arredondar).
+// Lê a data por partes (aaaa-mm-dd) para não sofrer com fuso horário.
+function idadeTexto(nasc) {
+  if (!nasc) return "";
+  const p = String(nasc).slice(0, 10).split("-").map(Number);
+  const [y, mo, da] = p;
+  if (!y || !mo || !da) return "";
+  const h = new Date();
+  let m = (h.getFullYear() - y) * 12 + (h.getMonth() + 1 - mo);
+  if (h.getDate() < da) m--;
+  if (m < 0) return "";
+  const anos = Math.floor(m / 12), meses = m % 12;
+  const ya = anos === 1 ? "1 ano" : `${anos} anos`;
+  const ma = meses === 1 ? "1 mês" : `${meses} meses`;
+  if (anos > 0 && meses > 0) return `${ya} e ${ma}`;
+  if (anos > 0) return ya;        // anos exatos → só anos
+  return ma;                      // menos de 1 ano → só meses
+}
 // dias entre duas datas ISO (aaaa-mm-dd)
 function diasEntre(a, b) {
   if (!a || !b) return null;
@@ -1840,7 +1858,7 @@ function UsersView({ meId }) {
 
 /* ============================ RELATÓRIOS =============================== */
 const INFO_OPTS = [
-  ["basico", "Dados básicos do animal"], ["genealogia", "Genealogia"], ["sociedade", "Sociedade / cotas"],
+  ["basico", "Dados básicos do animal"], ["idade", "Idade (anos e meses)"], ["genealogia", "Genealogia"], ["sociedade", "Sociedade / cotas"],
   ["participacao", "Participação atual"], ["estimado", "Valor estimado"], ["investido", "Valor total investido"],
   ["pago", "Valor pago"], ["aberto", "Valor em aberto"], ["parcelas", "Parcelas"], ["comissao", "Comissão"],
   ["compras", "Compras"], ["vendas", "Vendas"], ["prenhezVinc", "Prenhezes vinculadas"],
@@ -1902,7 +1920,7 @@ const EYE_OFF = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stro
 
 function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const [q, setQ] = useState("");
-  const [campos, setCampos] = useState({ basico: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, reprodutivo: false, videos: false, obs: false });
+  const [campos, setCampos] = useState({ basico: true, idade: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, reprodutivo: false, videos: false, obs: false });
   const ADV_VAZIO = { tipoReg: "animal", situacao: "ativos", sexo: [], faixas: [], nascDe: "", nascAte: "", socios: [], partMin: "", partMax: "", comSociedade: false, part100: false, leiloes: [], vendedor: "", comprador: "", compraDe: "", compraAte: "", aquisicao: [], ondeEsta: "", estMin: "", estMax: "", pagoMin: "", pagoMax: "", abertoMin: "", abertoMax: "" };
   const [adv, setAdv] = useState(ADV_VAZIO);
   const [painelAberto, setPainelAberto] = useState(false);
@@ -2008,6 +2026,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
     const f = finance(a); const row = {};
     if (campos.basico) { row["Tipo"] = a.tipo; row["Nome"] = a.nome; row["Registro"] = a.registro || ""; row["Sexo"] = a.sexo || ""; row["Categoria"] = a.categoria || a.raca || ""; if (a.tipo === "animal") row["Situação"] = ehAtivo(a) ? "Ativo" : "Inativo"; row["Onde está"] = a.ondeEsta || ""; row["Nascimento"] = a.nascimento ? dataBR(a.nascimento) : ""; }
     else { row["Nome"] = a.nome; }
+    if (campos.idade) row["Idade"] = idadeTexto(a.nascimento); // sempre logo após o Nascimento (ou após o Nome, se Básicos estiver off)
     if (campos.genealogia) { row["Pai"] = a.pai || a.touro || ""; row["Mãe"] = a.mae || a.doadora || ""; row["Registro da mãe"] = a.maeRegistro || a.regDoadora || ""; row["Avô paterno"] = a.avoPaterno || ""; row["Avó paterna"] = a.avoPaterna || ""; row["Avô materno"] = a.avoMaterno || ""; row["Avó materna"] = a.avoMaterna || ""; row["Obs. genealógicas"] = a.obsGen || ""; }
     if (campos.sociedade) row["Sociedade"] = socioStr(a);
     if (campos.participacao) row["Participação atual (%)"] = participacaoAtual(a);
@@ -2097,7 +2116,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
 
   // cor pastel por categoria de campo (cabeçalhos/rótulos) — células de dados ficam brancas
   const corCampoHex = (k) => {
-    if (/^(tipo|nome|registro|sexo|categoria|nascimento|situação|raça)/i.test(k)) return "E6F0E9"; // verde pastel — identificação
+    if (/^(tipo|nome|registro|sexo|categoria|nascimento|idade|situação|raça)/i.test(k)) return "E6F0E9"; // verde pastel — identificação
     if (/sócio|sociedade|participa/i.test(k)) return "EFE8F5"; // lilás — sociedade
     if (/valor|investido|estimado|pago|aberto|parcela|comiss/i.test(k)) return "E8F0FB"; // azul — financeiro
     if (/leilão|vendedor|comprador|compra|aquisi|pai|mãe|avô|avó|genealóg|criatório|receptora|responsável|oócitos|embri|prenhez|previsão parto|data parto/i.test(k)) return "F3ECD9"; // bege — leilão/aquisição/reprodutivo
@@ -2147,11 +2166,16 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
 
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     estilos.forEach((st, r) => Object.entries(st).forEach(([c, s]) => { const addr = XLSX.utils.encode_cell({ r, c: +c }); if (ws[addr]) ws[addr].s = s; }));
-    // AutoFit: largura de cada coluna pelo conteúdo real (cabeçalho + todas as células),
-    // considerando nomes longos de animais, sócios e leilões. Ignora as barras de título de grupo.
-    ws["!cols"] = colset.map((k) => {
+    // AutoFit: largura de cada coluna pelo conteúdo real (cabeçalho + todas as células).
+    // A coluna A também precisa caber as barras de título de grupo (ex.: "SÓCIO: NELORE LUCENTE (12)"),
+    // que ficam exatamente nessa coluna — por isso antes apareciam cortadas.
+    const tituloGrupoMax = (o.agrupar !== "nenhum")
+      ? grupos.reduce((mx, g) => Math.max(mx, `${g.titulo}  (${g.itens.length} registro(s))`.length), 0)
+      : 0;
+    ws["!cols"] = colset.map((k, idx) => {
       let max = String(k).length;
       selecionados.forEach((a) => { const r = linhasPorId.get(a.id); const v = r[k]; if (v != null && v !== "") { const len = String(v).length; if (len > max) max = len; } });
+      if (idx === 0 && tituloGrupoMax > max) max = tituloGrupoMax; // inclui o texto do título de grupo na coluna A
       return { wch: Math.min(Math.max(max + 2, 10), 80) };
     });
 
