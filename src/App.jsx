@@ -396,7 +396,7 @@ const SCHEMAS = {
       ["nascimento", "Data de nascimento", "date"],
       ["categoria", "Categoria", "select", ["", "Pista", "Doadora", "Reprodutor", "Matriz", "Aposentada"]],
       ["origemAnimal", "Origem do animal", "select", ["", "Compra direta", "Nascimento de aspiração", "Nascimento de prenhez", "Outra origem"]],
-      ["ondeEsta", "Onde está", "local"], ["criatorio", "Criatório responsável", "local"],
+      ["ondeEsta", "Criatório responsável", "local"],
     ]},
     { g: "Genealogia", gen: true, f: [
       ["pai", "Pai", "link"], ["mae", "Mãe", "link"],
@@ -419,10 +419,10 @@ const SCHEMAS = {
       ["doadora", "Mãe doadora", "link"], ["regDoadora", "Registro da mãe doadora", "text"],
       ["pai", "Pai", "link"],
       ["qtd", "Quantidade de prenhezes", "number"],
-      ["status", "Status", "select", STATUS_PRENHEZ], ["ondeEsta", "Onde está", "local"],
+      ["status", "Status", "select", STATUS_PRENHEZ], ["ondeEsta", "Criatório responsável", "local"],
     ]},
     { g: "Acompanhamento reprodutivo", f: [
-      ["criatorio", "Criatório responsável", "local"], ["responsavel", "Responsável pelo acompanhamento", "text"],
+      ["responsavel", "Responsável pelo acompanhamento", "text"],
       ["receptora", "Receptora (identificação)", "text"],
       ["dataTE", "Data da transferência do embrião", "date"], ["dataConfirmacao", "Data de confirmação", "date"],
       ["previsaoParto", "Previsão de parto", "date"], ["dataParto", "Data real do parto", "date"],
@@ -441,10 +441,10 @@ const SCHEMAS = {
       ["doadora", "Mãe doadora", "link"], ["regDoadora", "Registro da mãe doadora", "text"],
       ["pai", "Pai (se houver)", "link"],
       ["qtd", "Quantidade", "number"],
-      ["status", "Status", "select", STATUS_ASP], ["ondeEsta", "Onde está", "local"],
+      ["status", "Status", "select", STATUS_ASP], ["ondeEsta", "Criatório responsável", "local"],
     ]},
     { g: "Acompanhamento reprodutivo", f: [
-      ["criatorio", "Criatório responsável", "local"], ["responsavel", "Responsável pelo acompanhamento", "text"],
+      ["responsavel", "Responsável pelo acompanhamento", "text"],
       ["dataAspiracao", "Data realizada da aspiração", "date"],
       ["oocitos", "Oócitos coletados", "number"], ["embrioes", "Embriões produzidos", "number"],
       ["embrioesTransf", "Embriões transferidos", "number"], ["embrioesArmaz", "Embriões armazenados", "number"],
@@ -599,8 +599,9 @@ function statusTone(s) {
   if (["parcial", "aberto", "aguardando", "avaliação", "aposentada"].some((x) => v.includes(x))) return "amber";
   return "gold";
 }
-const KPI = ({ label, value, sub, tone }) => (
-  <div className="kpi"><div className="kpi-label">{label}</div>
+const KPI = ({ label, value, sub, tone, icon, onClick }) => (
+  <div className={`kpi ${onClick ? "clk" : ""}`} onClick={onClick} role={onClick ? "button" : undefined} tabIndex={onClick ? 0 : undefined} onKeyDown={onClick ? (e) => { if (e.key === "Enter") onClick(); } : undefined}>
+    <div className="kpi-top">{icon && <span className="kpi-ic">{icon}</span>}<div className="kpi-label">{label}</div></div>
     <div className={`kpi-value ${tone || ""}`}>{value}</div>{sub && <div className="kpi-sub">{sub}</div>}</div>
 );
 
@@ -1493,11 +1494,11 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, canD
 
           <div className="fsec"><div className="fsec-h">Dados</div>
             <div className="info-grid">
-              {a.tipo === "animal" && <><Info l="Onde está" v={a.ondeEsta} /><Info l="Sexo" v={a.sexo} /><Info l="Nascimento" v={dataBR(a.nascimento)} />{a.maeRegistro && <Info l="Registro da mãe" v={a.maeRegistro} />}</>}
+              {a.tipo === "animal" && <><Info l="Criatório responsável" v={a.ondeEsta} /><Info l="Sexo" v={a.sexo} /><Info l="Nascimento" v={dataBR(a.nascimento)} />{a.maeRegistro && <Info l="Registro da mãe" v={a.maeRegistro} />}</>}
               {a.tipo === "prenhez" && <><Info l="Mãe doadora" v={a.doadora} /><Info l="Registro da mãe" v={a.regDoadora} /><Info l="Pai" v={a.pai} />
-                <Info l="Quantidade" v={qtdRestante(a)} /><Info l="Onde está" v={a.ondeEsta} /></>}
+                <Info l="Quantidade" v={qtdRestante(a)} /><Info l="Criatório responsável" v={a.ondeEsta} /></>}
               {a.tipo === "aspiracao" && <><Info l="Mãe doadora" v={a.doadora} /><Info l="Registro da mãe" v={a.regDoadora} /><Info l="Pai" v={a.pai} />
-                <Info l="Quantidade" v={qtdRestante(a)} /><Info l="Onde está" v={a.ondeEsta} /></>}
+                <Info l="Quantidade" v={qtdRestante(a)} /><Info l="Criatório responsável" v={a.ondeEsta} /></>}
               <Info l="Leilão / origem" v={a.leilao} /><Info l="Vendedor" v={a.vendedor} /><Info l="Data da compra" v={dataBR(a.dataCompra)} />
             </div>
             {a.obs && <p className="obs">{a.obs}</p>}
@@ -2004,7 +2005,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   if (adv.comprador) chipsAtivos.push({ k: "comp", label: `Comprador: ${adv.comprador}`, clear: () => setAdv((p) => ({ ...p, comprador: "" })) });
   if (adv.compraDe || adv.compraAte) chipsAtivos.push({ k: "compra", label: `Compra: ${adv.compraDe ? dataBR(adv.compraDe) : "…"}–${adv.compraAte ? dataBR(adv.compraAte) : "…"}`, clear: () => setAdv((p) => ({ ...p, compraDe: "", compraAte: "" })) });
   adv.aquisicao.forEach((x) => chipsAtivos.push({ k: "aq" + x, label: `Origem: ${x}`, clear: () => setAdv((p) => ({ ...p, aquisicao: p.aquisicao.filter((z) => z !== x) })) }));
-  if (adv.ondeEsta) chipsAtivos.push({ k: "onde", label: `Onde está: ${adv.ondeEsta}`, clear: () => setAdv((p) => ({ ...p, ondeEsta: adv.ondeEsta ? "" : "" })) });
+  if (adv.ondeEsta) chipsAtivos.push({ k: "onde", label: `Criatório: ${adv.ondeEsta}`, clear: () => setAdv((p) => ({ ...p, ondeEsta: adv.ondeEsta ? "" : "" })) });
   if (adv.estMin !== "" || adv.estMax !== "") chipsAtivos.push({ k: "est", label: `Valor est.: ${fmt(num(adv.estMin))}–${adv.estMax ? fmt(num(adv.estMax)) : "…"}`, clear: () => setAdv((p) => ({ ...p, estMin: "", estMax: "" })) });
   if (adv.pagoMin !== "" || adv.pagoMax !== "") chipsAtivos.push({ k: "pg", label: `Pago: ${fmt(num(adv.pagoMin))}–${adv.pagoMax ? fmt(num(adv.pagoMax)) : "…"}`, clear: () => setAdv((p) => ({ ...p, pagoMin: "", pagoMax: "" })) });
   if (adv.abertoMin !== "" || adv.abertoMax !== "") chipsAtivos.push({ k: "ab", label: `Em aberto: ${fmt(num(adv.abertoMin))}–${adv.abertoMax ? fmt(num(adv.abertoMax)) : "…"}`, clear: () => setAdv((p) => ({ ...p, abertoMin: "", abertoMax: "" })) });
@@ -2024,7 +2025,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   // monta uma linha (objeto) para o animal conforme campos marcados
   const linhaDe = (a) => {
     const f = finance(a); const row = {};
-    if (campos.basico) { row["Tipo"] = a.tipo; row["Nome"] = a.nome; row["Registro"] = a.registro || ""; row["Sexo"] = a.sexo || ""; row["Categoria"] = a.categoria || a.raca || ""; if (a.tipo === "animal") row["Situação"] = ehAtivo(a) ? "Ativo" : "Inativo"; row["Onde está"] = a.ondeEsta || ""; row["Nascimento"] = a.nascimento ? dataBR(a.nascimento) : ""; }
+    if (campos.basico) { row["Tipo"] = a.tipo; row["Nome"] = a.nome; row["Registro"] = a.registro || ""; row["Sexo"] = a.sexo || ""; row["Categoria"] = a.categoria || a.raca || ""; if (a.tipo === "animal") row["Situação"] = ehAtivo(a) ? "Ativo" : "Inativo"; row["Criatório responsável"] = a.ondeEsta || ""; row["Nascimento"] = a.nascimento ? dataBR(a.nascimento) : ""; }
     else { row["Nome"] = a.nome; }
     if (campos.idade) row["Idade"] = idadeTexto(a.nascimento); // sempre logo após o Nascimento (ou após o Nome, se Básicos estiver off)
     if (campos.genealogia) { row["Pai"] = a.pai || a.touro || ""; row["Mãe"] = a.mae || a.doadora || ""; row["Registro da mãe"] = a.maeRegistro || a.regDoadora || ""; row["Avô paterno"] = a.avoPaterno || ""; row["Avó paterna"] = a.avoPaterna || ""; row["Avô materno"] = a.avoMaterno || ""; row["Avó materna"] = a.avoMaterna || ""; row["Obs. genealógicas"] = a.obsGen || ""; }
@@ -2042,7 +2043,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
     if (campos.aspiracaoVinc) row["Aspirações vinculadas"] = aspVinculadas(a, ativos).map((x) => x.nome).join("; ");
     if (campos.historico) row["Histórico financeiro"] = (a.historico || []).map((h) => `${dataBR(h.data)}: ${h.desc || h.tipo}`).join(" | ");
     if (campos.reprodutivo) {
-      row["Criatório"] = a.criatorio || "";
+      row["Criatório"] = a.ondeEsta || a.criatorio || "";
       if (a.tipo === "prenhez") { row["Previsão parto"] = a.previsaoParto ? dataBR(a.previsaoParto) : ""; row["Data parto"] = a.dataParto ? dataBR(a.dataParto) : ""; row["Receptora"] = a.receptora || ""; row["Responsável"] = a.responsavel || ""; }
       if (a.tipo === "aspiracao") { row["Oócitos"] = a.oocitos || ""; row["Embriões"] = a.embrioes || ""; row["Embriões transf."] = a.embrioesTransf || ""; row["Prenhezes conf."] = a.prenhezesConf || ""; }
     }
@@ -2056,9 +2057,9 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const EXP_PADRAO = { formato: "pdf", agrupar: "socio", ordenar: "nomeAZ", titulos: true };
   const [exp, setExp] = useState(EXP_PADRAO);
 
-  const AGRUPAR_OPC = [["nenhum", "Sem agrupamento"], ["socio", "Sócio"], ["idade", "Faixa de idade"], ["leilao", "Leilão"], ["situacao", "Situação (Ativo/Inativo)"], ["ondeEsta", "Onde está"], ["participacao", "Participação da SM"]];
+  const AGRUPAR_OPC = [["nenhum", "Sem agrupamento"], ["socio", "Sócio"], ["idade", "Faixa de idade"], ["leilao", "Leilão"], ["situacao", "Situação (Ativo/Inativo)"], ["ondeEsta", "Criatório"], ["participacao", "Participação da SM"]];
   const ORDENAR_OPC = [["nomeAZ", "Nome (A–Z)"], ["nomeZA", "Nome (Z–A)"], ["idadeAsc", "Idade crescente"], ["idadeDesc", "Idade decrescente"], ["compraRecente", "Data de compra (mais recente)"], ["compraAntiga", "Data de compra (mais antiga)"], ["partDesc", "Participação da SM (maior → menor)"], ["valorDesc", "Valor (maior → menor)"]];
-  const PREFIXO_GRUPO = { socio: "SÓCIO", idade: "FAIXA DE IDADE", leilao: "LEILÃO", situacao: "SITUAÇÃO", ondeEsta: "ONDE ESTÁ", participacao: "PARTICIPAÇÃO DA SM" };
+  const PREFIXO_GRUPO = { socio: "SÓCIO", idade: "FAIXA DE IDADE", leilao: "LEILÃO", situacao: "SITUAÇÃO", ondeEsta: "CRIATÓRIO", participacao: "PARTICIPAÇÃO DA SM" };
   const ORDEM_IDADE = ["Até 12 meses", "13 a 24 meses", "25 a 36 meses", "37 a 48 meses", "49 a 60 meses", "Acima de 60 meses", "Idade não informada"];
   const FAIXAS_PART = [["100%", (p) => p >= 100], ["75% a 99%", (p) => p >= 75 && p < 100], ["50% a 74%", (p) => p >= 50 && p < 75], ["25% a 49%", (p) => p >= 25 && p < 50], ["1% a 24%", (p) => p >= 1 && p < 25], ["0% (sem participação)", (p) => p < 1]];
 
@@ -2069,7 +2070,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
       case "idade": { const m = mesesDe(a.nascimento); if (m == null) return ["Idade não informada"]; if (m <= 12) return ["Até 12 meses"]; if (m <= 24) return ["13 a 24 meses"]; if (m <= 36) return ["25 a 36 meses"]; if (m <= 48) return ["37 a 48 meses"]; if (m <= 60) return ["49 a 60 meses"]; return ["Acima de 60 meses"]; }
       case "leilao": return [a.leilao ? a.leilao : "Sem leilão informado"];
       case "situacao": return [estaAtivo(a) ? "Ativos" : "Inativos"];
-      case "ondeEsta": return [a.ondeEsta ? a.ondeEsta : "Sem localização informada"];
+      case "ondeEsta": return [a.ondeEsta ? a.ondeEsta : "Sem criatório informado"];
       case "participacao": { const p = participacaoAtual(a); const f = FAIXAS_PART.find((z) => z[1](p)); return [f ? f[0] : "0% (sem participação)"]; }
       default: return ["Todos os registros"];
     }
@@ -2356,8 +2357,8 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
             </div>
 
             {/* Localização */}
-            <div className="adv-grupo"><div className="adv-tit">Localização</div>
-              <div className="adv-campo"><label>Onde está</label><input value={adv.ondeEsta} onChange={(e) => setAdv((p) => ({ ...p, ondeEsta: e.target.value }))} /></div>
+            <div className="adv-grupo"><div className="adv-tit">Criatório</div>
+              <div className="adv-campo"><label>Criatório</label><input value={adv.ondeEsta} onChange={(e) => setAdv((p) => ({ ...p, ondeEsta: e.target.value }))} /></div>
             </div>
 
             {/* Financeiro */}
@@ -2618,7 +2619,7 @@ function CriatoriosView({ criatorios, ativos, socioNames, onSalvar, onExcluir, o
     <section className="wrap">
       <div className="card">
         <div className="card-h">Criatórios Parceiros <span className="muted">({(criatorios || []).length})</span></div>
-        <p className="muted small" style={{ marginTop: -4 }}>Onde seus animais, prenhezes e aspirações estão sob responsabilidade de parceiros. Vincule preenchendo o <b>Criatório responsável</b> (ou "Onde está") nas fichas.</p>
+        <p className="muted small" style={{ marginTop: -4 }}>Onde seus animais, prenhezes e aspirações estão sob responsabilidade de parceiros. Vincule preenchendo o <b>Criatório responsável</b> nas fichas.</p>
         <button className="btn btn-gold" style={{ marginTop: 8 }} onClick={() => setForm({ id: uid(), nome: "", contato: "", tel: "", obs: "", contatos: [] })}>+ Novo criatório</button>
       </div>
 
@@ -2761,6 +2762,11 @@ export default function App() {
   const [navOpen, setNavOpen] = useState(false);
   const [showAncestrais, setShowAncestrais] = useState(false);
   const [filtroSit, setFiltroSit] = useState("ativos");   // ativos | inativos | todos
+  // filtros do Painel (afetam inteligência financeira e composição do plantel)
+  const [dfSituacao, setDfSituacao] = useState("todos");
+  const [dfSocio, setDfSocio] = useState("");
+  const [dfCriatorio, setDfCriatorio] = useState("");
+  const [dfPeriodo, setDfPeriodo] = useState("12m");
   const [privado, setPrivado] = useState(() => { try { return localStorage.getItem("sm_privado") === "1"; } catch (e) { return false; } });
   useEffect(() => { try { localStorage.setItem("sm_privado", privado ? "1" : "0"); } catch (e) {} }, [privado]);
   const money = (v) => (privado ? "R$ ••••••" : fmt(v));
@@ -3258,6 +3264,76 @@ export default function App() {
   }, [ativos]);
   const PIE = ["#C6A15B", "#2F5D45", "#7A5230", "#9BB39F", "#E0C079", "#4A4A4A"];
 
+  /* ===================== PAINEL — filtros e agregações ===================== */
+  const dfMatch = (a) => {
+    if (dfSocio && !((a.sociedadeAtual || a.socios || []).some((s) => s && lc(s.nome) === lc(dfSocio)))) return false;
+    if (dfCriatorio && lc((a.ondeEsta || a.criatorio || "")) !== lc(dfCriatorio)) return false;
+    if (dfSituacao !== "todos" && a.tipo === "animal") { const at = ehAtivo(a); if (dfSituacao === "ativos" && !at) return false; if (dfSituacao === "inativos" && at) return false; }
+    return true;
+  };
+  const dfAtivo = dfSituacao !== "todos" || !!dfSocio || !!dfCriatorio;
+  const fReais = useMemo(() => reais.filter(dfMatch), [ativos, dfSituacao, dfSocio, dfCriatorio]);
+  const fAnimais = useMemo(() => fReais.filter((a) => a.tipo === "animal"), [fReais]);
+
+  // listas para os seletores de filtro
+  const sociosDash = useMemo(() => { const s = new Set(); reais.forEach((a) => (a.sociedadeAtual || a.socios || []).forEach((x) => x && x.nome && s.add(x.nome))); return [...s].sort((x, y) => lc(x).localeCompare(lc(y))); }, [ativos]);
+  const criatoriosDash = useMemo(() => { const s = new Set(); reais.forEach((a) => { const c = (a.ondeEsta || a.criatorio || "").trim(); if (c) s.add(c); }); return [...s].sort((x, y) => lc(x).localeCompare(lc(y))); }, [ativos]);
+
+  // KPIs financeiros (respeitam os filtros do painel)
+  const fKpis = useMemo(() => { const acc = { total: 0, pago: 0, aberto: 0, patrimonio: 0 }; fReais.forEach((a) => { const f = finance(a); acc.total += f.total; acc.pago += f.pago; acc.aberto += f.aberto; acc.patrimonio += f.totalEstimado; }); return acc; }, [fReais]);
+
+  // contagens do rebanho (sempre o total real, não dependem dos filtros)
+  const nAtivos = useMemo(() => (ativos || []).filter((a) => a && a.tipo === "animal" && a.origem !== "genealogia" && !a.arquivada && ehAtivo(a)).length, [ativos]);
+  const nInativos = useMemo(() => (ativos || []).filter((a) => a && a.tipo === "animal" && a.origem !== "genealogia" && !a.arquivada && !ehAtivo(a)).length, [ativos]);
+
+  // investimentos da SM ASSOCIADOS a cada sócio (um animal com vários sócios aparece em cada — a soma entre sócios NÃO é o total)
+  const porSocio = useMemo(() => {
+    const m = new Map();
+    fAnimais.forEach((a) => { const inv = finance(a).total; (a.sociedadeAtual || a.socios || []).filter(Boolean).forEach((s) => { if (!s.nome) return; if (!m.has(s.nome)) m.set(s.nome, { nome: s.nome, qtd: 0, invest: 0 }); const o = m.get(s.nome); o.qtd += 1; o.invest += inv; }); });
+    return [...m.values()].sort((x, y) => y.invest - x.invest);
+  }, [fAnimais]);
+
+  // investimentos por criatório (campo único "Criatório responsável" = ondeEsta) — cada animal em um grupo só
+  const porCriatorio = useMemo(() => {
+    const m = new Map();
+    fAnimais.forEach((a) => { const c = (a.ondeEsta || a.criatorio || "").trim() || "Sem criatório informado"; if (!m.has(c)) m.set(c, { nome: c, qtd: 0, invest: 0 }); const o = m.get(c); o.qtd += 1; o.invest += finance(a).total; });
+    return [...m.values()].sort((x, y) => y.invest - x.invest);
+  }, [fAnimais]);
+
+  // distribuição por participação da SM (só animais ativos no conjunto filtrado)
+  const porParticipacao = useMemo(() => {
+    const faixas = [["100%", (p) => p >= 100], ["75–99%", (p) => p >= 75 && p < 100], ["50–74%", (p) => p >= 50 && p < 75], ["25–49%", (p) => p >= 25 && p < 50], ["1–24%", (p) => p >= 1 && p < 25]];
+    const base = fAnimais.filter((a) => ehAtivo(a));
+    return faixas.map(([name, fn]) => ({ name, value: base.filter((a) => fn(participacaoAtual(a))).length })).filter((x) => x.value > 0);
+  }, [fAnimais]);
+
+  // idade do plantel no conjunto filtrado
+  const plantelF = useMemo(() => {
+    const comIdade = fAnimais.filter((a) => participacaoAtual(a) > 0).map((a) => mesesDe(a.nascimento)).filter((m) => m != null && m >= 0);
+    const faixasDef = [["< 1 ano", 0, 12], ["1 a 2", 12, 24], ["2 a 4", 24, 48], ["4 a 6", 48, 72], ["6 a 8", 72, 96], ["+ 8", 96, Infinity]];
+    return faixasDef.map(([name, lo, hi]) => ({ name, value: comIdade.filter((m) => m >= lo && m < hi).length })).filter((x) => x.value > 0);
+  }, [fAnimais]);
+
+  // evolução financeira (previsto x realizado) por mês, respeitando filtros e período
+  const evolucao = useMemo(() => {
+    const by = {};
+    fReais.forEach((a) => { parcelasPorMes(a).forEach((mo) => { if (!mo.ym) return; if (!by[mo.ym]) by[mo.ym] = { ym: mo.ym, previsto: 0, pago: 0 }; by[mo.ym].previsto += num(mo.total); by[mo.ym].pago += num(mo.pago); }); });
+    let arr = Object.values(by).sort((x, y) => x.ym.localeCompare(y.ym));
+    const now = new Date();
+    const ymNow = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+    if (dfPeriodo === "6m" || dfPeriodo === "12m") {
+      const n = dfPeriodo === "6m" ? 6 : 12;
+      const lim = new Date(now.getFullYear(), now.getMonth() - (n - 1), 1);
+      const ymLim = lim.getFullYear() + "-" + String(lim.getMonth() + 1).padStart(2, "0");
+      arr = arr.filter((x) => x.ym >= ymLim && x.ym <= ymNow);
+    } else if (dfPeriodo === "ano") {
+      arr = arr.filter((x) => x.ym.startsWith(String(now.getFullYear())));
+    }
+    return arr.map((x) => ({ ...x, mes: mesLabel(x.ym) }));
+  }, [fReais, dfPeriodo]);
+
+  const limparFiltrosDash = () => { setDfSituacao("todos"); setDfSocio(""); setDfCriatorio(""); setDfPeriodo("12m"); };
+
   const exportCSV = () => {
     const rows = [["Tipo", "Nome", "Status", "Cota (R$)", "Total estimado", "Pago", "Em aberto"]];
     visiveis.forEach((a) => { const f = finance(a); rows.push([a.tipo, a.nome, a.status || "", f.cota, f.totalEstimado, f.pago, f.aberto]); });
@@ -3359,58 +3435,120 @@ export default function App() {
         })()}
 
         {view === "dashboard" && !qBusca && (
-          <section className="wrap">
+          <section className="wrap dash">
             <div className="dash-head">
-              <h1 className="dash-title serif">Painel</h1>
+              <div><div className="eyebrow">Gestão patrimonial</div><h1 className="dash-title serif">Painel</h1></div>
               <button className="eye-btn" onClick={() => setPrivado((p) => !p)} title={privado ? "Mostrar valores" : "Ocultar valores"} aria-label={privado ? "Mostrar valores" : "Ocultar valores"}>
                 {privado ? EYE_OFF : EYE_ON}<span>{privado ? "Mostrar valores" : "Ocultar valores"}</span>
               </button>
             </div>
-            <div className="kpi-row"><KPI label="Animais" value={count("animal")} /><KPI label="Prenhezes" value={count("prenhez")} /><KPI label="Aspirações" value={count("aspiracao")} /><KPI label="Patrimônio estimado" value={money(kpis.patrimonio)} tone="gold" /></div>
-            <div className="kpi-row"><KPI label="Total investido" value={money(kpis.total)} /><KPI label="Já pago" value={money(kpis.pago)} tone="pos" /><KPI label="Em aberto" value={money(kpis.aberto)} tone="neg" /><KPI label="Parcelas do mês" value={money(parcelasMes.total)} tone="gold" sub={`${parcelasMes.qtd} parcela(s) · ${parcelasMes.pagas} paga(s)`} /></div>
+
+            {/* ÁREA 1 — VISÃO GERAL */}
+            <div className="kpi-row">
+              <KPI label="Patrimônio estimado" value={money(fKpis.patrimonio)} tone="gold" icon="◆" />
+              <KPI label="Total investido" value={money(fKpis.total)} icon="▣" />
+              <KPI label="Já pago" value={money(fKpis.pago)} tone="pos" icon="✓" />
+              <KPI label="Em aberto" value={money(fKpis.aberto)} tone="neg" icon="◷" sub={`Parcelas do mês: ${money(parcelasMes.total)} · ${parcelasMes.pagas}/${parcelasMes.qtd} pagas`} />
+            </div>
+            <div className="kpi-row">
+              <KPI label="Animais ativos" value={nAtivos} icon="❖" onClick={() => { setFiltroSit("ativos"); setView("animal"); }} />
+              <KPI label="Animais inativos" value={nInativos} icon="❖" onClick={() => { setFiltroSit("inativos"); setView("animal"); }} />
+              <KPI label="Prenhezes" value={count("prenhez")} icon="◗" onClick={() => setView("prenhez")} />
+              <KPI label="Aspirações" value={count("aspiracao")} icon="✧" onClick={() => setView("aspiracao")} />
+            </div>
+
+            {/* FILTROS */}
+            <div className="dash-filtros">
+              <span className="df-tit">Filtros</span>
+              <div className="seg-group sm">{[["todos", "Todos"], ["ativos", "Ativos"], ["inativos", "Inativos"]].map(([k, l]) => <button key={k} className={`seg ${dfSituacao === k ? "on" : ""}`} onClick={() => setDfSituacao(k)}>{l}</button>)}</div>
+              <select className="df-sel" value={dfSocio} onChange={(e) => setDfSocio(e.target.value)}><option value="">Todos os sócios</option>{sociosDash.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+              <select className="df-sel" value={dfCriatorio} onChange={(e) => setDfCriatorio(e.target.value)}><option value="">Todos os criatórios</option>{criatoriosDash.map((c) => <option key={c} value={c}>{c}</option>)}</select>
+              {dfAtivo && <button className="btn btn-mini" onClick={limparFiltrosDash}>Limpar filtros</button>}
+              <span className="df-hint">afetam as seções Inteligência financeira e Composição do plantel</span>
+            </div>
+
+            {/* ÁREA 2 — INTELIGÊNCIA FINANCEIRA */}
+            <div className="dash-sec-tit">Inteligência financeira</div>
+            <div className="card">
+              <div className="card-h card-h-flex"><span>Evolução financeira</span>
+                <span className="seg-group sm">{[["6m", "6 meses"], ["12m", "12 meses"], ["ano", "Ano atual"], ["tudo", "Tudo"]].map(([k, l]) => <button key={k} className={`seg ${dfPeriodo === k ? "on" : ""}`} onClick={() => setDfPeriodo(k)}>{l}</button>)}</span>
+              </div>
+              {evolucao.length > 0 ? (
+                <ResponsiveContainer width="100%" height={250}><BarChart data={evolucao} margin={{ left: 6, right: 10, top: 6 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="mes" tick={{ fontSize: 10.5, fill: "#5a5346" }} />
+                  <YAxis tick={{ fontSize: 11, fill: "#5a5346" }} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} />
+                  <Tooltip formatter={(v, n) => [money(v), n === "previsto" ? "Previsto" : "Realizado"]} /><Legend formatter={(v) => (v === "previsto" ? "Previsto" : "Realizado")} />
+                  <Bar dataKey="previsto" name="previsto" fill="#C6A15B" radius={[5, 5, 0, 0]} /><Bar dataKey="pago" name="pago" fill="#2F5D45" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer>
+              ) : <p className="muted small">Nenhuma parcela no período selecionado.</p>}
+              <p className="muted small" style={{ marginTop: 6 }}>Previsto = parcelas com vencimento no mês. Realizado = parcelas registradas como pagas.</p>
+            </div>
+
             <div className="cols-2">
-              <div className="card"><div className="card-h">Investimento por tipo de ativo</div>
-                <ResponsiveContainer width="100%" height={230}><BarChart data={invTipo} margin={{ left: 10, right: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="name" tick={{ fontSize: 11, fill: "#5a5346" }} />
-                  <YAxis tick={{ fontSize: 11, fill: "#5a5346" }} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} /><Tooltip formatter={(v) => money(v)} />
-                  <Bar dataKey="value" fill="#C6A15B" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer></div>
-              <div className="card"><div className="card-h">Idade do Plantel</div>
-                <div className="plantel-media">Idade média do plantel: <b>{plantel.mediaTxt}</b></div>
-                {plantel.total > 0 ? (
-                  <ResponsiveContainer width="100%" height={200}><BarChart data={plantel.faixas} margin={{ left: 6, right: 10, top: 6 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="name" tick={{ fontSize: 10.5, fill: "#5a5346" }} interval={0} /><YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#5a5346" }} />
-                    <Tooltip formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#1d3a2b" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>
-                ) : <p className="muted small">Nenhum animal com data de nascimento válida para calcular.</p>}
-                <div className="plantel-info">
-                  {plantel.novo && <span>Mais novo: <b>{plantel.novo.a.nome}</b> ({idade(plantel.novo.a.nascimento)})</span>}
-                  {plantel.velho && <span>Mais velho: <b>{plantel.velho.a.nome}</b> ({idade(plantel.velho.a.nascimento)})</span>}
-                  <span>Considerados: <b>{plantel.total}</b></span>
-                  <span>Sem data: <b>{plantel.semData}</b></span>
-                </div>
+              <div className="card"><div className="card-h">Investimentos por sociedade</div>
+                {porSocio.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={Math.max(150, Math.min(porSocio.length, 8) * 40)}><BarChart data={porSocio.slice(0, 8)} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" horizontal={false} /><XAxis type="number" tick={{ fontSize: 10.5, fill: "#5a5346" }} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} />
+                    <YAxis type="category" dataKey="nome" width={100} tick={{ fontSize: 10.5, fill: "#5a5346" }} /><Tooltip formatter={(v, n, p) => [money(v), `${p && p.payload ? p.payload.qtd : 0} animal(is)`]} />
+                    <Bar dataKey="invest" fill="#2F5D45" radius={[0, 6, 6, 0]} cursor="pointer" onClick={(d) => d && d.nome && (setBusca(d.nome), setView("animal"))} /></BarChart></ResponsiveContainer>
+                ) : <p className="muted small">Nenhum sócio no conjunto filtrado.</p>}
+                <p className="muted small" style={{ marginTop: 6 }}>Investimentos da SM <b>associados</b> a cada sócio. Um animal com vários sócios aparece em mais de um — a soma entre sócios não é o patrimônio total. Clique para ver os animais.</p>
+              </div>
+              <div className="card"><div className="card-h">Investimentos por criatório</div>
+                {porCriatorio.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={Math.max(150, Math.min(porCriatorio.length, 8) * 40)}><BarChart data={porCriatorio.slice(0, 8)} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" horizontal={false} /><XAxis type="number" tick={{ fontSize: 10.5, fill: "#5a5346" }} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} />
+                    <YAxis type="category" dataKey="nome" width={100} tick={{ fontSize: 10.5, fill: "#5a5346" }} /><Tooltip formatter={(v, n, p) => [money(v), `${p && p.payload ? p.payload.qtd : 0} animal(is)`]} />
+                    <Bar dataKey="invest" fill="#C6A15B" radius={[0, 6, 6, 0]} cursor="pointer" onClick={(d) => d && d.nome && d.nome !== "Sem criatório informado" && (setBusca(d.nome), setView("animal"))} /></BarChart></ResponsiveContainer>
+                ) : <p className="muted small">Nenhum criatório no conjunto filtrado.</p>}
+                <p className="muted small" style={{ marginTop: 6 }}>Cada animal entra em um criatório só (sem dupla contagem).</p>
               </div>
             </div>
+
+            {/* ÁREA 3 — COMPOSIÇÃO DO PLANTEL */}
+            <div className="dash-sec-tit">Composição do plantel</div>
+            <div className="cols-2">
+              <div className="card"><div className="card-h">Por faixa de idade</div>
+                <div className="plantel-media">Idade média: <b>{plantel.mediaTxt}</b></div>
+                {plantelF.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={200}><BarChart data={plantelF} margin={{ left: 6, right: 10, top: 6 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="name" tick={{ fontSize: 10.5, fill: "#5a5346" }} interval={0} /><YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#5a5346" }} />
+                    <Tooltip formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#1d3a2b" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>
+                ) : <p className="muted small">Nenhum animal com data de nascimento válida.</p>}
+              </div>
+              <div className="card"><div className="card-h">Por participação da SM</div>
+                {porParticipacao.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={200}><BarChart data={porParticipacao} margin={{ left: 6, right: 10, top: 6 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="name" tick={{ fontSize: 10.5, fill: "#5a5346" }} interval={0} /><YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#5a5346" }} />
+                    <Tooltip formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#7A5230" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>
+                ) : <p className="muted small">Nenhum animal ativo no conjunto filtrado.</p>}
+              </div>
+            </div>
+
+            {/* ÁREA 4 — PENDÊNCIAS E ATENÇÃO */}
+            <div className="dash-sec-tit">Pendências e atenção</div>
             <div className="cols-2">
               <div className="card"><div className="card-h">Próximas parcelas</div>
                 <table className="tbl"><thead><tr><th>Ativo</th><th>Nº</th><th>Venc.</th><th>Valor</th></tr></thead>
                   <tbody>{proximas.map((p, i) => <tr key={i}><td>{p.ativoNome}</td><td>{p.numero}</td><td>{dataBR(p.venc)}</td><td>{money(p.valor)}</td></tr>)}
                     {proximas.length === 0 && <tr><td colSpan={4} className="muted">Nenhuma parcela em aberto.</td></tr>}</tbody></table></div>
-              <div className="card"><div className="card-h">Maiores ativos</div>
-                <table className="tbl"><thead><tr><th>Ativo</th><th>Tipo</th><th>Total estimado</th></tr></thead>
-                  <tbody>{reais.slice().sort((a, b) => finance(b).totalEstimado - finance(a).totalEstimado).slice(0, 6).map((a) => (
-                    <tr key={a.id} className="clk" onClick={() => setAberto(a)}><td>{a.nome}</td><td><Badge tone="gold">{a.tipo}</Badge></td><td>{money(finance(a).totalEstimado)}</td></tr>))}</tbody></table></div>
+              <div className="card"><div className="card-h">Acompanhamento reprodutivo</div>
+                <div className="repro-kpis">
+                  <button className="repro-kpi" onClick={() => setView("aspiracao")}><span>Aspirações em andamento</span><b>{reprod.aspAndamento.length}</b></button>
+                  <button className="repro-kpi" onClick={() => setView("prenhez")}><span>Prenhezes confirmadas</span><b>{reprod.confirmadas.length}</b></button>
+                  <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Partos próximos</span><b className={reprod.proximas.length ? "gold" : ""}>{reprod.proximas.length}</b></button>
+                  <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Partos atrasados</span><b className={reprod.atrasadas.length ? "neg" : ""}>{reprod.atrasadas.length}</b></button>
+                  <button className="repro-kpi" onClick={() => setView("prenhez")}><span>Nascimentos aguardando</span><b className={reprod.aguardando.length ? "gold" : ""}>{reprod.aguardando.length}</b></button>
+                  <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Pendências totais</span><b className={reprod.pendencias.length ? "gold" : ""}>{reprod.pendencias.length}</b></button>
+                </div>
+              </div>
             </div>
 
-            <div className="card">
-              <div className="card-h">Acompanhamento Reprodutivo</div>
-              <div className="repro-kpis">
-                <button className="repro-kpi" onClick={() => setView("aspiracao")}><span>Aspirações em andamento</span><b>{reprod.aspAndamento.length}</b></button>
-                <button className="repro-kpi" onClick={() => setView("prenhez")}><span>Prenhezes confirmadas</span><b>{reprod.confirmadas.length}</b></button>
-                <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Partos próximos</span><b className={reprod.proximas.length ? "gold" : ""}>{reprod.proximas.length}</b></button>
-                <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Partos atrasados</span><b className={reprod.atrasadas.length ? "neg" : ""}>{reprod.atrasadas.length}</b></button>
-                <button className="repro-kpi" onClick={() => setView("prenhez")}><span>Nascimentos aguardando</span><b className={reprod.aguardando.length ? "gold" : ""}>{reprod.aguardando.length}</b></button>
-                <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Pendências totais</span><b className={reprod.pendencias.length ? "gold" : ""}>{reprod.pendencias.length}</b></button>
-              </div>
-              <p className="muted small" style={{ marginTop: 10 }}>Clique num indicador para ver os registros. Os partos são calculados pela <b>previsão de parto</b> que você preencher nas prenhezes.</p>
+            {/* ÁREA 5 — ACESSOS RÁPIDOS */}
+            <div className="dash-sec-tit">Acessos rápidos</div>
+            <div className="dash-atalhos">
+              {[["animal", "❖", "Animais"], ["prenhez", "◗", "Prenhezes"], ["aspiracao", "✧", "Aspirações"], ["relatorios", "▦", "Relatórios"], ["criatorios", "⌂", "Criatórios"], ["lixeira", "🗑", "Lixeira"]].map(([k, ic, l]) => (
+                <button key={k} className="dash-atalho" onClick={() => setView(k)}><span className="da-ic">{ic}</span>{l}</button>
+              ))}
             </div>
           </section>
         )}
@@ -3705,6 +3843,21 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .kpi-value{font-family:Fraunces,serif;font-size:26px;font-weight:600;margin-top:6px;color:var(--ink)}
 .kpi-value.gold{color:#a9843f}.kpi-value.pos{color:var(--pos)}.kpi-value.neg{color:var(--neg)}
 .kpi-sub{font-size:12px;color:var(--muted);margin-top:3px}
+.kpi-top{display:flex;align-items:center;gap:7px}
+.kpi-ic{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:7px;background:var(--paper);border:1px solid var(--line);color:#9a7b3a;font-size:12px}
+.kpi.clk{cursor:pointer}.kpi.clk:hover{box-shadow:var(--shadow-md,0 6px 18px rgba(0,0,0,.08));transform:translateY(-1px);border-color:var(--gold)}
+
+/* painel — seções, filtros, atalhos */
+.dash-sec-tit{font-family:Fraunces,serif;font-size:14px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:#9a7b3a;margin:26px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.dash-filtros{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:10px 14px;margin-top:4px}
+.dash-filtros .df-tit{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.df-sel{padding:7px 10px;border:1px solid var(--line);border-radius:9px;background:#fff;font-size:13px;max-width:200px}
+.df-hint{font-size:11.5px;color:var(--muted);font-style:italic;margin-left:auto}
+.card-h-flex{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.dash-atalhos{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.dash-atalho{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;font-size:14px;font-weight:600;color:var(--ink);cursor:pointer;font-family:inherit;transition:.15s}
+.dash-atalho:hover{border-color:var(--gold);box-shadow:var(--shadow-sm);transform:translateY(-1px)}
+.dash-atalho .da-ic{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:9px;background:var(--paper);color:#9a7b3a;font-size:15px}
 
 .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px}
 .card-h{font-family:Fraunces,serif;font-size:18px;font-weight:600;margin-bottom:14px;color:var(--ink)}
