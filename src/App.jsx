@@ -2780,6 +2780,8 @@ export default function App() {
   const saveSeq = useRef(0);        // sequência monotônica: impede gravação antiga sobrescrever recente
   const latestJson = useRef("");    // último db serializado (pendente de gravação)
   const flushNext = useRef(false);  // próxima gravação é imediata (ações críticas)
+  const revRef = useRef(null);      // versão da linha na nuvem que carreguei (null = ainda não existe)
+  const [conflito, setConflito] = useState(false); // outro aparelho gravou enquanto eu editava
 
   /* carregar banco (compartilhado → antigo pessoal → seed) e sessão salva */
   /* garante que o banco tenha todas as coleções, mesmo vindo de versões antigas */
@@ -2831,13 +2833,14 @@ export default function App() {
     let alive = true;
     (async () => {
       try {
-        const { data } = await supabase.from("app_data").select("value").eq("user_id", session.user.id).maybeSingle();
+        const { data } = await supabase.from("app_data").select("value, rev").eq("user_id", session.user.id).maybeSingle();
         if (!alive) return;
         // usuário novo (sem linha própria) começa ZERADO — nunca vê dados de outro usuário
         const base = normalizeDb(data && data.value ? JSON.parse(data.value) : {});
         setDb(base); dbRef.current = JSON.stringify(base);
+        revRef.current = data ? (typeof data.rev === "number" ? data.rev : 0) : null; // null = ainda não há linha
       } catch (e) {
-        const base = normalizeDb({}); setDb(base); dbRef.current = JSON.stringify(base);
+        const base = normalizeDb({}); setDb(base); dbRef.current = JSON.stringify(base); revRef.current = null;
       }
       if (alive) setDataReady(true);
     })();
@@ -2852,16 +2855,78 @@ export default function App() {
     if (!json) return;
     if (typeof navigator !== "undefined" && navigator.onLine === false) { setSaveStatus("offline"); return; }
     const seq = ++saveSeq.current;
+    const uid = session.user.id;
     setSaveStatus("saving");
     try {
-      const { error } = await supabase.from("app_data").upsert({ user_id: session.user.id, value: json, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
-      if (seq !== saveSeq.current) return;           // uma gravação mais nova começou: ignora este resultado
-      if (error) { setSaveStatus("error"); return; } // mantém pendência; usuário pode "tentar de novo"
+      // controle de concorrência otimista: só grava se a versão na nuvem ainda for a que carreguei
+      if (revRef.current == null) {
+        // ainda não existe linha para este usuário → cria
+        const { data, error } = await supabase.from("app_data").insert({ user_id: uid, value: json, rev: 0, updated_at: new Date().toISOString() }).select("rev");
+        if (seq !== saveSeq.current) return;
+        if (error) {
+          if (error.code === "23505") { setConflito(true); setSaveStatus("error"); return; } // outro aparelho criou primeiro
+          setSaveStatus("error"); return;
+        }
+        revRef.current = (data && data[0] && typeof data[0].rev === "number") ? data[0].rev : 0;
+      } else {
+        const alvo = revRef.current;
+        const { data, error } = await supabase.from("app_data")
+          .update({ value: json, rev: alvo + 1, updated_at: new Date().toISOString() })
+          .eq("user_id", uid).eq("rev", alvo).select("rev");
+        if (seq !== saveSeq.current) return;
+        if (error) { setSaveStatus("error"); return; }
+        if (!data || data.length === 0) { setConflito(true); setSaveStatus("error"); return; } // versão mudou = CONFLITO (não sobrescreve)
+        revRef.current = data[0].rev;
+      }
       dbRef.current = json; lastWrite.current = Date.now();
       setSaveStatus(temPendencia() ? "pending" : "saved");
     } catch (e) {
       if (seq === saveSeq.current) setSaveStatus("error");
     }
+  };
+
+  // baixa a versão mais recente da nuvem (descartando as minhas alterações não gravadas)
+  const atualizarDaNuvem = async () => {
+    if (!session) return;
+    try {
+      const { data } = await supabase.from("app_data").select("value, rev").eq("user_id", session.user.id).maybeSingle();
+      if (data && data.value) {
+        dbRef.current = data.value; latestJson.current = data.value;
+        revRef.current = typeof data.rev === "number" ? data.rev : 0;
+        setDb(normalizeDb(JSON.parse(data.value)));
+      }
+      setConflito(false); setSaveStatus("saved");
+    } catch (e) { setSaveStatus("error"); }
+  };
+
+  // mantém as minhas e grava por cima (opção consciente do usuário no aviso de conflito)
+  const sobrescreverComMinhas = async () => {
+    if (!session) return;
+    setConflito(false); setSaveStatus("saving");
+    try {
+      const { data: atual } = await supabase.from("app_data").select("rev").eq("user_id", session.user.id).maybeSingle();
+      const base = atual && typeof atual.rev === "number" ? atual.rev : (revRef.current || 0);
+      const json = latestJson.current;
+      const { data, error } = await supabase.from("app_data")
+        .update({ value: json, rev: base + 1, updated_at: new Date().toISOString() })
+        .eq("user_id", session.user.id).select("rev");
+      if (error || !data || data.length === 0) { setSaveStatus("error"); return; }
+      revRef.current = data[0].rev; dbRef.current = json; lastWrite.current = Date.now();
+      setSaveStatus("saved");
+    } catch (e) { setSaveStatus("error"); }
+  };
+
+  // baixa um arquivo com o estado atual (minhas alterações), para não perder nada antes de decidir
+  const baixarLocalBackup = () => {
+    try {
+      const backup = { _tipo: "sm-sistema-backup", _versao: 1, _data: new Date().toISOString(), _por: (profile && profile.nome) || "", dados: db };
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url; link.download = `minhas-alteracoes-sm-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link); link.click(); document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {}
   };
 
   /* ---- salvar na nuvem com pequeno atraso (debounce ~1s); ações críticas salvam na hora ---- */
@@ -2910,19 +2975,22 @@ export default function App() {
   useEffect(() => {
     if (!dataReady || !session) return;
     const t = setInterval(async () => {
-      if (form || aberto || novo) return;
+      if (form || aberto || novo || conflito) return;
       if (Date.now() - lastWrite.current < 3000) return;
       if (temPendencia() || saveStatus === "saving" || saveStatus === "error" || saveStatus === "offline") return; // nunca descarta alteração local não gravada
       try {
-        const { data } = await supabase.from("app_data").select("value").eq("user_id", session.user.id).maybeSingle();
+        const { data } = await supabase.from("app_data").select("value, rev").eq("user_id", session.user.id).maybeSingle();
         if (data && data.value && data.value !== dbRef.current) {
           dbRef.current = data.value; latestJson.current = data.value;
+          revRef.current = typeof data.rev === "number" ? data.rev : revRef.current;
           setDb(normalizeDb(JSON.parse(data.value)));
+        } else if (data && typeof data.rev === "number") {
+          revRef.current = data.rev; // mantém a versão em dia mesmo sem mudança de conteúdo
         }
       } catch (e) {}
     }, 5000);
     return () => clearInterval(t);
-  }, [dataReady, form, aberto, novo, session, saveStatus]);
+  }, [dataReady, form, aberto, novo, session, saveStatus, conflito]);
 
   const logout = async () => { try { await supabase.auth.signOut(); } catch (e) {} };
 
@@ -3560,6 +3628,26 @@ export default function App() {
             <div className="confirm-acts">
               <button className="btn btn-ghost" onClick={() => setConfirmar(null)}>Cancelar</button>
               {confirmar.botoes.map((b, i) => <button key={i} className={`btn ${b.tone === "danger" ? "btn-danger" : b.tone === "gold" ? "btn-gold" : "btn-ghost"}`} onClick={b.onClick}>{b.label}</button>)}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {conflito && (
+        <div className="modal-bg">
+          <div className="modal confirm" onClick={(e) => e.stopPropagation()}>
+            <div className="confirm-h">Alterações em outro aparelho</div>
+            <p className="confirm-msg">
+              Enquanto você editava, este cadastro foi salvo em <b>outro aparelho</b> (ou outro navegador). Para <b>não apagar</b> o trabalho do outro, escolha o que fazer:
+              <br /><br />
+              • <b>Baixar as minhas</b> guarda um arquivo com o que você alterou, para não perder nada.<br />
+              • <b>Usar a versão mais recente</b> traz o que está na nuvem (descarta suas alterações ainda não gravadas).<br />
+              • <b>Manter as minhas</b> grava as suas por cima da versão do outro aparelho.
+            </p>
+            <div className="confirm-acts">
+              <button className="btn btn-ghost" onClick={baixarLocalBackup}>Baixar as minhas (backup)</button>
+              <button className="btn btn-gold" onClick={atualizarDaNuvem}>Usar a versão mais recente</button>
+              <button className="btn btn-danger" onClick={sobrescreverComMinhas}>Manter as minhas (sobrescrever)</button>
             </div>
           </div>
         </div>
