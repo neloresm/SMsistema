@@ -4202,4 +4202,62 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
   .tbl{font-size:13px}.tbl th,.tbl td{padding:8px}
 }
 @media print{.side,.topbar,.head-tools,.rep-tools,.btn{display:none!important}.main{padding:0}}
+
+/* ============ ACABAMENTO PREMIUM TECH — mármore verde + dourado ============ */
+/* Só estética: degradês suaves, profundidade e detalhes dourados discretos.
+   Nenhuma mudança de layout, posição, tipografia, ícone ou funcionalidade. */
+
+/* fundo claro com nuances muito sutis (tira a aparência plana, sem escurecer) */
+.app{
+  background:
+    radial-gradient(60% 48% at 0% 0%, rgba(47,93,69,.055), transparent 60%),
+    radial-gradient(52% 42% at 100% 100%, rgba(198,161,91,.06), transparent 60%),
+    var(--paper);
+  background-attachment:fixed;
+}
+
+/* menu lateral — mármore verde-escuro → verde quase preto, com veios discretos */
+.side{
+  background:
+    repeating-linear-gradient(118deg, rgba(255,255,255,.018) 0 1px, transparent 1px 30px),
+    radial-gradient(130% 90% at 15% 0%, rgba(54,102,76,.50), transparent 60%),
+    radial-gradient(90% 70% at 95% 100%, rgba(198,161,91,.09), transparent 55%),
+    linear-gradient(168deg, #23452f 0%, #163023 48%, #0d1e16 100%);
+  box-shadow:inset -1px 0 0 rgba(255,255,255,.05), 2px 0 26px rgba(0,0,0,.16);
+}
+.nav-item{transition:background .18s,color .18s,box-shadow .18s}
+.nav-item.on{background:linear-gradient(90deg, rgba(198,161,91,.22), rgba(198,161,91,.05));box-shadow:inset 3px 0 0 var(--gold)}
+.brand-mark{box-shadow:0 4px 14px rgba(198,161,91,.28)}
+
+/* barra superior (celular) — mesmo acabamento de mármore */
+.topbar{
+  background:
+    radial-gradient(120% 120% at 10% 0%, rgba(54,102,76,.5), transparent 60%),
+    linear-gradient(120deg, #22442f, #12281d);
+}
+
+/* cards — degradê branco suave, borda refinada, sombra com leve profundidade */
+.card{
+  background:linear-gradient(180deg, #ffffff 0%, #fdfbf6 100%);
+  border-color:#eae2d0;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.7), 0 6px 22px rgba(29,58,43,.07);
+}
+.kpi{background:linear-gradient(180deg, #ffffff 0%, #fcf9f2 100%)}
+/* cartões financeiros ganham nuance suave (sem prejudicar a leitura) */
+.kpi:has(.kpi-value.gold){background:linear-gradient(180deg, #fffdf7 0%, #faf3e3 100%)}
+.kpi:has(.kpi-value.pos){background:linear-gradient(180deg, #ffffff 0%, #f1f8f3 100%)}
+.kpi:has(.kpi-value.neg){background:linear-gradient(180deg, #ffffff 0%, #fbf2f0 100%)}
+
+/* detalhe dourado discreto nos títulos de seção do painel */
+.dash-sec-tit{position:relative;border-bottom-color:var(--line)}
+.dash-sec-tit::after{content:"";position:absolute;left:0;bottom:-1px;width:44px;height:2px;border-radius:2px;background:linear-gradient(90deg, var(--gold), var(--gold2))}
+
+/* divisória dourada sutil no topo dos atalhos e no rodapé do menu */
+.dash-atalho{background:linear-gradient(180deg, #ffffff 0%, #fdfbf6 100%)}
+.side-foot{box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
+
+/* contêineres de gráfico e tabela com acabamento mais refinado (sem mexer nos dados) */
+.tbl-wrap{box-shadow:inset 0 1px 0 rgba(255,255,255,.6), var(--shadow-sm)}
+
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
 `;
