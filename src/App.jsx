@@ -2472,6 +2472,25 @@ function BackupSecao({ db, onRestaurar, isAdmin, usuario, ativos }) {
   const [msg, setMsg] = useState("");
   const [pendente, setPendente] = useState(null);   // conteúdo aguardando confirmação de restauro
   const inputRef = useRef(null);
+  // --- backups automáticos na nuvem (tabela app_backups, criada pelo script do Supabase) ---
+  const [autoList, setAutoList] = useState(null);    // null = carregando; [] = sem cópias
+  const [autoErro, setAutoErro] = useState(false);   // true = tabela ainda não existe (script não rodado)
+  const carregarAuto = async () => {
+    try {
+      const { data, error } = await supabase.from("app_backups").select("id, origem, criado_em").order("criado_em", { ascending: false }).limit(30);
+      if (error) { setAutoErro(true); setAutoList([]); return; }
+      setAutoErro(false); setAutoList(data || []);
+    } catch (e) { setAutoErro(true); setAutoList([]); }
+  };
+  useEffect(() => { carregarAuto(); }, []);
+  const restaurarNuvem = async (id) => {
+    setMsg("");
+    try {
+      const { data, error } = await supabase.from("app_backups").select("value, criado_em").eq("id", id).maybeSingle();
+      if (error || !data || !data.value) { setMsg("Não consegui carregar essa cópia."); return; }
+      setPendente({ dados: JSON.parse(data.value), nome: "Backup automático da nuvem", quando: data.criado_em });
+    } catch (e) { setMsg("Não consegui carregar essa cópia."); }
+  };
 
   const contar = (b) => ({
     animais: (b.ativos || []).filter((a) => a && a.tipo === "animal").length,
@@ -2548,6 +2567,30 @@ function BackupSecao({ db, onRestaurar, isAdmin, usuario, ativos }) {
             </div>
           </div>
         </div>
+      )}
+
+      <div className="card-h" style={{ marginTop: 20 }}>☁️ Backups automáticos (nuvem)</div>
+      {autoList === null ? (
+        <p className="muted small" style={{ marginTop: -4 }}>Carregando…</p>
+      ) : autoErro ? (
+        <p className="muted small" style={{ marginTop: -4 }}>Os backups automáticos ainda não foram ativados no servidor. Depois de rodar o script no Supabase, as cópias diárias aparecem aqui sozinhas.</p>
+      ) : autoList.length === 0 ? (
+        <p className="muted small" style={{ marginTop: -4 }}>Nenhuma cópia automática ainda. A primeira aparece na próxima execução diária (ou assim que o script for rodado).</p>
+      ) : (
+        <>
+          <p className="muted small" style={{ marginTop: -4 }}>Último backup automático: <b>{new Date(autoList[0].criado_em).toLocaleString("pt-BR")}</b>. São guardadas as últimas {autoList.length} cópias (uma por dia).</p>
+          <div className="tbl-wrap"><table className="tbl">
+            <thead><tr><th>Data e hora</th><th>Origem</th><th></th></tr></thead>
+            <tbody>{autoList.map((b) => (
+              <tr key={b.id}>
+                <td>{new Date(b.criado_em).toLocaleString("pt-BR")}</td>
+                <td>{b.origem === "manual" ? "Manual" : "Automático"}</td>
+                <td style={{ whiteSpace: "nowrap" }}>{isAdmin && <button className="btn btn-mini" onClick={() => restaurarNuvem(b.id)}>Restaurar esta cópia</button>}</td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+          <p className="muted small" style={{ marginTop: 8 }}>Restaurar substitui os dados atuais da sua conta pelos da cópia escolhida — o sistema pede confirmação antes.</p>
+        </>
       )}
     </div>
   );
