@@ -3478,7 +3478,7 @@ export default function App() {
                   <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="mes" tick={{ fontSize: 10.5, fill: "#5a5346" }} />
                   <YAxis tick={{ fontSize: 11, fill: "#5a5346" }} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} />
                   <Tooltip formatter={(v, n) => [money(v), n === "previsto" ? "Previsto" : "Realizado"]} /><Legend formatter={(v) => (v === "previsto" ? "Previsto" : "Realizado")} />
-                  <Bar dataKey="previsto" name="previsto" fill="#C6A15B" radius={[5, 5, 0, 0]} /><Bar dataKey="pago" name="pago" fill="#2F5D45" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer>
+                  <Bar dataKey="previsto" name="previsto" fill="#C6A15A" radius={[5, 5, 0, 0]} /><Bar dataKey="pago" name="pago" fill="#17634A" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer>
               ) : <p className="muted small">Nenhuma parcela no período selecionado.</p>}
               <p className="muted small" style={{ marginTop: 6 }}>Previsto = parcelas com vencimento no mês. Realizado = parcelas registradas como pagas.</p>
             </div>
@@ -3489,7 +3489,7 @@ export default function App() {
                   <ResponsiveContainer width="100%" height={Math.max(150, Math.min(porSocio.length, 8) * 40)}><BarChart data={porSocio.slice(0, 8)} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" horizontal={false} /><XAxis type="number" tick={{ fontSize: 10.5, fill: "#5a5346" }} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} />
                     <YAxis type="category" dataKey="nome" width={100} tick={{ fontSize: 10.5, fill: "#5a5346" }} /><Tooltip formatter={(v, n, p) => [money(v), `${p && p.payload ? p.payload.qtd : 0} animal(is)`]} />
-                    <Bar dataKey="invest" fill="#2F5D45" radius={[0, 6, 6, 0]} cursor="pointer" onClick={(d) => d && d.nome && (setBusca(d.nome), setView("animal"))} /></BarChart></ResponsiveContainer>
+                    <Bar dataKey="invest" fill="#17634A" radius={[0, 6, 6, 0]} cursor="pointer" onClick={(d) => d && d.nome && (setBusca(d.nome), setView("animal"))} /></BarChart></ResponsiveContainer>
                 ) : <p className="muted small">Nenhum sócio no conjunto filtrado.</p>}
                 <p className="muted small" style={{ marginTop: 6 }}>Investimentos da SM <b>associados</b> a cada sócio. Um animal com vários sócios aparece em mais de um — a soma entre sócios não é o patrimônio total. Clique para ver os animais.</p>
               </div>
@@ -3498,7 +3498,7 @@ export default function App() {
                   <ResponsiveContainer width="100%" height={Math.max(150, Math.min(porCriatorio.length, 8) * 40)}><BarChart data={porCriatorio.slice(0, 8)} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" horizontal={false} /><XAxis type="number" tick={{ fontSize: 10.5, fill: "#5a5346" }} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} />
                     <YAxis type="category" dataKey="nome" width={100} tick={{ fontSize: 10.5, fill: "#5a5346" }} /><Tooltip formatter={(v, n, p) => [money(v), `${p && p.payload ? p.payload.qtd : 0} animal(is)`]} />
-                    <Bar dataKey="invest" fill="#C6A15B" radius={[0, 6, 6, 0]} cursor="pointer" onClick={(d) => d && d.nome && d.nome !== "Sem criatório informado" && (setBusca(d.nome), setView("animal"))} /></BarChart></ResponsiveContainer>
+                    <Bar dataKey="invest" fill="#397B60" radius={[0, 6, 6, 0]} cursor="pointer" onClick={(d) => d && d.nome && d.nome !== "Sem criatório informado" && (setBusca(d.nome), setView("animal"))} /></BarChart></ResponsiveContainer>
                 ) : <p className="muted small">Nenhum criatório no conjunto filtrado.</p>}
                 <p className="muted small" style={{ marginTop: 6 }}>Cada animal entra em um criatório só (sem dupla contagem).</p>
               </div>
@@ -3512,14 +3512,14 @@ export default function App() {
                 {plantelF.length > 0 ? (
                   <ResponsiveContainer width="100%" height={200}><BarChart data={plantelF} margin={{ left: 6, right: 10, top: 6 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="name" tick={{ fontSize: 10.5, fill: "#5a5346" }} interval={0} /><YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#5a5346" }} />
-                    <Tooltip formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#1d3a2b" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>
+                    <Tooltip formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#103D30" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>
                 ) : <p className="muted small">Nenhum animal com data de nascimento válida.</p>}
               </div>
               <div className="card"><div className="card-h">Por participação da SM</div>
                 {porParticipacao.length > 0 ? (
                   <ResponsiveContainer width="100%" height={200}><BarChart data={porParticipacao} margin={{ left: 6, right: 10, top: 6 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e6ddc8" /><XAxis dataKey="name" tick={{ fontSize: 10.5, fill: "#5a5346" }} interval={0} /><YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "#5a5346" }} />
-                    <Tooltip formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#7A5230" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>
+                    <Tooltip formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#6E9C84" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>
                 ) : <p className="muted small">Nenhum animal ativo no conjunto filtrado.</p>}
               </div>
             </div>
@@ -4203,61 +4203,87 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 }
 @media print{.side,.topbar,.head-tools,.rep-tools,.btn{display:none!important}.main{padding:0}}
 
-/* ============ ACABAMENTO PREMIUM TECH — mármore verde + dourado ============ */
-/* Só estética: degradês suaves, profundidade e detalhes dourados discretos.
-   Nenhuma mudança de layout, posição, tipografia, ícone ou funcionalidade. */
+/* ===== DESIGN PREMIUM — mármore verde-esmeralda + dourado + marfim =====
+   Só estética (cores, degradês, profundidade). Nenhuma mudança de layout,
+   posição, tipografia, ícone, dado ou funcionalidade. */
+:root,.app{
+  --g-black:#071F19; --g-forest:#103D30; --g-emerald:#17634A; --g-mid:#397B60;
+  --g-sage:#91AD8B; --g-pastel:#DCE8D9; --g-gold:#C6A15A; --g-champ:#E9D6A9; --marfim:#F7F4EC;
+}
 
-/* fundo claro com nuances muito sutis (tira a aparência plana, sem escurecer) */
+/* FUNDO — marfim com mármore claro discreto (veios de ouro/sálvia muito suaves) */
 .app{
   background:
-    radial-gradient(60% 48% at 0% 0%, rgba(47,93,69,.055), transparent 60%),
-    radial-gradient(52% 42% at 100% 100%, rgba(198,161,91,.06), transparent 60%),
-    var(--paper);
+    linear-gradient(103deg, transparent 32%, rgba(198,161,90,.045) 33%, transparent 33.6%),
+    linear-gradient(124deg, transparent 67%, rgba(145,173,139,.05) 68%, transparent 68.7%),
+    radial-gradient(62% 48% at 0% 0%, rgba(23,99,74,.06), transparent 60%),
+    radial-gradient(54% 44% at 100% 100%, rgba(198,161,90,.07), transparent 60%),
+    var(--marfim);
   background-attachment:fixed;
 }
 
-/* menu lateral — mármore verde-escuro → verde quase preto, com veios discretos */
+/* MENU LATERAL — mármore verde de luxo com veios dourados finos e irregulares */
 .side{
   background:
-    repeating-linear-gradient(118deg, rgba(255,255,255,.018) 0 1px, transparent 1px 30px),
-    radial-gradient(130% 90% at 15% 0%, rgba(54,102,76,.50), transparent 60%),
-    radial-gradient(90% 70% at 95% 100%, rgba(198,161,91,.09), transparent 55%),
-    linear-gradient(168deg, #23452f 0%, #163023 48%, #0d1e16 100%);
-  box-shadow:inset -1px 0 0 rgba(255,255,255,.05), 2px 0 26px rgba(0,0,0,.16);
+    linear-gradient(103deg, transparent 37.5%, rgba(198,161,90,.11) 38.6%, transparent 39.4%),
+    linear-gradient(123deg, transparent 60%, rgba(233,214,169,.07) 61%, transparent 61.8%),
+    linear-gradient(97deg, transparent 72%, rgba(198,161,90,.06) 72.7%, transparent 73.3%),
+    radial-gradient(135% 85% at 12% 0%, rgba(23,99,74,.55), transparent 58%),
+    radial-gradient(95% 70% at 98% 100%, rgba(198,161,90,.10), transparent 55%),
+    linear-gradient(165deg, #0b2a21 0%, #103D30 42%, #071F19 100%);
+  box-shadow:inset -1px 0 0 rgba(255,255,255,.06), 2px 0 28px rgba(0,0,0,.20);
 }
 .nav-item{transition:background .18s,color .18s,box-shadow .18s}
-.nav-item.on{background:linear-gradient(90deg, rgba(198,161,91,.22), rgba(198,161,91,.05));box-shadow:inset 3px 0 0 var(--gold)}
-.brand-mark{box-shadow:0 4px 14px rgba(198,161,91,.28)}
+.nav-item.on{background:linear-gradient(90deg, rgba(198,161,90,.26), rgba(23,99,74,.30));box-shadow:inset 3px 0 0 var(--g-gold)}
+.nav-item.on .nav-ic{color:var(--g-champ)}
+.brand-mark{box-shadow:0 4px 16px rgba(198,161,90,.34)}
 
-/* barra superior (celular) — mesmo acabamento de mármore */
+/* BARRA SUPERIOR (celular) — mesmo mármore verde */
 .topbar{
   background:
-    radial-gradient(120% 120% at 10% 0%, rgba(54,102,76,.5), transparent 60%),
-    linear-gradient(120deg, #22442f, #12281d);
+    linear-gradient(103deg, transparent 54%, rgba(233,214,169,.08) 55%, transparent 55.8%),
+    radial-gradient(120% 130% at 8% 0%, rgba(23,99,74,.6), transparent 60%),
+    linear-gradient(120deg, #103D30, #071F19);
 }
 
-/* cards — degradê branco suave, borda refinada, sombra com leve profundidade */
+/* CARDS claros — marfim/branco quente com profundidade */
 .card{
-  background:linear-gradient(180deg, #ffffff 0%, #fdfbf6 100%);
-  border-color:#eae2d0;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.7), 0 6px 22px rgba(29,58,43,.07);
+  background:linear-gradient(180deg, #ffffff 0%, #fbf8f0 100%);
+  border-color:#eadfc9;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.75), 0 8px 26px rgba(16,61,48,.08);
 }
-.kpi{background:linear-gradient(180deg, #ffffff 0%, #fcf9f2 100%)}
-/* cartões financeiros ganham nuance suave (sem prejudicar a leitura) */
-.kpi:has(.kpi-value.gold){background:linear-gradient(180deg, #fffdf7 0%, #faf3e3 100%)}
-.kpi:has(.kpi-value.pos){background:linear-gradient(180deg, #ffffff 0%, #f1f8f3 100%)}
-.kpi:has(.kpi-value.neg){background:linear-gradient(180deg, #ffffff 0%, #fbf2f0 100%)}
+.kpi{background:linear-gradient(180deg, #ffffff 0%, #faf6ec 100%)}
 
-/* detalhe dourado discreto nos títulos de seção do painel */
+/* CARDS FINANCEIROS (1ª linha do painel) — degradês em vários tons de verde;
+   o 4º (Em aberto) fica claro em champagne, para contraste */
+.dash .kpi-row:first-of-type .kpi:nth-child(1){background:linear-gradient(145deg, #071F19 0%, #103D30 55%, #17634A 100%);border-color:rgba(198,161,90,.35)}
+.dash .kpi-row:first-of-type .kpi:nth-child(2){background:linear-gradient(145deg, #103D30 0%, #17634A 55%, #397B60 100%);border-color:rgba(255,255,255,.10)}
+.dash .kpi-row:first-of-type .kpi:nth-child(3){background:linear-gradient(145deg, #17634A 0%, #2c6e52 55%, #4a8064 100%);border-color:rgba(255,255,255,.10)}
+.dash .kpi-row:first-of-type .kpi:nth-child(4){background:linear-gradient(160deg, #F7F4EC 0%, #efe2c3 100%);border-color:rgba(198,161,90,.4)}
+/* texto claro e legível nos três cards escuros */
+.dash .kpi-row:first-of-type .kpi:nth-child(-n+3){box-shadow:0 10px 30px rgba(7,31,25,.22)}
+.dash .kpi-row:first-of-type .kpi:nth-child(-n+3) .kpi-label{color:rgba(255,255,255,.74)}
+.dash .kpi-row:first-of-type .kpi:nth-child(-n+3) .kpi-value{color:#ffffff}
+.dash .kpi-row:first-of-type .kpi:nth-child(1) .kpi-value{color:var(--g-champ)}
+.dash .kpi-row:first-of-type .kpi:nth-child(-n+3) .kpi-sub{color:rgba(255,255,255,.62)}
+.dash .kpi-row:first-of-type .kpi:nth-child(-n+3) .kpi-ic{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.22);color:var(--g-champ)}
+.dash .kpi-row:first-of-type .kpi:nth-child(-n+3)::before{background:linear-gradient(var(--g-champ),var(--g-gold))}
+/* 4º card (claro): valor em tom quente e ícone dourado */
+.dash .kpi-row:first-of-type .kpi:nth-child(4) .kpi-ic{background:rgba(198,161,90,.14);border-color:rgba(198,161,90,.4);color:#8a6a2c}
+
+/* detalhe dourado nos títulos de seção */
 .dash-sec-tit{position:relative;border-bottom-color:var(--line)}
-.dash-sec-tit::after{content:"";position:absolute;left:0;bottom:-1px;width:44px;height:2px;border-radius:2px;background:linear-gradient(90deg, var(--gold), var(--gold2))}
+.dash-sec-tit::after{content:"";position:absolute;left:0;bottom:-1px;width:46px;height:2px;border-radius:2px;background:linear-gradient(90deg, var(--g-gold), var(--g-champ))}
 
-/* divisória dourada sutil no topo dos atalhos e no rodapé do menu */
-.dash-atalho{background:linear-gradient(180deg, #ffffff 0%, #fdfbf6 100%)}
-.side-foot{box-shadow:inset 0 1px 0 rgba(255,255,255,.05)}
+/* atalhos e detalhes */
+.dash-atalho{background:linear-gradient(180deg, #ffffff 0%, #fbf8f0 100%)}
+.dash-atalho:hover{border-color:var(--g-gold)}
+.side-foot{box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+.tbl-wrap{box-shadow:inset 0 1px 0 rgba(255,255,255,.65), var(--shadow-sm)}
 
-/* contêineres de gráfico e tabela com acabamento mais refinado (sem mexer nos dados) */
-.tbl-wrap{box-shadow:inset 0 1px 0 rgba(255,255,255,.6), var(--shadow-sm)}
+/* seleções/estados ativos em verde (segmentos, chips) */
+.seg-group .seg.on{background:linear-gradient(135deg, var(--g-emerald), var(--g-mid));color:#fff}
+.chip-opt.on{background:linear-gradient(135deg, var(--g-emerald), var(--g-mid));border-color:var(--g-emerald)}
 
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 `;
