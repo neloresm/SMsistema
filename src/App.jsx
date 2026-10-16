@@ -1,4 +1,4 @@
-/* SM-BUILD: mobile-safearea-v3-2026-10-15 */
+/* SM-BUILD: import-excel-v4-2026-10-15 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
@@ -741,7 +741,8 @@ function VideoBlock({ v }) {
 
 /* --------------------------- formulário de ficha ----------------------- */
 function FichaForm({ tipo, initial, animalNames, animalReg, leilaoNames, localNames, vendedorNames, socioNames,
-  onQuickAnimal, onQuickLeilao, onQuickLocal, onQuickVendedor, onQuickSocio, onSave, onClose }) {
+  onQuickAnimal, onQuickLeilao, onQuickLocal, onQuickVendedor, onQuickSocio, onSave, onApprove, onClose }) {
+  const ehPref = !!(initial && initial.__pref);
   const [d, setD] = useState(() => initial || { id: uid(), tipo, socios: [], videos: [], historico: [], comissaoPct: 8 });
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
@@ -801,7 +802,7 @@ function FichaForm({ tipo, initial, animalNames, animalReg, leilaoNames, localNa
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-head"><h2>{initial && !initial.__fromOrigem ? "Editar" : "Novo cadastro"} — <span className="serif">{titulo}</span></h2><button className="x" onClick={onClose}>✕</button></div>
+        <div className="modal-head"><h2>{ehPref ? "Conferir pré-cadastro" : initial && !initial.__fromOrigem ? "Editar" : "Novo cadastro"} — <span className="serif">{titulo}</span></h2><button className="x" onClick={onClose}>✕</button></div>
         <div className="modal-body">
           {initial && initial.__fromOrigem && <div className="aviso" style={{ margin: "0 0 14px" }}>Nascimento de <b>{initial.origemLabel}</b> — genealogia e sociedade já preenchidas. Complete os dados do animal{initial.origemTipo === "prenhez" ? " (sexo já definido como Fêmea)" : " e escolha o sexo"}.</div>}
           {SCHEMAS[tipo].map((sec) => (
@@ -852,7 +853,13 @@ function FichaForm({ tipo, initial, animalNames, animalReg, leilaoNames, localNa
             <button className="btn btn-ghost" onClick={addVideo}>+ Adicionar vídeo</button>
           </div>
         </div>
-        <div className="modal-foot"><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-gold" onClick={() => onSave(d)}>Salvar ficha</button></div>
+        <div className="modal-foot"><button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+          {ehPref ? (<>
+            <button className="btn btn-ghost" onClick={() => onSave(d)}>Salvar rascunho</button>
+            <button className="btn btn-gold" onClick={() => onApprove(d)}>✓ Aprovar e cadastrar</button>
+          </>) : (
+            <button className="btn btn-gold" onClick={() => onSave(d)}>Salvar ficha</button>
+          )}</div>
       </div>
     </div>
   );
@@ -2753,6 +2760,166 @@ function LixeiraView({ lixeira, onRestaurar, onExcluirDefinitivo }) {
   );
 }
 
+/* ===================== IMPORTAÇÃO POR EXCEL ===================== *
+ * Aditivo e isolado: lê a planilha e monta PRÉ-CADASTROS no formato do
+ * sistema. Nada entra em "ativos" sem aprovação individual.
+ * Regras de sociedade combinadas: sem % => divide igual (SM no rateio);
+ * SM não citada ou % parcial => fica "a conferir" (vermelho).            */
+const impNorm = (s) => (s == null ? "" : s.toString().trim());
+const impLow = (s) => impNorm(s).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+const impNum = (v) => { if (v == null || v === "") return 0; if (typeof v === "number") return v; const n = parseFloat(v.toString().replace(/[^\d.,-]/g, "").replace(/\.(?=\d{3}(\D|$))/g, "").replace(",", ".")); return isNaN(n) ? 0 : n; };
+function impData(v) {
+  if (v == null || v === "") return "";
+  if (v instanceof Date) return `${v.getUTCFullYear()}-${String(v.getUTCMonth() + 1).padStart(2, "0")}-${String(v.getUTCDate()).padStart(2, "0")}`;
+  const s = v.toString().trim();
+  let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (m) { const y = m[3].length === 2 ? "20" + m[3] : m[3]; return `${y}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`; }
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const n = Number(s);
+  if (!isNaN(n) && n > 20000 && n < 80000) { const dt = new Date(Date.UTC(1899, 11, 30) + n * 86400000); return dt.toISOString().slice(0, 10); }
+  return "";
+}
+const IMP_SM = ["agro sm nelore", "agro sm", "sm agropecuaria", "sm"];
+const impIsSM = (nome) => { const n = impLow(nome); return n === "sm" || n.startsWith("agro sm") || IMP_SM.includes(n) || IMP_SM.map((x) => x.replace(/\s/g, "")).includes(n.replace(/\s/g, "")); };
+function impParsePct(tok) {
+  tok = impNorm(tok); if (!tok) return null;
+  let m = tok.match(/\(([\d.,]+)\s*%?\)/);
+  if (m) return { nome: tok.slice(0, m.index).replace(/[-/\s]+$/, "").trim(), pct: parseFloat(m[1].replace(",", ".")) };
+  m = tok.match(/^([\d.,]+)\s*%\s*(.+)$/);
+  if (m) return { nome: m[2].replace(/^[-/\s]+/, "").trim(), pct: parseFloat(m[1].replace(",", ".")) };
+  m = tok.match(/(.+?)\s+([\d.,]+)\s*%$/);
+  if (m) return { nome: m[1].replace(/[-/\s]+$/, "").trim(), pct: parseFloat(m[2].replace(",", ".")) };
+  return { nome: tok.replace(/^[-/\s]+|[-/\s]+$/g, "").trim(), pct: null };
+}
+function impParseSoc(texto) {
+  const raw = impNorm(texto);
+  if (!raw) return { sm: null, outros: [], status: "conferir", motivo: "sociedade vazia" };
+  const parsed = raw.split(/\s*\/\s*|\s+-\s+/).filter((x) => x.trim()).map(impParsePct).filter((p) => p && p.nome);
+  if (!parsed.length) return { sm: null, outros: [], status: "conferir", motivo: "sociedade não reconhecida" };
+  const smi = parsed.findIndex((p) => impIsSM(p.nome));
+  const allG = parsed.every((p) => p.pct != null);
+  const allN = parsed.every((p) => p.pct == null);
+  const outros = (idx) => parsed.filter((_, i) => i !== idx).map((p) => ({ nome: p.nome, pct: p.pct }));
+  if (smi < 0) return { sm: null, outros: parsed.map((p) => ({ nome: p.nome, pct: p.pct })), status: "conferir", motivo: "SM não citada — preencher % da SM" };
+  if (allG) { const tot = parsed.reduce((s, p) => s + p.pct, 0); const ok = Math.abs(tot - 100) <= 0.5; return { sm: Math.round(parsed[smi].pct * 100) / 100, outros: outros(smi), status: ok ? "ok" : "conferir", motivo: ok ? "" : `soma ${tot}%` }; }
+  if (allN) { const eq = Math.round((100 / parsed.length) * 100) / 100; return { sm: eq, outros: parsed.filter((_, i) => i !== smi).map((p) => ({ nome: p.nome, pct: eq })), status: "ok", motivo: "divisão igual" }; }
+  if (parsed[smi].pct != null) { const given = parsed.reduce((s, p) => s + (p.pct || 0), 0); const nun = parsed.filter((p) => p.pct == null).length; const rem = nun ? Math.round(((100 - given) / nun) * 100) / 100 : 0; return { sm: Math.round(parsed[smi].pct * 100) / 100, outros: parsed.filter((_, i) => i !== smi).map((p) => ({ nome: p.nome, pct: p.pct == null ? rem : p.pct })), status: "conferir", motivo: "% parcial — confira a divisão" }; }
+  return { sm: null, outros: outros(smi), status: "conferir", motivo: "% da SM não informado" };
+}
+const IMP_TIPOS = { aspiracao: "aspiracao", prenhez: "prenhez", prenhezes: "prenhez" };
+function impField(h) {
+  h = impLow(h); if (!h) return null;
+  if (h === "data") return "dataCompra";
+  if (h.includes("socied")) return "__soc";
+  if (h.includes("leil")) return "leilao";
+  if (h === "lote") return "__lote";
+  if (h.includes("r$") && h.includes("parc")) return "__rparc";
+  if (h === "parc" || h === "parc." || (h.startsWith("parc") && !h.includes("parto"))) return "parcelas";
+  if (h.includes("valor total")) return "__vtotal";
+  if (h.includes("inicio")) return "primeiroVenc";
+  if (h === "tipo") return "__tipo";
+  if (h.includes("quant")) return "qtd";
+  if (h.includes("doadora")) return "doadora";
+  if (h.includes("touro")) return "pai";
+  if (h.startsWith("obs")) return "obs";
+  return null;
+}
+function impMontaPreficha(vals) {
+  const tipoRaw = impLow(vals.__tipo);
+  if (tipoRaw === "combo") return { skip: "COMBO", nome: impNorm(vals.doadora) };
+  const tipo = IMP_TIPOS[tipoRaw];
+  if (!tipo) return { skip: tipoRaw || "tipo em branco", nome: impNorm(vals.doadora) };
+  const soc = impParseSoc(vals.__soc);
+  const rparc = impNum(vals.__rparc);
+  const parcelas = Math.round(impNum(vals.parcelas));
+  const smPct = soc.sm;
+  const lote = impNorm(vals.__lote);
+  const d = {
+    id: uid(), tipo,
+    doadora: impNorm(vals.doadora), pai: impNorm(vals.pai),
+    qtd: impNum(vals.qtd) || 1,
+    status: tipo === "prenhez" ? "Aguardando confirmação" : "Realizada",
+    leilao: impNorm(vals.leilao),
+    dataCompra: impData(vals.dataCompra),
+    primeiroVenc: impData(vals.primeiroVenc) || impData(vals.dataCompra),
+    porcentagemComprada: smPct != null ? smPct : "",
+    valorParcela: smPct != null ? Math.round(rparc * smPct) / 100 : "",
+    parcelas: parcelas || "",
+    comissaoPct: 8, comissaoTipo: "Sobre o valor da parcela", considerarVencidasPagas: true,
+    socios: (soc.outros || []).filter((s) => s.nome).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct == null ? "" : s.pct, obs: "" })),
+    videos: [], historico: [],
+  };
+  const notas = [];
+  if (lote) notas.push("Lote: " + lote);
+  if (impNorm(vals.__soc)) notas.push('Sociedade (planilha): "' + impNorm(vals.__soc) + '"');
+  if (smPct == null && rparc) notas.push("⚠ Parcela cheia no leilão: R$ " + rparc.toLocaleString("pt-BR") + " em " + (parcelas || "?") + " parcelas. Defina a participação da SM e a parcela da SM (= cheia × % da SM).");
+  d.obsCompra = notas.join(" · ");
+  d.nome = rotuloReprod(d);
+  return { d, status: soc.status, motivo: soc.motivo, societRaw: impNorm(vals.__soc), lote };
+}
+function impLerArquivo(arrayBuffer) {
+  const out = { registros: [], pulados: [], erro: "" };
+  let wb; try { wb = XLSX.read(arrayBuffer, { type: "array" }); } catch (e) { out.erro = "Não consegui abrir o arquivo. Envie um .xlsx válido."; return out; }
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  if (!ws) { out.erro = "A planilha está vazia."; return out; }
+  const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+  let hi = -1;
+  for (let i = 0; i < aoa.length; i++) {
+    const cells = (aoa[i] || []).map(impLow);
+    if (cells.includes("data") && cells.some((c) => c.includes("socied"))) { hi = i; break; }
+  }
+  if (hi < 0) { out.erro = "Não encontrei o cabeçalho (uma linha com DATA e SOCIED.). Confira a planilha."; return out; }
+  const col = {};
+  (aoa[hi] || []).forEach((h, idx) => { const f = impField(h); if (f && col[f] == null) col[f] = idx; });
+  for (let i = hi + 1; i < aoa.length; i++) {
+    const row = aoa[i] || [];
+    if (!row.some((c) => c != null && c !== "")) continue;
+    const vals = {}; Object.keys(col).forEach((f) => { vals[f] = row[col[f]]; });
+    if (impLow(vals.__tipo) === "total" || impLow(vals.doadora) === "total" || impLow(vals.leilao) === "total") continue;
+    if (!impNorm(vals.doadora) && !impNorm(vals.__tipo) && !impNorm(vals.leilao)) continue;
+    const r = impMontaPreficha(vals);
+    if (r.skip) { out.pulados.push(r.skip + (r.nome ? ": " + r.nome : "")); continue; }
+    out.registros.push({ id: uid(), origem: "excel", criadoEm: today(), estado: r.status === "conferir" ? "pendente" : "novo", status: r.status, motivo: r.motivo, societRaw: r.societRaw, lote: r.lote, dados: r.d });
+  }
+  const seen = {};
+  out.registros.forEach((x) => { const k = impLow(x.dados.doadora) + "|" + impLow(x.dados.leilao) + "|" + impLow(x.lote); x.dup = !!seen[k]; seen[k] = true; });
+  return out;
+}
+/* commit compartilhado: aplica um novo registro sobre o estado do banco
+ * (stubs de doadora/touro, listas-mestre, histórico). Usado pelo cadastro
+ * manual (salvar) e pela aprovação de pré-cadastro — comportamento idêntico. */
+function aplicarNovoRegistro(p, d, profileNome, veioDeOrigem, origemId) {
+  let list = [...p.ativos];
+  const nameSet = new Set(list.filter((a) => a && a.tipo === "animal" && a.nome).map((a) => lc(a.nome)));
+  linkKeysOf(d.tipo).forEach((k) => { const nm = (d[k] ?? "").toString().trim(); if (nm && !nameSet.has(lc(nm)) && lc(nm) !== lc(d.nome)) { list.push(stubAnimal(nm, profileNome)); nameSet.add(lc(nm)); } });
+  const regPairs = { prenhez: [["doadora", "regDoadora"]], aspiracao: [["doadora", "regDoadora"]], animal: [["mae", "maeRegistro"]] };
+  (regPairs[d.tipo] || []).forEach(([nk, rk]) => {
+    const nm = (d[nk] || "").toString().trim(); const rg = (d[rk] || "").toString().trim();
+    if (nm && rg) list = list.map((a) => (a && a.tipo === "animal" && lc(a.nome) === lc(nm) && !a.registro ? { ...a, registro: rg } : a));
+  });
+  const exists = list.some((a) => a.id === d.id);
+  if (exists) list = list.map((a) => (a.id === d.id ? d : a));
+  else {
+    const histIni = [{ id: uid(), data: today(), tipo: "Cadastro criado", desc: "Ficha criada", responsavel: profileNome }];
+    if (veioDeOrigem && d.origemLabel) histIni.unshift({ id: uid(), data: today(), tipo: "Origem", desc: `Nascido de ${d.origemLabel}`, responsavel: profileNome });
+    list = [{ ...d, historico: [...histIni, ...(d.historico || [])] }, ...list];
+  }
+  if (veioDeOrigem && origemId) {
+    list = list.map((a) => {
+      if (a.id !== origemId) return a;
+      const conv = qtdConvertidos(a) + 1;
+      const arquivada = conv >= qtdTotal(a);
+      const h = { id: uid(), data: today(), tipo: "Nascimento", desc: `Nasceu 1 (${d.nome || "animal"}). Restam ${Math.max(0, qtdTotal(a) - conv)} de ${qtdTotal(a)}.`, responsavel: profileNome };
+      return { ...a, convertidos: conv, arquivada, historico: [...(a.historico || []), h] };
+    });
+  }
+  let leiloes = [...(p.leiloes || [])]; if (d.leilao && !leiloes.some((l) => l && lc(l.nome) === lc(d.leilao))) leiloes = [...leiloes, { id: uid(), nome: d.leilao }];
+  let locais = [...(p.locais || [])]; if (d.ondeEsta && !locais.some((l) => lc(l) === lc(d.ondeEsta))) locais = [...locais, d.ondeEsta];
+  let vendedores = [...(p.vendedores || [])]; if (d.vendedor && !vendedores.some((v) => v && lc(v.nome) === lc(d.vendedor))) vendedores = [...vendedores, { id: uid(), nome: d.vendedor, tipo: "Outro", doc: "", tel: "", email: "", obs: "" }];
+  let socios = [...(p.socios || [])]; (d.socios || []).forEach((s) => { if (s && s.nome && !socios.some((x) => x && lc(x.nome) === lc(s.nome))) socios = [...socios, { id: uid(), nome: s.nome, doc: "", tel: "", email: "", endereco: "", obs: "" }]; });
+  return { ...p, ativos: list, leiloes, locais, vendedores, socios };
+}
+
 export default function App() {
   const [db, setDb] = useState(SEED);
   const [view, setView] = useState("dashboard");
@@ -3069,41 +3236,50 @@ export default function App() {
     const origemId = d.origemId; const veioDeOrigem = d.__fromOrigem;
     d = { ...d }; delete d.__fromOrigem;
     d = { ...d, parcelasList: ensureParcelas(d) };
-    setDb((p) => {
-      let list = [...p.ativos];
-      const nameSet = new Set(list.filter((a) => a && a.tipo === "animal" && a.nome).map((a) => lc(a.nome)));
-      linkKeysOf(d.tipo).forEach((k) => { const nm = (d[k] ?? "").toString().trim(); if (nm && !nameSet.has(lc(nm)) && lc(nm) !== lc(d.nome)) { list.push(stubAnimal(nm, profile && profile.nome)); nameSet.add(lc(nm)); } });
-      // registro da mãe doadora fica salvo no animal correspondente (compartilhado entre áreas)
-      const regPairs = { prenhez: [["doadora", "regDoadora"]], aspiracao: [["doadora", "regDoadora"]], animal: [["mae", "maeRegistro"]] };
-      (regPairs[d.tipo] || []).forEach(([nk, rk]) => {
-        const nm = (d[nk] || "").toString().trim(); const rg = (d[rk] || "").toString().trim();
-        if (nm && rg) list = list.map((a) => (a && a.tipo === "animal" && lc(a.nome) === lc(nm) && !a.registro ? { ...a, registro: rg } : a));
-      });
-      const exists = list.some((a) => a.id === d.id);
-      if (exists) list = list.map((a) => (a.id === d.id ? d : a));
-      else {
-        const histIni = [{ id: uid(), data: today(), tipo: "Cadastro criado", desc: "Ficha criada", responsavel: profile && profile.nome }];
-        if (veioDeOrigem && d.origemLabel) histIni.unshift({ id: uid(), data: today(), tipo: "Origem", desc: `Nascido de ${d.origemLabel}`, responsavel: profile && profile.nome });
-        list = [{ ...d, historico: [...histIni, ...(d.historico || [])] }, ...list];
-      }
-      // reduz a quantidade da prenhez/aspiração de origem e arquiva quando esgotar
-      if (veioDeOrigem && origemId) {
-        list = list.map((a) => {
-          if (a.id !== origemId) return a;
-          const conv = qtdConvertidos(a) + 1;
-          const arquivada = conv >= qtdTotal(a);
-          const h = { id: uid(), data: today(), tipo: "Nascimento", desc: `Nasceu 1 (${d.nome || "animal"}). Restam ${Math.max(0, qtdTotal(a) - conv)} de ${qtdTotal(a)}.`, responsavel: profile && profile.nome };
-          return { ...a, convertidos: conv, arquivada, historico: [...(a.historico || []), h] };
-        });
-      }
-      let leiloes = [...(p.leiloes || [])]; if (d.leilao && !leiloes.some((l) => l && lc(l.nome) === lc(d.leilao))) leiloes = [...leiloes, { id: uid(), nome: d.leilao }];
-      let locais = [...(p.locais || [])]; if (d.ondeEsta && !locais.some((l) => lc(l) === lc(d.ondeEsta))) locais = [...locais, d.ondeEsta];
-      let vendedores = [...(p.vendedores || [])]; if (d.vendedor && !vendedores.some((v) => v && lc(v.nome) === lc(d.vendedor))) vendedores = [...vendedores, { id: uid(), nome: d.vendedor, tipo: "Outro", doc: "", tel: "", email: "", obs: "" }];
-      let socios = [...(p.socios || [])]; (d.socios || []).forEach((s) => { if (s && s.nome && !socios.some((x) => x && lc(x.nome) === lc(s.nome))) socios = [...socios, { id: uid(), nome: s.nome, doc: "", tel: "", email: "", endereco: "", obs: "" }]; });
-      return { ...p, ativos: list, leiloes, locais, vendedores, socios };
-    });
+    setDb((p) => aplicarNovoRegistro(p, d, profile && profile.nome, veioDeOrigem, origemId));
     setForm(null); setAberto(d);
   };
+
+  /* ---- Importação por Excel: cria pré-cadastros (nada entra sem aprovação) ---- */
+  const [impMsg, setImpMsg] = useState("");
+  const [impResumo, setImpResumo] = useState(null);
+  const [impFiltro, setImpFiltro] = useState("todos");
+  const importarExcel = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onerror = () => setImpResumo({ erro: "Não consegui ler o arquivo." });
+    reader.onload = (ev) => {
+      const res = impLerArquivo(new Uint8Array(ev.target.result));
+      if (res.erro) { setImpResumo({ erro: res.erro }); setImpMsg(""); return; }
+      setDb((p) => {
+        const chave = (nm, lei) => lc(nm || "") + "|" + lc(lei || "");
+        const setExist = new Set((p.ativos || []).filter(Boolean).map((a) => chave(a.doadora || a.nome, a.leilao)));
+        const novos = res.registros.map((r) => ({ ...r, dupSistema: setExist.has(chave(r.dados.doadora, r.dados.leilao)) }));
+        return { ...p, prefichas: [...novos, ...(p.prefichas || [])] };
+      });
+      setImpResumo({ novos: res.registros.length, pulados: res.pulados, erro: "" });
+      setImpMsg(`${res.registros.length} pré-cadastro(s) criado(s)` + (res.pulados.length ? ` · ${res.pulados.length} linha(s) pulada(s)` : "") + ".");
+    };
+    reader.readAsArrayBuffer(file);
+  };
+  const abrirPreficha = (pref) => setForm({ tipo: pref.dados.tipo, initial: { ...pref.dados, __pref: pref.id } });
+  const setEstadoPreficha = (id, estado) => { flushNext.current = true; setDb((p) => ({ ...p, prefichas: (p.prefichas || []).map((x) => (x.id === id ? { ...x, estado } : x)) })); };
+  const removerPreficha = (id) => { flushNext.current = true; setDb((p) => ({ ...p, prefichas: (p.prefichas || []).filter((x) => x.id !== id) })); };
+  const limparImportados = () => { flushNext.current = true; setDb((p) => ({ ...p, prefichas: (p.prefichas || []).filter((x) => x.origem !== "excel" || (x.estado !== "aprovado" && x.estado !== "rejeitado")) })); };
+  /* aprova (cadastra de verdade) a ficha — usa a MESMA lógica do cadastro manual */
+  const aprovarFicha = (dd) => {
+    const prefId = dd.__pref;
+    flushNext.current = true;
+    let r = { ...dd }; delete r.__pref; delete r.__fromOrigem; delete r.__regAuto;
+    if (r.tipo === "prenhez" || r.tipo === "aspiracao") r = { ...r, nome: rotuloReprod(r) };
+    r = { ...r, id: uid(), parcelasList: ensureParcelas(r) };
+    setDb((p) => {
+      const np = aplicarNovoRegistro(p, r, profile && profile.nome, false, null);
+      return { ...np, prefichas: (np.prefichas || []).filter((x) => x.id !== prefId) };
+    });
+    setForm(null); setImpMsg(`Cadastrado: ${r.nome}`);
+  };
+
   const updateAtivo = (d) => { flushNext.current = true; if (d.tipo === "prenhez" || d.tipo === "aspiracao") d = { ...d, nome: rotuloReprod(d) }; setDb((p) => ({ ...p, ativos: p.ativos.map((a) => (a.id === d.id ? d : a)) })); setAberto(d); };
 
   /* botão "Nasceu": monta um novo animal já preenchido com genealogia + sociedade + origem */
@@ -3367,9 +3543,11 @@ export default function App() {
   }, [qBusca, ativos, db.socios, db.leiloes]);
 
   const nav = [["dashboard", "◆", "Painel"], ["animal", "❖", "Animais"], ["prenhez", "◗", "Prenhezes"], ["aspiracao", "✧", "Aspirações"],
+    ["importar", "⇪", "Importar"],
     ["pendencias", "⬣", "Pendências"], ["criatorios", "⌂", "Criatórios"], ["socios", "◎", "Sócios"], ["parcelas", "▤", "Parcelas"], ["leiloes", "⚑", "Leilões"], ["relatorios", "▦", "Relatórios"], ["lixeira", "🗑", "Lixeira"],
     ...(isAdmin ? [["usuarios", "◐", "Usuários"]] : [])];
   const nLixeira = (db.lixeira || []).length;
+  const nImport = (db.prefichas || []).filter((x) => x && x.estado !== "aprovado" && x.estado !== "rejeitado").length;
 
   if (!authReady) return <div className="auth-bg"><style>{CSS}</style><div className="auth-card"><div className="auth-brand"><div className="brand-mark">SM</div><div><div className="serif auth-title">SM sistema</div><div className="brand-sub">Gado de Elite</div></div></div><div className="auth-note">Carregando…</div></div></div>;
   if (recovering && session) return <NovaSenha onDone={() => setRecovering(false)} />;
@@ -3407,7 +3585,7 @@ export default function App() {
         <div className="brand"><div className="brand-mark">SM</div><div><div className="serif brand-name">SM sistema</div><div className="brand-sub">Gado de Elite</div></div></div>
         <nav>{nav.map(([k, ic, l]) => (
           <button key={k} className={`nav-item ${view === k ? "on" : ""}`} onClick={() => { setView(k); setNavOpen(false); }}>
-            <span className="nav-ic">{ic}</span>{l}{["animal", "prenhez", "aspiracao"].includes(k) && <span className="nav-count">{count(k)}</span>}{k === "lixeira" && nLixeira > 0 && <span className="nav-count">{nLixeira}</span>}</button>
+            <span className="nav-ic">{ic}</span>{l}{["animal", "prenhez", "aspiracao"].includes(k) && <span className="nav-count">{count(k)}</span>}{k === "lixeira" && nLixeira > 0 && <span className="nav-count">{nLixeira}</span>}{k === "importar" && nImport > 0 && <span className="nav-count">{nImport}</span>}</button>
         ))}</nav>
         <div className="side-foot">
           <div className="user-box"><div className="user-name">{profile.nome || profile.email}</div><div className="user-role">{profile.role}</div></div>
@@ -3735,6 +3913,87 @@ export default function App() {
           <LixeiraView lixeira={db.lixeira || []} onRestaurar={restaurarAnimal} onExcluirDefinitivo={excluirDefinitivo} />
         )}
 
+        {view === "importar" && (() => {
+          const prefs = (db.prefichas || []).filter(Boolean);
+          const pend = (x) => x.estado !== "aprovado" && x.estado !== "rejeitado";
+          const vis = prefs.filter((x) => {
+            if (impFiltro === "conferir") return x.status === "conferir" && pend(x);
+            if (impFiltro === "pronto") return x.status === "ok" && pend(x);
+            if (impFiltro === "rejeitado") return x.estado === "rejeitado";
+            return true;
+          });
+          const nConf = prefs.filter((x) => x.status === "conferir" && pend(x)).length;
+          const nRej = prefs.filter((x) => x.estado === "rejeitado").length;
+          const FILT = [["todos", "Todos"], ["conferir", "A conferir"], ["pronto", "Prontos"], ["rejeitado", "Rejeitados"]];
+          return (
+            <section className="wrap">
+              <header className="head"><div><div className="eyebrow">Importação por Excel</div><h1 className="serif">Pré-cadastros</h1></div></header>
+              <div className="card imp-upload">
+                <div className="imp-up-ico">⇪</div>
+                <div style={{ flex: 1, minWidth: 180 }}>
+                  <div className="imp-up-tit serif">Enviar planilha (.xlsx)</div>
+                  <div className="muted small">O sistema lê compras e aspirações da planilha e cria pré-cadastros para você conferir e aprovar um a um. Nada é salvo no sistema sem a sua aprovação.</div>
+                </div>
+                <label className="btn btn-gold" style={{ cursor: "pointer", whiteSpace: "nowrap" }}>Escolher arquivo
+                  <input type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={(e) => { const f = e.target.files && e.target.files[0]; importarExcel(f); e.target.value = ""; }} />
+                </label>
+              </div>
+              {impResumo && impResumo.erro && <div className="aviso" style={{ marginBottom: 14 }}>{impResumo.erro}</div>}
+              {impMsg && <div className="auth-ok" style={{ marginBottom: 14 }}>{impMsg}</div>}
+              {impResumo && impResumo.pulados && impResumo.pulados.length > 0 && (
+                <div className="aviso" style={{ marginBottom: 14 }}>Não importadas (cadastre manualmente se quiser): {impResumo.pulados.join(" · ")}</div>
+              )}
+              {prefs.length === 0 ? (
+                <div className="empty">Nenhum pré-cadastro ainda. Envie uma planilha para começar.</div>
+              ) : (<>
+                <div className="kpi-row" style={{ marginBottom: 14 }}>
+                  <div className="kpi"><div className="kpi-label">Pré-cadastros</div><div className="kpi-value">{prefs.length}</div></div>
+                  <div className="kpi"><div className="kpi-label">A conferir</div><div className="kpi-value">{nConf}</div></div>
+                  <div className="kpi"><div className="kpi-label">Rejeitados</div><div className="kpi-value">{nRej}</div></div>
+                </div>
+                <div className="imp-filtros">
+                  {FILT.map(([k, l]) => <button key={k} className={`chip-opt ${impFiltro === k ? "on" : ""}`} onClick={() => setImpFiltro(k)}>{l}</button>)}
+                  {nRej > 0 && <button className="btn btn-ghost btn-mini" style={{ marginLeft: "auto" }} onClick={limparImportados}>Limpar rejeitados</button>}
+                </div>
+                {vis.length === 0 ? <div className="empty">Nada neste filtro.</div> : vis.map((pref) => {
+                  const d = pref.dados; const conf = pref.status === "conferir"; const rej = pref.estado === "rejeitado";
+                  return (
+                    <div className={`card imp-card ${conf ? "imp-red" : ""} ${rej ? "imp-rej" : ""}`} key={pref.id}>
+                      <div className="imp-top">
+                        <div>
+                          <span className={`imp-badge ${d.tipo}`}>{d.tipo === "prenhez" ? "Prenhez" : "Aspiração"}</span>
+                          <div className="serif imp-nome">{d.doadora || "(sem doadora)"}</div>
+                          {d.pai && <div className="muted small">Touro: {d.pai}</div>}
+                        </div>
+                        {rej && <span className="imp-state">rejeitado</span>}
+                      </div>
+                      <div className="imp-meta">
+                        <span>Leilão: <b>{d.leilao || "—"}</b></span>
+                        <span>Lote: <b>{pref.lote || "—"}</b></span>
+                        <span>Data: <b>{dataBR(d.dataCompra)}</b></span>
+                        <span>SM: <b>{d.porcentagemComprada !== "" && d.porcentagemComprada != null ? d.porcentagemComprada + "%" : "—"}</b></span>
+                        <span>Parcela SM: <b>{d.valorParcela !== "" && d.valorParcela != null ? fmt(num(d.valorParcela)) : "—"}</b> × {d.parcelas || "—"}</span>
+                      </div>
+                      {pref.dupSistema && <div className="imp-flag dup">⚑ Já existe algo parecido no sistema (mesma doadora/leilão). Confira antes de aprovar.</div>}
+                      {pref.dup && !pref.dupSistema && <div className="imp-flag dup">⚑ Aparece repetido na própria planilha.</div>}
+                      {conf ? <div className="imp-flag conf">⚠ Confira a participação da SM — {pref.motivo}. Abra e ajuste antes de aprovar.</div>
+                            : <div className="imp-flag ok">✓ Sociedade reconhecida. Pronto para conferir e cadastrar.</div>}
+                      <div className="imp-acts">
+                        <button className="btn btn-ghost" onClick={() => abrirPreficha(pref)}>Abrir / conferir</button>
+                        {!rej && <button className="btn btn-gold" onClick={() => aprovarFicha({ ...d, __pref: pref.id })} disabled={conf} title={conf ? "Abra e ajuste o % da SM antes de aprovar" : ""}>✓ Aprovar e cadastrar</button>}
+                        {!rej
+                          ? <button className="btn btn-ghost" onClick={() => setEstadoPreficha(pref.id, "rejeitado")}>Rejeitar</button>
+                          : <button className="btn btn-ghost" onClick={() => setEstadoPreficha(pref.id, "pendente")}>Restaurar</button>}
+                        <button className="btn btn-ghost btn-mini" onClick={() => removerPreficha(pref.id)}>Excluir</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </>)}
+            </section>
+          );
+        })()}
+
         {view === "usuarios" && isAdmin && (
           <UsersView meId={session.user.id} />
         )}
@@ -3759,7 +4018,7 @@ export default function App() {
       {form && <FichaForm tipo={form.tipo} initial={form.initial}
         animalNames={animalNames} animalReg={animalReg} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
-        onSave={salvar} onClose={() => setForm(null)} />}
+        onSave={salvar} onApprove={aprovarFicha} onClose={() => setForm(null)} />}
       {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onGerarPrenhez={gerarPrenhez} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo}
         onEdit={() => { setForm({ tipo: aberto.tipo, initial: aberto }); setAberto(null); }} onDelete={() => pedirExcluirAtivo(aberto)} />}
       {navOpen && <div className="scrim" onClick={() => setNavOpen(false)} />}
@@ -4338,6 +4597,27 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
   .dash .dash-head + .kpi-row .kpi:nth-child(3){box-shadow:inset 0 1px 0 rgba(192,154,73,.22), inset 1px 0 0 rgba(192,154,73,.22)}
   .dash .dash-head + .kpi-row .kpi:nth-child(4){box-shadow:inset 0 1px 0 rgba(120,90,30,.20)}
 }
+/* ===== IMPORTAÇÃO POR EXCEL ===== */
+.imp-upload{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+.imp-up-ico{width:48px;height:48px;border-radius:13px;display:flex;align-items:center;justify-content:center;font-size:24px;background:linear-gradient(135deg,var(--g-emerald),var(--g-mid));color:var(--g-champ);flex:none}
+.imp-up-tit{font-size:16px;font-weight:600;color:#1d2a22}
+.imp-filtros{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px}
+.imp-card{margin-bottom:12px}
+.imp-card.imp-red{border-color:#e3b7af}
+.imp-card.imp-rej{opacity:.52}
+.imp-top{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:6px}
+.imp-badge{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;padding:3px 9px;border-radius:999px}
+.imp-badge.prenhez{background:#e7f0ea;color:#1c6344}
+.imp-badge.aspiracao{background:#efe8d4;color:#8a6a1c}
+.imp-nome{font-size:16px;font-weight:600;color:#1d2a22;margin-top:3px}
+.imp-state{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:3px 9px;border-radius:999px;background:#f3d9d4;color:#9a2b2b;white-space:nowrap}
+.imp-meta{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:13px;color:#55503f;margin:6px 0}
+.imp-meta b{color:#2b2820}
+.imp-flag{font-size:12.5px;border-radius:9px;padding:8px 11px;margin:8px 0 0;font-weight:500}
+.imp-flag.ok{background:#eef7f1;border:1px solid #bfe0cc;color:#256b45}
+.imp-flag.conf{background:#fbeeec;border:1px solid #e3b7af;color:#b0463a}
+.imp-flag.dup{background:#fff5e6;border:1px solid #e9d4a8;color:#8a6a1c}
+.imp-acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 `;
 
