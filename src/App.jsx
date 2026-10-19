@@ -1,4 +1,4 @@
-/* SM-BUILD: import-excel-v5-2026-10-19 */
+/* SM-BUILD: genealogia-v6-2026-10-19 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
@@ -607,15 +607,17 @@ const KPI = ({ label, value, sub, tone, icon, onClick }) => (
 );
 
 /* autocomplete genérico */
-function AutoField({ value, onChange, suggestions, onCreate, placeholder }) {
+function AutoField({ value, onChange, suggestions, onCreate, placeholder, regMap }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState(value || "");
   const [hi, setHi] = useState(-1);
   useEffect(() => setQ(value || ""), [value]);
-  const ql = lc(q);
+  const nrm = (s) => lc(s).normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const ql = nrm(q);
   const sugs = (suggestions || []).filter((s) => typeof s === "string" && s);
-  const matches = sugs.filter((s) => lc(s).includes(ql)).slice(0, 6);
-  const exact = sugs.some((s) => lc(s) === ql);
+  const matches = sugs.filter((s) => nrm(s).includes(ql)).slice(0, 6);
+  const rgDe = (m) => (regMap && regMap[lc(m)]) || "";
+  const exact = sugs.some((s) => nrm(s) === ql);
   const podeCriar = q && !exact && onCreate;
   const opts = [...matches, ...(podeCriar ? ["__create__"] : [])];
   const escolher = (m) => { if (m === "__create__") { onCreate(q); setQ(q); onChange(q); } else { setQ(m); onChange(m); } setOpen(false); setHi(-1); };
@@ -634,7 +636,7 @@ function AutoField({ value, onChange, suggestions, onCreate, placeholder }) {
         onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 160)} />
       {open && opts.length > 0 && (
         <div className="auto-menu">
-          {matches.map((m, i) => <button type="button" key={m} className={`auto-item ${hi === i ? "hi" : ""}`} onMouseDown={() => escolher(m)} onMouseEnter={() => setHi(i)}>{m}</button>)}
+          {matches.map((m, i) => <button type="button" key={m} className={`auto-item ${hi === i ? "hi" : ""}`} onMouseDown={() => escolher(m)} onMouseEnter={() => setHi(i)}>{m}{rgDe(m) && <span className="auto-rg">RG {rgDe(m)}</span>}</button>)}
           {podeCriar && (
             <button type="button" className={`auto-item create ${hi === matches.length ? "hi" : ""}`} onMouseDown={() => escolher("__create__")} onMouseEnter={() => setHi(matches.length)}>＋ Cadastrar “{q}”</button>
           )}
@@ -740,7 +742,7 @@ function VideoBlock({ v }) {
 }
 
 /* --------------------------- formulário de ficha ----------------------- */
-function FichaForm({ tipo, initial, animalNames, animalReg, leilaoNames, localNames, vendedorNames, socioNames,
+function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoNames, localNames, vendedorNames, socioNames,
   onQuickAnimal, onQuickLeilao, onQuickLocal, onQuickVendedor, onQuickSocio, onSave, onApprove, onClose }) {
   const ehPref = !!(initial && initial.__pref);
   const [d, setD] = useState(() => initial || { id: uid(), tipo, socios: [], videos: [], historico: [], comissaoPct: 8 });
@@ -749,7 +751,33 @@ function FichaForm({ tipo, initial, animalNames, animalReg, leilaoNames, localNa
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
-  const set = (k, v) => setD((p) => ({ ...p, [k]: v }));
+  // editar um campo tira a marca de "sugerido" dele
+  const set = (k, v) => setD((p) => { const np = { ...p, [k]: v }; if (np.__genSug && np.__genSug.includes(k)) np.__genSug = np.__genSug.filter((x) => x !== k); return np; });
+  // qual campo é a "mãe" neste tipo (animal: mae; prenhez/aspiração: doadora)
+  const maeKey = tipo === "animal" ? "mae" : "doadora";
+  const sugerido = (k) => (d.__genSug || []).includes(k);
+  /* ao informar pai/mãe conhecidos, sugere os avós (só campos vazios, marca como sugestão) */
+  const setComGen = (campo, valor) => setD((p) => {
+    let np = { ...p, [campo]: valor };
+    if (np.__genSug) np.__genSug = np.__genSug.filter((x) => x !== campo);
+    if (campo === "doadora") { const reg = (animalReg || {})[lc(valor)]; if (reg && (!p.regDoadora || p.__regAuto)) { np.regDoadora = reg; np.__regAuto = true; } }
+    const lado = campo === "pai" ? "pat" : (campo === maeKey ? "mat" : null);
+    if (lado && valor && valor.trim()) {
+      const rg = campo === "doadora" ? (np.regDoadora || (animalReg || {})[lc(valor)]) : "";
+      const g = genealogiaDe(valor, rg, genIndex);
+      if (g && !g.ambiguo) {
+        const avoK = lado === "pat" ? "avoPaterno" : "avoMaterno";
+        const avaK = lado === "pat" ? "avoPaterna" : "avoMaterna";
+        const sug = new Set(np.__genSug || []);
+        const okAvo = g.pai && gnorm(g.pai) !== gnorm(valor) && gnorm(g.pai) !== gnorm(np.nome);
+        const okAva = g.mae && gnorm(g.mae) !== gnorm(valor) && gnorm(g.mae) !== gnorm(np.nome);
+        if (okAvo && !(np[avoK] && np[avoK].toString().trim())) { np[avoK] = g.pai; sug.add(avoK); }
+        if (okAva && !(np[avaK] && np[avaK].toString().trim())) { np[avaK] = g.mae; sug.add(avaK); }
+        np.__genSug = [...sug];
+      }
+    }
+    return np;
+  });
   const f = finance(d);
   const pctSocios = (d.socios || []).filter(Boolean).reduce((s, x) => s + num(x.pct), 0);
 
@@ -768,9 +796,16 @@ function FichaForm({ tipo, initial, animalNames, animalReg, leilaoNames, localNa
     if (k === "doadora") {
       return (
         <label className="field" key={k}><span>{label}<em className="new-hint"> · busca em todo o sistema</em></span>
-          <AutoField value={d.doadora || ""} suggestions={animalNames} onCreate={onQuickAnimal}
-            onChange={(v) => setD((p) => { const np = { ...p, doadora: v }; const reg = (animalReg || {})[lc(v)]; if (reg && (!p.regDoadora || p.__regAuto)) { np.regDoadora = reg; np.__regAuto = true; } return np; })}
+          <AutoField value={d.doadora || ""} suggestions={animalNames} regMap={animalReg} onCreate={onQuickAnimal}
+            onChange={(v) => setComGen("doadora", v)}
             placeholder="mãe doadora (busca em Animais, Prenhez, Aspiração, Genealogia)" /></label>
+      );
+    }
+    if (k === "pai" || (k === "mae" && tipo === "animal")) {
+      return (
+        <label className="field" key={k}><span>{label}<em className="new-hint"> · puxa avós já cadastrados</em></span>
+          <AutoField value={d[k] || ""} suggestions={animalNames} regMap={animalReg} onCreate={onQuickAnimal}
+            onChange={(v) => setComGen(k, v)} placeholder="buscar ou cadastrar animal" /></label>
       );
     }
     if (k === "regDoadora") {
@@ -789,10 +824,10 @@ function FichaForm({ tipo, initial, animalNames, animalReg, leilaoNames, localNa
     const isNewAnimal = type === "link" && d[k] && !(animalNames || []).some((n) => lc(n) === lc(d[k]));
     return (
       <label className={`field ${type === "textarea" ? "wide" : ""}`} key={k}>
-        <span>{label}{isNewAnimal && <em className="new-hint"> · novo, será salvo</em>}</span>
+        <span>{label}{isNewAnimal && <em className="new-hint"> · novo, será salvo</em>}{sugerido(k) && <em className="new-hint gen-sug"> · sugerido pela genealogia</em>}</span>
         {type === "textarea" ? <textarea value={d[k] || ""} onChange={(e) => set(k, e.target.value)} rows={2} />
           : type === "select" ? <select value={d[k] || ""} onChange={(e) => set(k, e.target.value)}><option value="">—</option>{opt.map((o) => <option key={o} value={o}>{o}</option>)}</select>
-          : isAuto ? <AutoField value={d[k] || ""} onChange={(v) => set(k, v)} suggestions={isAuto[0]} onCreate={isAuto[1]} placeholder={isAuto[2]} />
+          : isAuto ? <AutoField value={d[k] || ""} onChange={(v) => set(k, v)} suggestions={isAuto[0]} regMap={type === "link" ? animalReg : undefined} onCreate={isAuto[1]} placeholder={isAuto[2]} />
           : <input type={type === "money" || type === "number" ? "number" : type === "date" ? "date" : "text"} step="any"
               value={d[k] ?? ""} onChange={(e) => set(k, e.target.value)} placeholder={type === "money" ? "R$ 0" : type === "pct" ? "ex.: 33,33" : ""} />}
       </label>
@@ -2838,6 +2873,42 @@ function impSepararRG(texto) {
   if (m) return { rg: m[1].toUpperCase().replace(/\s+/g, " ").trim(), nome: m[2].replace(/\s+/g, " ").trim(), orig };
   return { rg: "", nome: orig, orig };
 }
+/* nomes de animais/genealogia sempre em MAIÚSCULAS na importação
+ * (preserva acentos; só espaços duplicados são removidos). */
+const impUpper = (s) => impNorm(s).replace(/\s+/g, " ").trim().toUpperCase();
+
+/* ===== BASE GENEALÓGICA (reutiliza os "ativos"; sem tabela nova) ===== */
+const gnorm = (s) => (s == null ? "" : s.toString()).trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+const GEN_CAMPOS = ["pai", "mae", "avoPaterno", "avoPaterna", "avoMaterno", "avoMaterna"];
+const genScore = (a) => GEN_CAMPOS.reduce((n, k) => n + (a && a[k] && a[k].toString().trim() ? 1 : 0), 0);
+function buildGenIndex(ativos) {
+  const byName = {}, byRg = {}, cnt = {};
+  (ativos || []).forEach((a) => {
+    if (!a || a.tipo !== "animal") return;
+    const nm = gnorm(a.nome);
+    if (nm) { cnt[nm] = (cnt[nm] || 0) + 1; if (!byName[nm] || genScore(a) > genScore(byName[nm])) byName[nm] = a; }
+    const rg = gnorm(a.registro);
+    if (rg && !byRg[rg]) byRg[rg] = a;
+  });
+  return { byName, byRg, cnt };
+}
+/* devolve pai/mae do animal identificado (RG tem prioridade; nome exato como apoio;
+ * nome ambíguo => não sugere). Nunca junta por nome só parecido. */
+function genealogiaDe(nome, rg, index) {
+  if (!index) return null;
+  let rec = null;
+  const r = gnorm(rg);
+  if (r && index.byRg[r]) rec = index.byRg[r];
+  if (!rec) {
+    const nm = gnorm(nome);
+    if (!nm) return null;
+    if ((index.cnt[nm] || 0) > 1) return { ambiguo: true };
+    rec = index.byName[nm];
+  }
+  if (!rec) return null;
+  return { pai: (rec.pai || "").toString().trim(), mae: (rec.mae || "").toString().trim(), nome: rec.nome, registro: rec.registro };
+}
+
 function impMontaPreficha(vals) {
   const tipoRaw = impLow(vals.__tipo);
   if (tipoRaw === "combo") return { skip: "COMBO", nome: impNorm(vals.doadora) };
@@ -2851,12 +2922,12 @@ function impMontaPreficha(vals) {
   // RG + nome da doadora (coluna própria tem prioridade; senão tenta separar do nome)
   const rgCol = impNorm(vals.regDoadora);
   const sep = impSepararRG(vals.doadora);
-  const doadoraNome = sep.nome || impNorm(vals.doadora);
-  const rgDoadora = rgCol || sep.rg;
+  const doadoraNome = impUpper(sep.nome || impNorm(vals.doadora));
+  const rgDoadora = rgCol ? impUpper(rgCol) : sep.rg;
   const rgConferir = !!(rgCol && sep.rg && impLow(rgCol) !== impLow(sep.rg));
   const d = {
     id: uid(), tipo,
-    doadora: doadoraNome, pai: impNorm(vals.pai),
+    doadora: doadoraNome, pai: impUpper(vals.pai),
     regDoadora: rgDoadora,
     qtd: impNum(vals.qtd) || 1,
     status: tipo === "prenhez" ? "Aguardando confirmação" : "Realizada",
@@ -3246,6 +3317,8 @@ export default function App() {
     });
     return m;
   }, [ativos]);
+  // base genealógica centralizada (derivada dos próprios animais; sem tabela nova)
+  const genIndex = useMemo(() => buildGenIndex(ativos), [ativos]);
   const leilaoNames = useMemo(() => { const s = new Set((db.leiloes || []).filter((l) => l && !l.arquivado).map((l) => l.nome).filter(Boolean)); (ativos || []).forEach((a) => a && a.leilao && s.add(a.leilao)); return [...s]; }, [db.leiloes, ativos]);
   const localNames = useMemo(() => { const s = new Set((db.locais || []).filter(Boolean)); (ativos || []).forEach((a) => { if (a && a.ondeEsta) s.add(a.ondeEsta); if (a && a.criatorio) s.add(a.criatorio); }); (db.criatorios || []).forEach((c) => c && c.nome && s.add(c.nome)); return [...s]; }, [db.locais, db.criatorios, ativos]);
   const vendedorNames = useMemo(() => { const s = new Set((db.vendedores || []).map((v) => v && v.nome).filter(Boolean)); (ativos || []).forEach((a) => a && a.vendedor && s.add(a.vendedor)); return [...s]; }, [db.vendedores, ativos]);
@@ -3279,7 +3352,7 @@ export default function App() {
     }
     if (d.tipo === "prenhez" || d.tipo === "aspiracao") d = { ...d, nome: rotuloReprod(d) };
     const origemId = d.origemId; const veioDeOrigem = d.__fromOrigem;
-    d = { ...d }; delete d.__fromOrigem;
+    d = { ...d }; delete d.__fromOrigem; delete d.__genSug;
     d = { ...d, parcelasList: ensureParcelas(d) };
     setDb((p) => aplicarNovoRegistro(p, d, profile && profile.nome, veioDeOrigem, origemId));
     setForm(null); setAberto(d);
@@ -3299,7 +3372,22 @@ export default function App() {
       setDb((p) => {
         const chave = (nm, lei) => lc(nm || "") + "|" + lc(lei || "");
         const setExist = new Set((p.ativos || []).filter(Boolean).map((a) => chave(a.doadora || a.nome, a.leilao)));
-        const novos = res.registros.map((r) => ({ ...r, dupSistema: setExist.has(chave(r.dados.doadora, r.dados.leilao)) }));
+        const idx = buildGenIndex(p.ativos);
+        const novos = res.registros.map((r) => {
+          const d = r.dados; const sug = new Set();
+          const gPat = d.pai ? genealogiaDe(d.pai, "", idx) : null;
+          if (gPat && !gPat.ambiguo) {
+            if (gPat.pai && !d.avoPaterno && gnorm(gPat.pai) !== gnorm(d.pai)) { d.avoPaterno = gPat.pai; sug.add("avoPaterno"); }
+            if (gPat.mae && !d.avoPaterna && gnorm(gPat.mae) !== gnorm(d.pai)) { d.avoPaterna = gPat.mae; sug.add("avoPaterna"); }
+          }
+          const gMat = d.doadora ? genealogiaDe(d.doadora, d.regDoadora, idx) : null;
+          if (gMat && !gMat.ambiguo) {
+            if (gMat.pai && !d.avoMaterno && gnorm(gMat.pai) !== gnorm(d.doadora)) { d.avoMaterno = gMat.pai; sug.add("avoMaterno"); }
+            if (gMat.mae && !d.avoMaterna && gnorm(gMat.mae) !== gnorm(d.doadora)) { d.avoMaterna = gMat.mae; sug.add("avoMaterna"); }
+          }
+          if (sug.size) d.__genSug = [...sug];
+          return { ...r, genSug: sug.size, dupSistema: setExist.has(chave(d.doadora, d.leilao)) };
+        });
         return { ...p, prefichas: [...novos, ...(p.prefichas || [])] };
       });
       setImpResumo({ novos: res.registros.length, pulados: res.pulados, erro: "" });
@@ -3315,7 +3403,7 @@ export default function App() {
   const aprovarFicha = (dd) => {
     const prefId = dd.__pref;
     flushNext.current = true;
-    let r = { ...dd }; delete r.__pref; delete r.__fromOrigem; delete r.__regAuto;
+    let r = { ...dd }; delete r.__pref; delete r.__fromOrigem; delete r.__regAuto; delete r.__genSug;
     if (r.tipo === "prenhez" || r.tipo === "aspiracao") r = { ...r, nome: rotuloReprod(r) };
     r = { ...r, id: uid(), parcelasList: ensureParcelas(r) };
     setDb((p) => {
@@ -4025,6 +4113,7 @@ export default function App() {
                       {pref.dup && !pref.dupSistema && <div className="imp-flag dup">⚑ Aparece repetido na própria planilha.</div>}
                       {conf ? <div className="imp-flag conf">⚠ Confira a participação da SM — {pref.motivo}. Abra e ajuste antes de aprovar.</div>
                             : <div className="imp-flag ok">✓ Sociedade reconhecida. Pronto para conferir e cadastrar.</div>}
+                      {pref.genSug > 0 && <div className="imp-flag gen">🧬 {pref.genSug} avô(s)/avó(s) sugerido(s) pela genealogia — confira ao abrir.</div>}
                       <div className="imp-acts">
                         <button className="btn btn-ghost" onClick={() => abrirPreficha(pref)}>Abrir / conferir</button>
                         {!rej && <button className="btn btn-gold" onClick={() => aprovarFicha({ ...d, __pref: pref.id })} disabled={conf} title={conf ? "Abra e ajuste o % da SM antes de aprovar" : ""}>✓ Aprovar e cadastrar</button>}
@@ -4063,7 +4152,7 @@ export default function App() {
       )}
 
       {form && <FichaForm tipo={form.tipo} initial={form.initial}
-        animalNames={animalNames} animalReg={animalReg} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
+        animalNames={animalNames} animalReg={animalReg} genIndex={genIndex} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
         onSave={salvar} onApprove={aprovarFicha} onClose={() => setForm(null)} />}
       {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onGerarPrenhez={gerarPrenhez} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo}
@@ -4664,6 +4753,10 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .imp-flag.ok{background:#eef7f1;border:1px solid #bfe0cc;color:#256b45}
 .imp-flag.conf{background:#fbeeec;border:1px solid #e3b7af;color:#b0463a}
 .imp-flag.dup{background:#fff5e6;border:1px solid #e9d4a8;color:#8a6a1c}
+.imp-flag.gen{background:#eef4f0;border:1px solid #cfe3d6;color:#2b6a4a}
 .imp-acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
+.gen-sug{color:#2b6a4a}
+.auto-item{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.auto-rg{font-size:11px;color:#8a6a1c;background:#efe8d4;border-radius:5px;padding:1px 6px;flex:none;font-weight:600}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 `;
