@@ -1,4 +1,4 @@
-/* SM-BUILD: import-excel-v4-2026-10-15 */
+/* SM-BUILD: import-excel-v5-2026-10-19 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
@@ -2819,10 +2819,24 @@ function impField(h) {
   if (h.includes("inicio")) return "primeiroVenc";
   if (h === "tipo") return "__tipo";
   if (h.includes("quant")) return "qtd";
+  if (h === "rg" || h === "registro" || h.includes("registro da") || (h.includes("registro") && h.includes("doadora"))) return "regDoadora";
   if (h.includes("doadora")) return "doadora";
   if (h.includes("touro")) return "pai";
   if (h.startsWith("obs")) return "obs";
   return null;
+}
+/* separa RG + nome quando vêm juntos na mesma célula.
+ * "FGN 417 - RUSSIA FIV DA GUANABARA" ou "CABN 9513 DELUXE FIV CBA"
+ *   -> rg "CABN 9513", nome "DELUXE FIV CBA". Só separa quando confiável;
+ *   senão devolve o texto inteiro como nome (não inventa RG). */
+function impSepararRG(texto) {
+  const orig = impNorm(texto).replace(/\s+/g, " ").trim();
+  if (!orig) return { rg: "", nome: "", orig: "" };
+  let m = orig.match(/^([A-Za-zÀ-ÿ]{2,6}\s+[A-Za-z]?\d{1,6}[A-Za-z]?)\s*[-–—]\s*(.+)$/);
+  if (m) return { rg: m[1].toUpperCase().replace(/\s+/g, " ").trim(), nome: m[2].replace(/\s+/g, " ").trim(), orig };
+  m = orig.match(/^([A-Za-zÀ-ÿ]{2,6}\s+[A-Za-z]?\d{3,6}[A-Za-z]?)\s+([A-Za-zÀ-ÿ].*)$/);
+  if (m) return { rg: m[1].toUpperCase().replace(/\s+/g, " ").trim(), nome: m[2].replace(/\s+/g, " ").trim(), orig };
+  return { rg: "", nome: orig, orig };
 }
 function impMontaPreficha(vals) {
   const tipoRaw = impLow(vals.__tipo);
@@ -2834,28 +2848,39 @@ function impMontaPreficha(vals) {
   const parcelas = Math.round(impNum(vals.parcelas));
   const smPct = soc.sm;
   const lote = impNorm(vals.__lote);
+  // RG + nome da doadora (coluna própria tem prioridade; senão tenta separar do nome)
+  const rgCol = impNorm(vals.regDoadora);
+  const sep = impSepararRG(vals.doadora);
+  const doadoraNome = sep.nome || impNorm(vals.doadora);
+  const rgDoadora = rgCol || sep.rg;
+  const rgConferir = !!(rgCol && sep.rg && impLow(rgCol) !== impLow(sep.rg));
   const d = {
     id: uid(), tipo,
-    doadora: impNorm(vals.doadora), pai: impNorm(vals.pai),
+    doadora: doadoraNome, pai: impNorm(vals.pai),
+    regDoadora: rgDoadora,
     qtd: impNum(vals.qtd) || 1,
     status: tipo === "prenhez" ? "Aguardando confirmação" : "Realizada",
     leilao: impNorm(vals.leilao),
     dataCompra: impData(vals.dataCompra),
     primeiroVenc: impData(vals.primeiroVenc) || impData(vals.dataCompra),
     porcentagemComprada: smPct != null ? smPct : "",
-    valorParcela: smPct != null ? Math.round(rparc * smPct) / 100 : "",
+    // IMPORTANTE: o valor do Excel JÁ É a parte da SM — não multiplicar pela % de novo.
+    valorParcela: rparc || "",
     parcelas: parcelas || "",
     comissaoPct: 8, comissaoTipo: "Sobre o valor da parcela", considerarVencidasPagas: true,
     socios: (soc.outros || []).filter((s) => s.nome).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct == null ? "" : s.pct, obs: "" })),
     videos: [], historico: [],
   };
+  if (rgDoadora) d.__regAuto = false;
   const notas = [];
   if (lote) notas.push("Lote: " + lote);
   if (impNorm(vals.__soc)) notas.push('Sociedade (planilha): "' + impNorm(vals.__soc) + '"');
-  if (smPct == null && rparc) notas.push("⚠ Parcela cheia no leilão: R$ " + rparc.toLocaleString("pt-BR") + " em " + (parcelas || "?") + " parcelas. Defina a participação da SM e a parcela da SM (= cheia × % da SM).");
+  if (smPct == null) notas.push("⚠ Defina a participação da SM (%). O valor da parcela já é a parte da SM.");
   d.obsCompra = notas.join(" · ");
   d.nome = rotuloReprod(d);
-  return { d, status: soc.status, motivo: soc.motivo, societRaw: impNorm(vals.__soc), lote };
+  const status = (soc.status === "conferir" || rgConferir) ? "conferir" : "ok";
+  const motivo = rgConferir ? ((soc.motivo ? soc.motivo + "; " : "") + "RG da coluna difere do RG no nome") : soc.motivo;
+  return { d, status, motivo, societRaw: impNorm(vals.__soc), lote, rgInfo: { orig: sep.orig, rg: rgDoadora, nome: doadoraNome } };
 }
 function impLerArquivo(arrayBuffer) {
   const out = { registros: [], pulados: [], erro: "" };
@@ -2879,7 +2904,7 @@ function impLerArquivo(arrayBuffer) {
     if (!impNorm(vals.doadora) && !impNorm(vals.__tipo) && !impNorm(vals.leilao)) continue;
     const r = impMontaPreficha(vals);
     if (r.skip) { out.pulados.push(r.skip + (r.nome ? ": " + r.nome : "")); continue; }
-    out.registros.push({ id: uid(), origem: "excel", criadoEm: today(), estado: r.status === "conferir" ? "pendente" : "novo", status: r.status, motivo: r.motivo, societRaw: r.societRaw, lote: r.lote, dados: r.d });
+    out.registros.push({ id: uid(), origem: "excel", criadoEm: today(), estado: r.status === "conferir" ? "pendente" : "novo", status: r.status, motivo: r.motivo, societRaw: r.societRaw, lote: r.lote, rgInfo: r.rgInfo, dados: r.d });
   }
   const seen = {};
   out.registros.forEach((x) => { const k = impLow(x.dados.doadora) + "|" + impLow(x.dados.leilao) + "|" + impLow(x.lote); x.dup = !!seen[k]; seen[k] = true; });
@@ -3037,33 +3062,53 @@ export default function App() {
     if (!session) return;
     const json = latestJson.current;
     if (!json) return;
+    if (json === dbRef.current) { setSaveStatus(temPendencia() ? "pending" : "saved"); return; } // nada novo para gravar
     if (typeof navigator !== "undefined" && navigator.onLine === false) { setSaveStatus("offline"); return; }
     const seq = ++saveSeq.current;
     const uid = session.user.id;
     setSaveStatus("saving");
     try {
-      // controle de concorrência otimista: só grava se a versão na nuvem ainda for a que carreguei
       if (revRef.current == null) {
         // ainda não existe linha para este usuário → cria
         const { data, error } = await supabase.from("app_data").insert({ user_id: uid, value: json, rev: 0, updated_at: new Date().toISOString() }).select("rev");
-        if (seq !== saveSeq.current) return;
         if (error) {
-          if (error.code === "23505") { setConflito(true); setSaveStatus("error"); return; } // outro aparelho criou primeiro
-          setSaveStatus("error"); return;
+          if (error.code === "23505") {
+            // a linha já existe (p.ex. outra aba MINHA criou) → adoto a versão atual e regravo, sem alarmar
+            const { data: at } = await supabase.from("app_data").select("rev").eq("user_id", uid).maybeSingle();
+            revRef.current = at && typeof at.rev === "number" ? at.rev : 0;
+            if (seq === saveSeq.current) doSave();
+            return;
+          }
+          if (seq === saveSeq.current) setSaveStatus("error");
+          return;
         }
         revRef.current = (data && data[0] && typeof data[0].rev === "number") ? data[0].rev : 0;
+        dbRef.current = json; lastWrite.current = Date.now();
       } else {
         const alvo = revRef.current;
         const { data, error } = await supabase.from("app_data")
           .update({ value: json, rev: alvo + 1, updated_at: new Date().toISOString() })
           .eq("user_id", uid).eq("rev", alvo).select("rev");
-        if (seq !== saveSeq.current) return;
-        if (error) { setSaveStatus("error"); return; }
-        if (!data || data.length === 0) { setConflito(true); setSaveStatus("error"); return; } // versão mudou = CONFLITO (não sobrescreve)
-        revRef.current = data[0].rev;
+        if (error) { if (seq === saveSeq.current) setSaveStatus("error"); return; }
+        if (!data || data.length === 0) {
+          // a versão na nuvem não é a que eu tinha. ANTES de alarmar, confiro se foi a MINHA
+          // própria gravação (ex.: salvamentos em sequência) e não outro aparelho de verdade.
+          const { data: at } = await supabase.from("app_data").select("value, rev").eq("user_id", uid).maybeSingle();
+          if (at && typeof at.rev === "number") revRef.current = at.rev;
+          const meuProprio = at && (at.value === dbRef.current || at.value === json);
+          if (meuProprio) {
+            if (at.value === json) { dbRef.current = json; lastWrite.current = Date.now(); }
+            else { if (seq === saveSeq.current) doSave(); return; } // ainda tenho diferença minha → regravo sobre a versão atual
+          } else {
+            // conteúdo realmente diferente do que eu conheço → conflito REAL de outro aparelho
+            if (seq === saveSeq.current) { setConflito(true); setSaveStatus("error"); }
+            return;
+          }
+        } else {
+          revRef.current = data[0].rev; dbRef.current = json; lastWrite.current = Date.now();
+        }
       }
-      dbRef.current = json; lastWrite.current = Date.now();
-      setSaveStatus(temPendencia() ? "pending" : "saved");
+      if (seq === saveSeq.current) setSaveStatus(temPendencia() ? "pending" : "saved");
     } catch (e) {
       if (seq === saveSeq.current) setSaveStatus("error");
     }
@@ -3963,6 +4008,8 @@ export default function App() {
                         <div>
                           <span className={`imp-badge ${d.tipo}`}>{d.tipo === "prenhez" ? "Prenhez" : "Aspiração"}</span>
                           <div className="serif imp-nome">{d.doadora || "(sem doadora)"}</div>
+                          {d.regDoadora && <div className="muted small">RG: <b>{d.regDoadora}</b></div>}
+                          {pref.rgInfo && pref.rgInfo.orig && impLow(pref.rgInfo.orig) !== impLow(d.doadora) && <div className="muted small" style={{ opacity: 0.75 }}>Texto original: {pref.rgInfo.orig}</div>}
                           {d.pai && <div className="muted small">Touro: {d.pai}</div>}
                         </div>
                         {rej && <span className="imp-state">rejeitado</span>}
@@ -4620,4 +4667,3 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .imp-acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:11px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 `;
-
