@@ -1,4 +1,4 @@
-/* SM-BUILD: genealogia-v8-2026-10-29 */
+/* SM-BUILD: genealogia-v9-2026-10-29 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
@@ -2942,16 +2942,24 @@ function genealogiaDe(nome, rg, index) {
 function fillArvore(np, side, repNome, repRg, index, sug, comBisavos) {
   if (!repNome || !repNome.toString().trim() || !index) return;
   const g = genealogiaDe(repNome, repRg, index);
-  if (!g || g.ambiguo) return;
+  if (!g) return;
   const K = side === "pat"
     ? { avo: "avoPaterno", ava: "avoPaterna", bAvoP: "bis_pp_p", bAvoM: "bis_pp_m", bAvaP: "bis_pm_p", bAvaM: "bis_pm_m" }
     : { avo: "avoMaterno", ava: "avoMaterna", bAvoP: "bis_mp_p", bAvoM: "bis_mp_m", bAvaP: "bis_mm_p", bAvaM: "bis_mm_m" };
   const put = (k, v, ref) => { const val = (v || "").toString().trim(); if (val && gnorm(val) !== gnorm(ref) && gnorm(val) !== gnorm(np.nome) && !(np[k] && np[k].toString().trim())) { np[k] = val; sug.add(k); } };
-  put(K.avo, g.pai, repNome);
-  put(K.ava, g.mae, repNome);
+  const avo = g.pai, ava = g.mae;     // avós do novo animal = pais do reprodutor
+  put(K.avo, avo, repNome);
+  put(K.ava, ava, repNome);
   if (comBisavos) {
-    if (g.pai) { const gg = genealogiaDe(g.pai, "", index); if (gg && !gg.ambiguo) { put(K.bAvoP, gg.pai, g.pai); put(K.bAvoM, gg.mae, g.pai); } }
-    if (g.mae) { const gg = genealogiaDe(g.mae, "", index); if (gg && !gg.ambiguo) { put(K.bAvaP, gg.pai, g.mae); put(K.bAvaM, gg.mae, g.mae); } }
+    // bisavós = os AVÓS do próprio reprodutor (direto da ficha dele); se faltar,
+    // tenta descobrir pela ficha dos avós (aprendizado). Preenche todo quadradinho possível.
+    const rec = (repRg && index.byRg[gnorm(repRg)]) || index.byName[gnorm(g.nome || repNome)] || {};
+    const alt = (nome) => (nome ? genealogiaDe(nome, "", index) : null) || { pai: "", mae: "" };
+    const a1 = alt(avo), a2 = alt(ava);
+    put(K.bAvoP, rec.avoPaterno || a1.pai, avo);   // pai do avô
+    put(K.bAvoM, rec.avoPaterna || a1.mae, avo);   // mãe do avô
+    put(K.bAvaP, rec.avoMaterno || a2.pai, ava);   // pai da avó
+    put(K.bAvaM, rec.avoMaterna || a2.mae, ava);   // mãe da avó
   }
 }
 
