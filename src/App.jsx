@@ -1,4 +1,4 @@
-/* SM-BUILD: genealogia-v7-2026-10-29 */
+/* SM-BUILD: genealogia-v8-2026-10-29 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
@@ -756,7 +756,7 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
   // qual campo é a "mãe" neste tipo (animal: mae; prenhez/aspiração: doadora)
   const maeKey = tipo === "animal" ? "mae" : "doadora";
   const sugerido = (k) => (d.__genSug || []).includes(k);
-  /* ao informar pai/mãe conhecidos, sugere os avós (só campos vazios, marca como sugestão) */
+  /* ao informar pai/mãe conhecidos, sugere avós E bisavós (só campos vazios, marca como sugestão) */
   const setComGen = (campo, valor) => setD((p) => {
     let np = { ...p, [campo]: valor };
     if (np.__genSug) np.__genSug = np.__genSug.filter((x) => x !== campo);
@@ -764,39 +764,22 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
     const lado = campo === "pai" ? "pat" : (campo === maeKey ? "mat" : null);
     if (lado && valor && valor.trim()) {
       const rg = campo === "doadora" ? (np.regDoadora || (animalReg || {})[lc(valor)]) : "";
-      const g = genealogiaDe(valor, rg, genIndex);
-      if (g && !g.ambiguo) {
-        const avoK = lado === "pat" ? "avoPaterno" : "avoMaterno";
-        const avaK = lado === "pat" ? "avoPaterna" : "avoMaterna";
-        const sug = new Set(np.__genSug || []);
-        const okAvo = g.pai && gnorm(g.pai) !== gnorm(valor) && gnorm(g.pai) !== gnorm(np.nome);
-        const okAva = g.mae && gnorm(g.mae) !== gnorm(valor) && gnorm(g.mae) !== gnorm(np.nome);
-        if (okAvo && !(np[avoK] && np[avoK].toString().trim())) { np[avoK] = g.pai; sug.add(avoK); }
-        if (okAva && !(np[avaK] && np[avaK].toString().trim())) { np[avaK] = g.mae; sug.add(avaK); }
-        np.__genSug = [...sug];
-      }
+      const sug = new Set(np.__genSug || []);
+      fillArvore(np, lado, valor, rg, genIndex, sug, tipo === "animal");
+      np.__genSug = [...sug];
     }
     return np;
   });
-  /* ao ABRIR a ficha: se pai/mãe já estão preenchidos e os avós vazios,
-     sugere os avós a partir da base genealógica (uma vez). */
+  /* ao ABRIR a ficha: se pai/mãe já estão preenchidos e a árvore vazia,
+     sugere avós E bisavós a partir da base genealógica (uma vez). */
   const genInit = useRef(false);
   useEffect(() => {
     if (genInit.current || !genIndex) return;
     genInit.current = true;
     setD((p) => {
       let np = { ...p }; const sug = new Set(np.__genSug || []);
-      const preenche = (repNome, repRg, avoK, avaK) => {
-        if (!repNome || !repNome.toString().trim()) return;
-        const g = genealogiaDe(repNome, repRg, genIndex);
-        if (!g || g.ambiguo) return;
-        const okAvo = g.pai && gnorm(g.pai) !== gnorm(repNome) && gnorm(g.pai) !== gnorm(np.nome);
-        const okAva = g.mae && gnorm(g.mae) !== gnorm(repNome) && gnorm(g.mae) !== gnorm(np.nome);
-        if (okAvo && !(np[avoK] && np[avoK].toString().trim())) { np[avoK] = g.pai; sug.add(avoK); }
-        if (okAva && !(np[avaK] && np[avaK].toString().trim())) { np[avaK] = g.mae; sug.add(avaK); }
-      };
-      preenche(np.pai, "", "avoPaterno", "avoPaterna");
-      preenche(np[maeKey], np.regDoadora, "avoMaterno", "avoMaterna");
+      fillArvore(np, "pat", np.pai, "", genIndex, sug, tipo === "animal");
+      fillArvore(np, "mat", np[maeKey], np.regDoadora, genIndex, sug, tipo === "animal");
       if (sug.size) np.__genSug = [...sug];
       return np;
     });
@@ -2949,10 +2932,27 @@ function genealogiaDe(nome, rg, index) {
   if (r && index.byRg[r]) { canon = index.byRg[r].nome; temRg = true; }
   const n = gnorm(canon);
   if (!n) return null;
-  if (!temRg && (index.cnt[n] || 0) > 1) return { ambiguo: true };
   const pr = resolveParents(canon, index);
   const rec = index.byName[n];
   return { pai: pr.pai, mae: pr.mae, nome: rec ? rec.nome : canon, registro: rec ? rec.registro : "" };
+}
+/* preenche a ÁRVORE de um lado (avós + bisavós) a partir de um reprodutor conhecido.
+ * np = cópia do registro; sug = Set de campos marcados como sugestão.
+ * Só preenche campos VAZIOS; pula ambíguo/conflito; não cria laço (não repete o próprio nome). */
+function fillArvore(np, side, repNome, repRg, index, sug, comBisavos) {
+  if (!repNome || !repNome.toString().trim() || !index) return;
+  const g = genealogiaDe(repNome, repRg, index);
+  if (!g || g.ambiguo) return;
+  const K = side === "pat"
+    ? { avo: "avoPaterno", ava: "avoPaterna", bAvoP: "bis_pp_p", bAvoM: "bis_pp_m", bAvaP: "bis_pm_p", bAvaM: "bis_pm_m" }
+    : { avo: "avoMaterno", ava: "avoMaterna", bAvoP: "bis_mp_p", bAvoM: "bis_mp_m", bAvaP: "bis_mm_p", bAvaM: "bis_mm_m" };
+  const put = (k, v, ref) => { const val = (v || "").toString().trim(); if (val && gnorm(val) !== gnorm(ref) && gnorm(val) !== gnorm(np.nome) && !(np[k] && np[k].toString().trim())) { np[k] = val; sug.add(k); } };
+  put(K.avo, g.pai, repNome);
+  put(K.ava, g.mae, repNome);
+  if (comBisavos) {
+    if (g.pai) { const gg = genealogiaDe(g.pai, "", index); if (gg && !gg.ambiguo) { put(K.bAvoP, gg.pai, g.pai); put(K.bAvoM, gg.mae, g.pai); } }
+    if (g.mae) { const gg = genealogiaDe(g.mae, "", index); if (gg && !gg.ambiguo) { put(K.bAvaP, gg.pai, g.mae); put(K.bAvaM, gg.mae, g.mae); } }
+  }
 }
 
 function impMontaPreficha(vals) {
@@ -3421,16 +3421,8 @@ export default function App() {
         const idx = buildGenIndex(p.ativos);
         const novos = res.registros.map((r) => {
           const d = r.dados; const sug = new Set();
-          const gPat = d.pai ? genealogiaDe(d.pai, "", idx) : null;
-          if (gPat && !gPat.ambiguo) {
-            if (gPat.pai && !d.avoPaterno && gnorm(gPat.pai) !== gnorm(d.pai)) { d.avoPaterno = gPat.pai; sug.add("avoPaterno"); }
-            if (gPat.mae && !d.avoPaterna && gnorm(gPat.mae) !== gnorm(d.pai)) { d.avoPaterna = gPat.mae; sug.add("avoPaterna"); }
-          }
-          const gMat = d.doadora ? genealogiaDe(d.doadora, d.regDoadora, idx) : null;
-          if (gMat && !gMat.ambiguo) {
-            if (gMat.pai && !d.avoMaterno && gnorm(gMat.pai) !== gnorm(d.doadora)) { d.avoMaterno = gMat.pai; sug.add("avoMaterno"); }
-            if (gMat.mae && !d.avoMaterna && gnorm(gMat.mae) !== gnorm(d.doadora)) { d.avoMaterna = gMat.mae; sug.add("avoMaterna"); }
-          }
+          fillArvore(d, "pat", d.pai, "", idx, sug, d.tipo === "animal");
+          fillArvore(d, "mat", d.doadora, d.regDoadora, idx, sug, d.tipo === "animal");
           if (sug.size) d.__genSug = [...sug];
           return { ...r, genSug: sug.size, dupSistema: setExist.has(chave(d.doadora, d.leilao)) };
         });
