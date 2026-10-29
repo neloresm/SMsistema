@@ -1,4 +1,4 @@
-/* SM-BUILD: genealogia-v6-2026-10-19 */
+/* SM-BUILD: genealogia-v7-2026-10-29 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
@@ -778,6 +778,29 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
     }
     return np;
   });
+  /* ao ABRIR a ficha: se pai/mãe já estão preenchidos e os avós vazios,
+     sugere os avós a partir da base genealógica (uma vez). */
+  const genInit = useRef(false);
+  useEffect(() => {
+    if (genInit.current || !genIndex) return;
+    genInit.current = true;
+    setD((p) => {
+      let np = { ...p }; const sug = new Set(np.__genSug || []);
+      const preenche = (repNome, repRg, avoK, avaK) => {
+        if (!repNome || !repNome.toString().trim()) return;
+        const g = genealogiaDe(repNome, repRg, genIndex);
+        if (!g || g.ambiguo) return;
+        const okAvo = g.pai && gnorm(g.pai) !== gnorm(repNome) && gnorm(g.pai) !== gnorm(np.nome);
+        const okAva = g.mae && gnorm(g.mae) !== gnorm(repNome) && gnorm(g.mae) !== gnorm(np.nome);
+        if (okAvo && !(np[avoK] && np[avoK].toString().trim())) { np[avoK] = g.pai; sug.add(avoK); }
+        if (okAva && !(np[avaK] && np[avaK].toString().trim())) { np[avaK] = g.mae; sug.add(avaK); }
+      };
+      preenche(np.pai, "", "avoPaterno", "avoPaterna");
+      preenche(np[maeKey], np.regDoadora, "avoMaterno", "avoMaterna");
+      if (sug.size) np.__genSug = [...sug];
+      return np;
+    });
+  }, [genIndex]);
   const f = finance(d);
   const pctSocios = (d.socios || []).filter(Boolean).reduce((s, x) => s + num(x.pct), 0);
 
@@ -2882,31 +2905,54 @@ const gnorm = (s) => (s == null ? "" : s.toString()).trim().toLowerCase().normal
 const GEN_CAMPOS = ["pai", "mae", "avoPaterno", "avoPaterna", "avoMaterno", "avoMaterna"];
 const genScore = (a) => GEN_CAMPOS.reduce((n, k) => n + (a && a[k] && a[k].toString().trim() ? 1 : 0), 0);
 function buildGenIndex(ativos) {
-  const byName = {}, byRg = {}, cnt = {};
+  const byName = {}, byRg = {}, cnt = {}, parents = {};
+  // registra um candidato de pai/mãe para um nome (soma evidências)
+  const add = (nameRaw, side, valRaw) => {
+    const n = gnorm(nameRaw); const v = (valRaw == null ? "" : valRaw.toString()).trim();
+    if (!n || !v) return;
+    if (!parents[n]) parents[n] = { pai: {}, mae: {} };
+    const b = parents[n][side]; const k = gnorm(v);
+    if (!b[k]) b[k] = { val: v, c: 0 };
+    b[k].c++;
+  };
   (ativos || []).forEach((a) => {
-    if (!a || a.tipo !== "animal") return;
-    const nm = gnorm(a.nome);
-    if (nm) { cnt[nm] = (cnt[nm] || 0) + 1; if (!byName[nm] || genScore(a) > genScore(byName[nm])) byName[nm] = a; }
-    const rg = gnorm(a.registro);
-    if (rg && !byRg[rg]) byRg[rg] = a;
+    if (!a) return;
+    if (a.tipo === "animal") {
+      const nm = gnorm(a.nome);
+      if (nm) { cnt[nm] = (cnt[nm] || 0) + 1; if (!byName[nm] || genScore(a) > genScore(byName[nm])) byName[nm] = a; }
+      const rg = gnorm(a.registro); if (rg && !byRg[rg]) byRg[rg] = a;
+      // pais próprios do animal (fonte direta)
+      add(a.nome, "pai", a.pai); add(a.nome, "mae", a.mae);
+    }
+    // APRENDIZADO: os avós informados em qualquer cadastro revelam quem são
+    // os pais do reprodutor (pai/doadora) usado ali.
+    const maeNome = a.tipo === "animal" ? a.mae : a.doadora;
+    if (a.pai) { add(a.pai, "pai", a.avoPaterno); add(a.pai, "mae", a.avoPaterna); }
+    if (maeNome) { add(maeNome, "pai", a.avoMaterno); add(maeNome, "mae", a.avoMaterna); }
   });
-  return { byName, byRg, cnt };
+  return { byName, byRg, cnt, parents };
 }
-/* devolve pai/mae do animal identificado (RG tem prioridade; nome exato como apoio;
- * nome ambíguo => não sugere). Nunca junta por nome só parecido. */
+/* resolve os pais de um nome juntando o direto + o aprendido.
+ * um único valor => usa; valores divergentes => não sugere aquele lado (evita erro). */
+function resolveParents(nome, index) {
+  const p = index && index.parents && index.parents[gnorm(nome)];
+  if (!p) return { pai: "", mae: "" };
+  const pick = (b) => { const vs = Object.values(b || {}); return vs.length === 1 ? vs[0].val : ""; };
+  return { pai: pick(p.pai), mae: pick(p.mae) };
+}
+/* devolve pai/mae do reprodutor identificado (RG tem prioridade; nome exato como apoio;
+ * nome ambíguo sem RG => não sugere). Nunca junta por nome só parecido. */
 function genealogiaDe(nome, rg, index) {
   if (!index) return null;
-  let rec = null;
+  let canon = nome, temRg = false;
   const r = gnorm(rg);
-  if (r && index.byRg[r]) rec = index.byRg[r];
-  if (!rec) {
-    const nm = gnorm(nome);
-    if (!nm) return null;
-    if ((index.cnt[nm] || 0) > 1) return { ambiguo: true };
-    rec = index.byName[nm];
-  }
-  if (!rec) return null;
-  return { pai: (rec.pai || "").toString().trim(), mae: (rec.mae || "").toString().trim(), nome: rec.nome, registro: rec.registro };
+  if (r && index.byRg[r]) { canon = index.byRg[r].nome; temRg = true; }
+  const n = gnorm(canon);
+  if (!n) return null;
+  if (!temRg && (index.cnt[n] || 0) > 1) return { ambiguo: true };
+  const pr = resolveParents(canon, index);
+  const rec = index.byName[n];
+  return { pai: pr.pai, mae: pr.mae, nome: rec ? rec.nome : canon, registro: rec ? rec.registro : "" };
 }
 
 function impMontaPreficha(vals) {
@@ -4760,3 +4806,4 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .auto-rg{font-size:11px;color:#8a6a1c;background:#efe8d4;border-radius:5px;padding:1px 6px;flex:none;font-weight:600}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 `;
+
