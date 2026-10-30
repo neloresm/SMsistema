@@ -1,4 +1,4 @@
-/* SM-BUILD: genealogia-v9-2026-10-29 */
+/* SM-BUILD: genealogia-v10-2026-10-30 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
@@ -2907,11 +2907,16 @@ function buildGenIndex(ativos) {
       // pais próprios do animal (fonte direta)
       add(a.nome, "pai", a.pai); add(a.nome, "mae", a.mae);
     }
-    // APRENDIZADO: os avós informados em qualquer cadastro revelam quem são
-    // os pais do reprodutor (pai/doadora) usado ali.
+    // APRENDIZADO nível 1: os avós informados em qualquer cadastro revelam
+    // quem são os pais do reprodutor (pai/doadora) usado ali.
     const maeNome = a.tipo === "animal" ? a.mae : a.doadora;
     if (a.pai) { add(a.pai, "pai", a.avoPaterno); add(a.pai, "mae", a.avoPaterna); }
     if (maeNome) { add(maeNome, "pai", a.avoMaterno); add(maeNome, "mae", a.avoMaterna); }
+    // APRENDIZADO nível 2: os bisavós informados revelam os pais dos avós.
+    if (a.avoPaterno) { add(a.avoPaterno, "pai", a.bis_pp_p); add(a.avoPaterno, "mae", a.bis_pp_m); }
+    if (a.avoPaterna) { add(a.avoPaterna, "pai", a.bis_pm_p); add(a.avoPaterna, "mae", a.bis_pm_m); }
+    if (a.avoMaterno) { add(a.avoMaterno, "pai", a.bis_mp_p); add(a.avoMaterno, "mae", a.bis_mp_m); }
+    if (a.avoMaterna) { add(a.avoMaterna, "pai", a.bis_mm_p); add(a.avoMaterna, "mae", a.bis_mm_m); }
   });
   return { byName, byRg, cnt, parents };
 }
@@ -4806,4 +4811,3 @@ nav{padding:14px 12px;display:flex;flex-direction:column;gap:3px;flex:1}
 .auto-rg{font-size:11px;color:#8a6a1c;background:#efe8d4;border-radius:5px;padding:1px 6px;flex:none;font-weight:600}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 `;
-
