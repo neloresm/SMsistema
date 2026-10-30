@@ -1,4 +1,4 @@
-/* SM-BUILD: genealogia-v10-2026-10-30 */
+/* SM-BUILD: genealogia-v11-2026-10-30 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
@@ -762,16 +762,19 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
     if (np.__genSug) np.__genSug = np.__genSug.filter((x) => x !== campo);
     if (campo === "doadora") { const reg = (animalReg || {})[lc(valor)]; if (reg && (!p.regDoadora || p.__regAuto)) { np.regDoadora = reg; np.__regAuto = true; } }
     const lado = campo === "pai" ? "pat" : (campo === maeKey ? "mat" : null);
+    const sug = new Set(np.__genSug || []);
     if (lado && valor && valor.trim()) {
       const rg = campo === "doadora" ? (np.regDoadora || (animalReg || {})[lc(valor)]) : "";
-      const sug = new Set(np.__genSug || []);
       fillArvore(np, lado, valor, rg, genIndex, sug, tipo === "animal");
-      np.__genSug = [...sug];
+    } else if (AVO_BIS[campo] && tipo === "animal" && valor && valor.trim()) {
+      // informou um avô/avó conhecido → puxa os bisavós (os pais dele), mesmo sem o pai/mãe
+      fillBisDeAvo(np, campo, valor, genIndex, sug);
     }
+    np.__genSug = [...sug];
     return np;
   });
-  /* ao ABRIR a ficha: se pai/mãe já estão preenchidos e a árvore vazia,
-     sugere avós E bisavós a partir da base genealógica (uma vez). */
+  /* ao ABRIR a ficha: preenche a árvore que der, a partir de pai/mãe E de
+     qualquer avô/avó já informado (uma vez). */
   const genInit = useRef(false);
   useEffect(() => {
     if (genInit.current || !genIndex) return;
@@ -780,6 +783,7 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
       let np = { ...p }; const sug = new Set(np.__genSug || []);
       fillArvore(np, "pat", np.pai, "", genIndex, sug, tipo === "animal");
       fillArvore(np, "mat", np[maeKey], np.regDoadora, genIndex, sug, tipo === "animal");
+      if (tipo === "animal") Object.keys(AVO_BIS).forEach((k) => { if (np[k] && np[k].toString().trim()) fillBisDeAvo(np, k, np[k], genIndex, sug); });
       if (sug.size) np.__genSug = [...sug];
       return np;
     });
@@ -807,9 +811,10 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
             placeholder="mãe doadora (busca em Animais, Prenhez, Aspiração, Genealogia)" /></label>
       );
     }
-    if (k === "pai" || (k === "mae" && tipo === "animal")) {
+    if (k === "pai" || (k === "mae" && tipo === "animal") || (AVO_BIS[k] && tipo === "animal")) {
+      const dica = (k === "pai" || k === "mae") ? " · puxa avós e bisavós" : " · puxa os bisavós";
       return (
-        <label className="field" key={k}><span>{label}<em className="new-hint"> · puxa avós já cadastrados</em></span>
+        <label className="field" key={k}><span>{label}<em className="new-hint">{dica}</em>{sugerido(k) && <em className="new-hint gen-sug"> · sugerido</em>}</span>
           <AutoField value={d[k] || ""} suggestions={animalNames} regMap={animalReg} onCreate={onQuickAnimal}
             onChange={(v) => setComGen(k, v)} placeholder="buscar ou cadastrar animal" /></label>
       );
@@ -2966,6 +2971,22 @@ function fillArvore(np, side, repNome, repRg, index, sug, comBisavos) {
     put(K.bAvaP, rec.avoMaterno || a2.pai, ava);   // pai da avó
     put(K.bAvaM, rec.avoMaterna || a2.mae, ava);   // mãe da avó
   }
+}
+/* mapa: campo de avô/avó -> os dois bisavós (pai/mãe daquele avô). */
+const AVO_BIS = {
+  avoPaterno: ["bis_pp_p", "bis_pp_m"], avoPaterna: ["bis_pm_p", "bis_pm_m"],
+  avoMaterno: ["bis_mp_p", "bis_mp_m"], avoMaterna: ["bis_mm_p", "bis_mm_m"],
+};
+/* ao informar um AVÔ/AVÓ conhecido, preenche os bisavós (os pais dele),
+ * mesmo que o pai/mãe daquele lado seja desconhecido. */
+function fillBisDeAvo(np, campoAvo, valor, index, sug) {
+  if (!valor || !valor.toString().trim() || !AVO_BIS[campoAvo]) return;
+  const g = genealogiaDe(valor, "", index);
+  if (!g) return;
+  const [bp, bm] = AVO_BIS[campoAvo];
+  const put = (k, v, ref) => { const val = (v || "").toString().trim(); if (val && gnorm(val) !== gnorm(ref) && gnorm(val) !== gnorm(np.nome) && !(np[k] && np[k].toString().trim())) { np[k] = val; sug.add(k); } };
+  put(bp, g.pai, valor);
+  put(bm, g.mae, valor);
 }
 
 function impMontaPreficha(vals) {
