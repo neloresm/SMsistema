@@ -1,4 +1,4 @@
-/* SM-BUILD: genealogia-v11-2026-10-30 */
+/* SM-BUILD: genealogia-v12-2026-10-30 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
@@ -745,7 +745,7 @@ function VideoBlock({ v }) {
 function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoNames, localNames, vendedorNames, socioNames,
   onQuickAnimal, onQuickLeilao, onQuickLocal, onQuickVendedor, onQuickSocio, onSave, onApprove, onClose }) {
   const ehPref = !!(initial && initial.__pref);
-  const [d, setD] = useState(() => initial || { id: uid(), tipo, socios: [], videos: [], historico: [], comissaoPct: 8 });
+  const [d, setD] = useState(() => initial || { id: uid(), tipo, raca: tipo === "animal" ? "Nelore" : undefined, socios: [], videos: [], historico: [], comissaoPct: 8 });
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", h);
