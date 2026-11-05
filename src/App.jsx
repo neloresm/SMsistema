@@ -1,4 +1,4 @@
-/* SM-BUILD: pdf-compartilhar-v14-2026-11-05 */
+/* SM-BUILD: pdf-a4-v15-2026-11-05 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
@@ -2125,26 +2125,38 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
     document.head.appendChild(s);
   });
   // Gera um PDF REAL (não um textinho) a partir do relatório e entrega como arquivo/Blob.
+  // O relatório é renderizado numa LARGURA FIXA de folha A4 (fora da tela), pra o PDF sair
+  // sempre em layout de página normal — igual no computador — mesmo gerando pelo celular.
   const gerarPdfBlob = async () => {
     await carregarScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
     await carregarScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
     const html2canvas = window.html2canvas;
     const jsPDF = window.jspdf && window.jspdf.jsPDF;
     if (!html2canvas || !jsPDF) throw new Error("libs não carregaram");
-    const idoc = pdfFrame.current && pdfFrame.current.contentDocument;
-    const alvo = idoc ? idoc.body : null;
-    if (!alvo) throw new Error("sem conteúdo");
-    const largura = alvo.scrollWidth || 900;
-    const canvas = await html2canvas(alvo, { scale: 2, useCORS: true, backgroundColor: "#ffffff", width: largura, windowWidth: largura, height: alvo.scrollHeight, windowHeight: alvo.scrollHeight });
-    const pdf = new jsPDF({ unit: "pt", format: "a4", compress: true });
-    const pw = pdf.internal.pageSize.getWidth(), ph = pdf.internal.pageSize.getHeight();
-    const img = canvas.toDataURL("image/jpeg", 0.92);
-    const imgH = (canvas.height * pw) / canvas.width;
-    let resto = imgH, pos = 0;
-    pdf.addImage(img, "JPEG", 0, pos, pw, imgH);
-    resto -= ph;
-    while (resto > 0) { pos -= ph; pdf.addPage(); pdf.addImage(img, "JPEG", 0, pos, pw, imgH); resto -= ph; }
-    return pdf.output("blob");
+    if (!pdfDoc) throw new Error("sem conteúdo");
+    const LARG = 794; // largura de uma folha A4 a 96dpi (≈21cm) → layout de documento normal
+    const temp = document.createElement("iframe");
+    temp.setAttribute("aria-hidden", "true");
+    temp.style.cssText = `position:fixed;left:-10000px;top:0;width:${LARG}px;height:10px;border:0;background:#fff`;
+    document.body.appendChild(temp);
+    try {
+      const td = temp.contentDocument;
+      td.open(); td.write(pdfDoc); td.close();
+      await new Promise((r) => setTimeout(r, 400)); // deixa carregar fontes/SVG
+      const body = td.body;
+      const alt = Math.max(body.scrollHeight, body.offsetHeight, 200);
+      temp.style.height = alt + "px";
+      const canvas = await html2canvas(body, { scale: 2, useCORS: true, backgroundColor: "#ffffff", width: LARG, windowWidth: LARG, height: alt, windowHeight: alt });
+      const pdf = new jsPDF({ unit: "pt", format: "a4", compress: true });
+      const pw = pdf.internal.pageSize.getWidth(), ph = pdf.internal.pageSize.getHeight();
+      const img = canvas.toDataURL("image/jpeg", 0.92);
+      const imgH = (canvas.height * pw) / canvas.width;
+      let resto = imgH, pos = 0;
+      pdf.addImage(img, "JPEG", 0, pos, pw, imgH);
+      resto -= ph;
+      while (resto > 0) { pos -= ph; pdf.addPage(); pdf.addImage(img, "JPEG", 0, pos, pw, imgH); resto -= ph; }
+      return pdf.output("blob");
+    } finally { temp.remove(); }
   };
   const nomePdf = () => `Relatorio-SM-${new Date().toISOString().slice(0, 10)}.pdf`;
   const baixarPdf = async () => {
