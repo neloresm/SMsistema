@@ -1,4 +1,4 @@
-/* SM-BUILD: relatorios-mobile-v13-2026-11-05 */
+/* SM-BUILD: pdf-compartilhar-v14-2026-11-05 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
@@ -2114,17 +2114,68 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const [exp, setExp] = useState(EXP_PADRAO);
   const [pdfDoc, setPdfDoc] = useState(null);   // HTML do relatório em pré-visualização (null = visualizador fechado)
   const pdfFrame = useRef(null);
-  // imprime/salva o PDF a partir do iframe (iOS: folha AirPrint com "Salvar em Arquivos", WhatsApp, Mail, AirDrop; desktop: "Salvar como PDF")
+  const [gerandoPdf, setGerandoPdf] = useState(false);
+  // Carrega uma biblioteca pela CDN só quando o usuário clica (não pesa no carregamento do site
+  // e não precisa mexer no package.json — continua tudo num arquivo só).
+  const carregarScript = (src) => new Promise((resolve, reject) => {
+    const existente = [...document.scripts].find((s) => s.src === src);
+    if (existente) { if (existente.dataset.pronto) return resolve(); existente.addEventListener("load", () => resolve()); existente.addEventListener("error", reject); return; }
+    const s = document.createElement("script"); s.src = src;
+    s.onload = () => { s.dataset.pronto = "1"; resolve(); }; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  // Gera um PDF REAL (não um textinho) a partir do relatório e entrega como arquivo/Blob.
+  const gerarPdfBlob = async () => {
+    await carregarScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
+    await carregarScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+    const html2canvas = window.html2canvas;
+    const jsPDF = window.jspdf && window.jspdf.jsPDF;
+    if (!html2canvas || !jsPDF) throw new Error("libs não carregaram");
+    const idoc = pdfFrame.current && pdfFrame.current.contentDocument;
+    const alvo = idoc ? idoc.body : null;
+    if (!alvo) throw new Error("sem conteúdo");
+    const largura = alvo.scrollWidth || 900;
+    const canvas = await html2canvas(alvo, { scale: 2, useCORS: true, backgroundColor: "#ffffff", width: largura, windowWidth: largura, height: alvo.scrollHeight, windowHeight: alvo.scrollHeight });
+    const pdf = new jsPDF({ unit: "pt", format: "a4", compress: true });
+    const pw = pdf.internal.pageSize.getWidth(), ph = pdf.internal.pageSize.getHeight();
+    const img = canvas.toDataURL("image/jpeg", 0.92);
+    const imgH = (canvas.height * pw) / canvas.width;
+    let resto = imgH, pos = 0;
+    pdf.addImage(img, "JPEG", 0, pos, pw, imgH);
+    resto -= ph;
+    while (resto > 0) { pos -= ph; pdf.addPage(); pdf.addImage(img, "JPEG", 0, pos, pw, imgH); resto -= ph; }
+    return pdf.output("blob");
+  };
+  const nomePdf = () => `Relatorio-SM-${new Date().toISOString().slice(0, 10)}.pdf`;
+  const baixarPdf = async () => {
+    setGerandoPdf(true);
+    try {
+      const blob = await gerarPdfBlob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = nomePdf(); document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    } catch (e) { imprimirPdf(); }
+    finally { setGerandoPdf(false); }
+  };
+  const compartilharPdf = async () => {
+    setGerandoPdf(true);
+    try {
+      const blob = await gerarPdfBlob();
+      const file = new File([blob], nomePdf(), { type: "application/pdf" });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({ files: [file], title: "Relatório SM Agropecuária" });
+      } else {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a"); a.href = url; a.download = nomePdf(); document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+      }
+    } catch (e) { if (!(e && e.name === "AbortError")) imprimirPdf(); }
+    finally { setGerandoPdf(false); }
+  };
+  // último recurso: impressão nativa do navegador (iOS: "Salvar em Arquivos" vira PDF)
   const imprimirPdf = () => {
     try { const f = pdfFrame.current; if (f && f.contentWindow) { f.contentWindow.focus(); f.contentWindow.print(); } }
     catch (e) { alert("Para salvar em PDF, use o menu do navegador (Compartilhar → Imprimir → Salvar em PDF)."); }
-  };
-  const compartilharPdf = async () => {
-    if (navigator.share) {
-      try { await navigator.share({ title: "Relatório SM Agropecuária", text: "Relatório gerado no SM Agropecuária — Gado de Elite." }); return; }
-      catch (e) { if (e && e.name === "AbortError") return; }
-    }
-    imprimirPdf();
   };
 
   const AGRUPAR_OPC = [["nenhum", "Sem agrupamento"], ["socio", "Sócio"], ["idade", "Faixa de idade"], ["leilao", "Leilão"], ["situacao", "Situação (Ativo/Inativo)"], ["ondeEsta", "Criatório"], ["participacao", "Participação da SM"]];
@@ -2549,14 +2600,14 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
       {pdfDoc && (
         <div className="pdf-viewer" role="dialog" aria-label="Relatório em PDF">
           <div className="pdf-bar">
-            <button className="pdf-btn pdf-x" onClick={() => setPdfDoc(null)} aria-label="Fechar">✕</button>
-            <div className="pdf-bar-tit">Relatório — pré-visualização</div>
+            <button className="pdf-btn pdf-x" onClick={() => setPdfDoc(null)} aria-label="Fechar" disabled={gerandoPdf}>✕</button>
+            <div className="pdf-bar-tit">{gerandoPdf ? "Gerando PDF…" : "Relatório — pré-visualização"}</div>
             <div className="pdf-bar-acts">
-              <button className="pdf-btn" onClick={imprimirPdf}>⤓ Baixar / Salvar</button>
-              <button className="pdf-btn" onClick={compartilharPdf}>⇪ Compartilhar</button>
+              <button className="pdf-btn" onClick={baixarPdf} disabled={gerandoPdf}>⤓ Baixar</button>
+              <button className="pdf-btn" onClick={compartilharPdf} disabled={gerandoPdf}>⇪ Compartilhar</button>
             </div>
           </div>
-          <p className="pdf-hint">No iPhone, toque em <b>Baixar / Salvar</b> e escolha <b>Salvar em Arquivos</b>, <b>WhatsApp</b>, <b>Mail</b> ou <b>AirDrop</b>. No computador, escolha <b>Salvar como PDF</b>.</p>
+          <p className="pdf-hint">{gerandoPdf ? "Gerando o arquivo PDF, aguarde um instante…" : <>Toque em <b>Compartilhar</b> para enviar o PDF por <b>WhatsApp</b>, <b>Mail</b> ou <b>AirDrop</b>, ou em <b>Baixar</b> para salvar o arquivo (no iPhone: <b>Salvar em Arquivos</b>).</>}</p>
           <iframe className="pdf-frame" ref={pdfFrame} srcDoc={pdfDoc} title="Relatório em PDF" />
         </div>
       )}
