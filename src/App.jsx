@@ -920,7 +920,7 @@ function Genealogia({ a }) {
   const mexeu = useRef(false);                     // o usuário já ajustou o zoom?
   const foco = useRef(null);                       // ponto a manter fixo após mudar o zoom
   const toque = useRef(null);
-  const MIN = 0.2, MAX = 2.2, LEGIVEL = 0.62;      // abaixo de ~0,62 os nomes ficam pequenos demais
+  const MIN = 0.2, MAX = 2.2;
   const limita = (v) => Math.max(MIN, Math.min(MAX, v));
   const medidas = () => {
     const v = viewRef.current; if (!v) return null;
@@ -936,21 +936,26 @@ function Genealogia({ a }) {
     v.scrollLeft = o.x + (natW / 2) * s - v.clientWidth / 2;
     v.scrollTop = o.y + (natH / 2) * s - v.clientHeight / 2;
   };
+  // Zoom padrão por dispositivo: celular 25%, computador/notebook 67%.
+  // Celular = tela estreita (mesmo ponto de quebra do layout mobile) ou toque com tela pequena;
+  // não depende do sistema operacional.
+  const zoomPadrao = () => {
+    try {
+      const estreita = window.matchMedia("(max-width: 860px)").matches;
+      const toqueTelaPequena = window.matchMedia("(pointer: coarse)").matches && Math.min(window.screen.width, window.screen.height) < 768;
+      return estreita || toqueTelaPequena ? 0.25 : 0.67;
+    } catch (e) { return 0.67; }
+  };
   const inicial = () => {
     const m = medidas(); if (!m) return;
-    // enquadra a árvore inteira quando continua legível; senão abre em escala de leitura, centrada no animal
-    const s = m.ajuste >= LEGIVEL ? m.ajuste : Math.max(m.ajuste, LEGIVEL);
-    setAltura(Math.round(Math.min(m.hMax, natH * s + 16)));
+    const s = zoomPadrao();
+    // a janela da árvore é definida uma única vez ao abrir; depois não há reajuste automático
+    setAltura(Math.round(Math.min(m.hMax, Math.max(natH * s + 16, 300))));
     foco.current = { centro: true };
     setEsc(limita(s));
   };
-  useEffect(() => { mexeu.current = false; inicial(); }, [natW, natH]);
-  useEffect(() => {
-    const v = viewRef.current; if (!v || typeof ResizeObserver === "undefined") return;
-    let w0 = v.clientWidth;
-    const ro = new ResizeObserver(() => { if (Math.abs(v.clientWidth - w0) > 4) { w0 = v.clientWidth; if (!mexeu.current) inicial(); } });
-    ro.observe(v); return () => ro.disconnect();
-  }, [natW, natH]);
+  // ao abrir a ficha (ou trocar de animal) volta ao zoom padrão; girar a tela ou redimensionar a janela não mexe no zoom
+  useEffect(() => { mexeu.current = false; inicial(); }, [a && a.id, natW, natH]);
   // depois de mudar a escala, ajusta a rolagem para manter o ponto de foco no lugar
   React.useLayoutEffect(() => {
     const f = foco.current; foco.current = null;
@@ -969,7 +974,7 @@ function Genealogia({ a }) {
     mexeu.current = true; setEsc(s1);
   };
   const ajustarTudo = () => { const m = medidas(); if (!m) return; mexeu.current = true; foco.current = { centro: true }; setEsc(limita(m.ajuste)); };
-  const tamanhoReal = () => { mexeu.current = true; foco.current = { centro: true }; setEsc(1); };
+  const restaurar = () => { mexeu.current = true; foco.current = { centro: true }; setEsc(limita(zoomPadrao())); };
   // gestos: pinça (2 dedos) e trackpad/Ctrl+roda; 1 dedo e roda comum rolam normalmente
   useEffect(() => {
     const v = viewRef.current; if (!v) return;
@@ -1020,7 +1025,7 @@ function Genealogia({ a }) {
         <div className="ped-zoom" role="group" aria-label="Zoom da genealogia">
           <button type="button" onClick={ajustarTudo} title="Mostrar a árvore inteira">Ajustar</button>
           <button type="button" onClick={() => zoomEm(s / 1.25)} aria-label="Diminuir"><Ico n="zoomMenos" size={15} /></button>
-          <button type="button" className="ped-zv" onClick={tamanhoReal} title="Restaurar zoom (100%)">{pct}%</button>
+          <button type="button" className="ped-zv" onClick={restaurar} title="Restaurar o zoom padrão">{pct}%</button>
           <button type="button" onClick={() => zoomEm(s * 1.25)} aria-label="Aumentar"><Ico n="zoomMais" size={15} /></button>
         </div>
       </div>
