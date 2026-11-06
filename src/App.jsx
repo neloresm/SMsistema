@@ -1769,6 +1769,8 @@ function SituacaoSecao({ a, onInativar, onReativar }) {
    por trás de cada barra. Só leitura: nenhum dado é alterado aqui. */
 const FAIXAS_IDADE_PAINEL = [["< 1 ano", 0, 12, "< 1"], ["1 a 2 anos", 12, 24, "1–2"], ["2 a 4 anos", 24, 48, "2–4"], ["4 a 6 anos", 48, 72, "4–6"], ["6 a 8 anos", 72, 96, "6–8"], ["+ 8 anos", 96, Infinity, "8+"]];
 const FAIXAS_PART_PAINEL = [["100%", (p) => p >= 100], ["75–99%", (p) => p >= 75 && p < 100], ["50–74%", (p) => p >= 50 && p < 75], ["25–49%", (p) => p >= 25 && p < 50], ["1–24%", (p) => p > 0 && p < 25], ["0% (vendido)", (p) => p <= 0]];
+const TIPO_NOME_PAINEL = { animal: "Animais", prenhez: "Prenhezes", aspiracao: "Aspirações" };
+const TIPO_UM_PAINEL = { animal: "Animal", prenhez: "Prenhez", aspiracao: "Aspiração" };
 const rgTxt = (a) => (a && a.registro ? (/^\s*rg/i.test(a.registro) ? a.registro : `RG ${a.registro}`) : "");
 const sexoTxt = (a) => { const s = lc(a && a.sexo); return s.startsWith("f") ? "Fêmea" : s.startsWith("m") ? "Macho" : ""; };
 const sociosDe = (a) => (a.sociedadeAtual || a.socios || []).filter((s) => s && s.nome);
@@ -1801,21 +1803,153 @@ function useEstreito(q = "(max-width: 560px)") {
   return m;
 }
 const reduzMovimento = () => { try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { return false; } };
+const semHover = () => { try { return window.matchMedia("(hover: none), (pointer: coarse)").matches; } catch (e) { return false; } };
+
+/* ---------------- camada de animação reutilizável dos gráficos ----------------
+   • useContagem: número que desliza até o novo valor (só quando o valor muda).
+   • BarrasVivas: gráfico de barras (Recharts) com estado "vivo" ao passar o mouse/tocar:
+     a barra em foco ganha brilho, contorno luminoso desenhado sobre a geometria real e
+     pontos que percorrem esse contorno; as demais recuam. Nada roda sem interação:
+     os efeitos só existem enquanto a barra está em foco. Celular: poucos pontos e sem
+     luz de cursor. "Reduzir movimento": sem pontos e sem animações. */
+function useContagem(v, dur = 650) {
+  const alvo = Number(v) || 0;
+  const [x, setX] = useState(alvo);
+  const ant = useRef(alvo);
+  useEffect(() => {
+    const de = ant.current; ant.current = alvo;
+    if (de === alvo || reduzMovimento()) { setX(alvo); return; }
+    let raf = 0, t0 = 0;
+    const passo = (t) => { if (!t0) t0 = t; const k = Math.min(1, (t - t0) / dur); const e = 1 - Math.pow(1 - k, 3); setX(k >= 1 ? alvo : de + (alvo - de) * e); if (k < 1) raf = requestAnimationFrame(passo); };
+    raf = requestAnimationFrame(passo);
+    return () => cancelAnimationFrame(raf);
+  }, [alvo]);
+  return x;
+}
+function MoneyViva({ v, money, className }) { const x = useContagem(v); return <MoneyBig v={Math.abs(x - v) < 0.005 ? v : x} money={money} className={className} />; }
+function ContaViva({ v }) { return <>{Math.round(useContagem(v, 500))}</>; }
+
+let bvSeq = 0;
+// contorno da barra com a ponta de dados arredondada (base reta, ancorada no eixo)
+function caminhoBarra(x, y, w, h, r, horizontal) {
+  r = Math.max(0, Math.min(r, horizontal ? h / 2 : w / 2, horizontal ? w : h));
+  if (!horizontal) return `M${x},${y + h}L${x},${y + r}Q${x},${y} ${x + r},${y}L${x + w - r},${y}Q${x + w},${y} ${x + w},${y + r}L${x + w},${y + h}Z`;
+  return `M${x},${y}L${x + w - r},${y}Q${x + w},${y} ${x + w},${y + r}L${x + w},${y + h - r}Q${x + w},${y + h} ${x + w - r},${y + h}L${x},${y + h}Z`;
+}
+function BarraViva(p) {
+  const { x, y, width: w, height: h, index: i, payload, viva: v } = p;
+  if (!(w > 0.5) || !(h > 0.5)) return null;
+  const ativo = v.hov === i;
+  const k = v.chave(payload);
+  const fora = (v.hov != null && !ativo) || (v.sel != null && v.sel !== k && !ativo);
+  const marcado = v.sel != null && v.sel === k;
+  const d = caminhoBarra(x, y, w, h, 4, v.horizontal);
+  const per = 2 * (w + h);
+  const n = v.pts ? Math.max(3, Math.min(v.pts, Math.round(per / 26))) : 0;
+  const dur = Math.max(1.8, Math.min(4.2, per / 70));
+  const cid = `${v.uid}-c${i}-${v.serie}`;
+  const rot = ativo && v.rotulo ? v.rotulo(payload) : null;
+  return (
+    <g className={`bv${fora ? " apaga" : ""}${ativo ? " ativo" : ""}${marcado ? " marcado" : ""}`}>
+      <path d={d} fill={v.cor} className="bv-corpo" />
+      {ativo && (
+        <g className="bv-fx" style={{ transformOrigin: `${x + w / 2}px ${y + h / 2}px` }}>
+          <clipPath id={cid}><path d={d} /></clipPath>
+          <g clipPath={`url(#${cid})`}>
+            <rect x={x} y={y} width={w} height={h} fill={`url(#${v.uid}-brilho${v.horizontal ? "h" : ""})`} />
+            {v.luz && <circle className="bv-luz" r={Math.max(26, Math.min(64, Math.max(w, h) * 0.55))} fill={`url(#${v.uid}-luz)`} />}
+          </g>
+          <path d={d} className="bv-traco" fill="none" stroke={v.brilho} pathLength="100" />
+          {n > 0 && <g className="bv-pts" fill={v.ponto}>
+            {Array.from({ length: n }, (_, j) => (
+              <circle key={j} r={j % 3 === 0 ? 2.1 : 1.4} opacity={j % 3 === 0 ? 1 : 0.75}>
+                <animateMotion dur={`${dur.toFixed(2)}s`} repeatCount="indefinite" begin={`-${((j * dur) / n).toFixed(2)}s`} path={d} />
+              </circle>
+            ))}
+          </g>}
+        </g>
+      )}
+      {rot != null && (v.horizontal
+        ? <text className="bv-rot" x={x + w + 7} y={y + h / 2} dominantBaseline="central">{rot}</text>
+        : <text className="bv-rot" x={x + w / 2} y={y - 7} textAnchor="middle">{rot}</text>)}
+    </g>
+  );
+}
+// faixa de luz que acompanha a categoria em foco (cursor do tooltip)
+function FeixeCursor({ x, y, width, height, uid, horizontal }) {
+  if (!(width > 0) || !(height > 0)) return null;
+  return <rect className="bv-feixe" x={x} y={y} width={width} height={height} rx={8} fill={`url(#${uid}-feixe${horizontal ? "h" : ""})`} />;
+}
 // tooltip próprio: aparece suavemente e mostra o detalhe da barra
-function AnTip({ active, payload, label, linhas }) {
+function AnTip({ active, payload, label, linhas, dica = "Toque ou clique para ver os registros" }) {
   if (!active || !payload || !payload.length) return null;
   const d = payload[0].payload;
   return (
     <div className="an-tip">
       <div className="an-tip-t">{d.tit || d.name || label}</div>
       {linhas(d).map(([k, v, cor]) => <div className="an-tip-l" key={k}>{cor && <i style={{ background: cor }} />}<span>{k}</span><b>{v}</b></div>)}
-      <div className="an-tip-h">Toque ou clique para ver os registros</div>
+      {dica && <div className="an-tip-h">{dica}</div>}
     </div>
   );
 }
+function BarrasVivas({ dados, series, horizontal = false, altura, xKey = "name", chave = (d) => d.name, sel = null, onEscolher, tip, dica, eixoValor, eixoCat, yLargura, margem, legenda, maxBarra = 56, rotulo, rotulosFixos, contagem, animDur = 650 }) {
+  const uid = useMemo(() => "bv" + ++bvSeq, []);
+  const [hov, setHov] = useState(null);
+  const hovRef = useRef(null);
+  const wrap = useRef(null), caixa = useRef(null);
+  const toque = useMemo(semHover, []);
+  const reduz = useMemo(reduzMovimento, []);
+  const foco = (i) => { if (i !== hovRef.current) { hovRef.current = i; setHov(i); } };
+  const mm = (s) => foco(s && s.isTooltipActive && s.activeTooltipIndex != null ? s.activeTooltipIndex : null);
+  const ck = (s) => {
+    const i = s && s.activeTooltipIndex != null ? s.activeTooltipIndex : null;
+    if (i == null || !dados[i]) return;
+    foco(i);
+    onEscolher && onEscolher(dados[i]);
+  };
+  // luz que segue o cursor: só variáveis CSS (sem render do React)
+  const medir = () => { const s = wrap.current && wrap.current.querySelector("svg.recharts-surface"); caixa.current = s ? s.getBoundingClientRect() : null; };
+  const luz = (e) => { if (toque || !wrap.current) return; if (!caixa.current) medir(); const r = caixa.current; if (!r) return; wrap.current.style.setProperty("--mx", `${e.clientX - r.left}px`); wrap.current.style.setProperty("--my", `${e.clientY - r.top}px`); };
+  const viva = (s) => ({ hov, sel, chave, uid, horizontal, serie: s.key, cor: s.cor, ponto: s.ponto || "#C9A961", brilho: s.brilho || "rgba(255,255,255,.95)", pts: reduz ? 0 : toque ? 4 : 12, luz: !toque && !reduz, rotulo: s.rotulo === false ? null : rotulo });
+  const eixos = horizontal
+    ? [<XAxis key="x" type="number" tick={CH.tick} tickFormatter={eixoValor} tickLine={false} axisLine={false} allowDecimals={!contagem} />,
+       <YAxis key="y" type="category" dataKey={xKey} width={yLargura || 100} tick={CH.tick} tickFormatter={eixoCat} tickLine={false} axisLine={false} interval={0} />]
+    : [<XAxis key="x" dataKey={xKey} tick={CH.tick} interval={0} tickLine={false} axisLine={{ stroke: CH.grid }} tickFormatter={eixoCat} />,
+       <YAxis key="y" tick={CH.tick} width={yLargura || 34} tickFormatter={eixoValor} allowDecimals={!contagem} tickLine={false} axisLine={false} />];
+  return (
+    <div className={`bv-wrap${hov != null ? " em-foco" : ""}`} ref={wrap} onMouseEnter={medir} onMouseMove={luz} onMouseLeave={() => { caixa.current = null; foco(null); }}>
+      <ResponsiveContainer width="100%" height={altura}>
+        <BarChart data={dados} layout={horizontal ? "vertical" : "horizontal"} margin={margem || (horizontal ? { left: 4, right: 52, top: 4, bottom: 4 } : { left: 0, right: 8, top: rotulosFixos || rotulo ? 22 : 8, bottom: 0 })} barGap={3} onMouseMove={mm} onMouseLeave={() => foco(null)} onClick={ck}>
+          <defs>
+            <linearGradient id={`${uid}-brilho`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#fff" stopOpacity=".42" /><stop offset=".35" stopColor="#fff" stopOpacity=".08" /><stop offset="1" stopColor="#fff" stopOpacity="0" /></linearGradient>
+            <linearGradient id={`${uid}-brilhoh`} x1="1" y1="0" x2="0" y2="0"><stop offset="0" stopColor="#fff" stopOpacity=".42" /><stop offset=".35" stopColor="#fff" stopOpacity=".08" /><stop offset="1" stopColor="#fff" stopOpacity="0" /></linearGradient>
+            <radialGradient id={`${uid}-luz`}><stop offset="0" stopColor="#fff" stopOpacity=".55" /><stop offset=".45" stopColor="#F4E7C4" stopOpacity=".22" /><stop offset="1" stopColor="#fff" stopOpacity="0" /></radialGradient>
+            <linearGradient id={`${uid}-feixe`} x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#176B46" stopOpacity="0" /><stop offset=".7" stopColor="#176B46" stopOpacity=".05" /><stop offset="1" stopColor="#B89A5E" stopOpacity=".16" /></linearGradient>
+            <linearGradient id={`${uid}-feixeh`} x1="0" y1="0" x2="1" y2="0"><stop offset="0" stopColor="#B89A5E" stopOpacity=".14" /><stop offset=".4" stopColor="#176B46" stopOpacity=".05" /><stop offset="1" stopColor="#176B46" stopOpacity="0" /></linearGradient>
+          </defs>
+          <CartesianGrid stroke={CH.grid} vertical={horizontal} horizontal={!horizontal} />
+          {eixos}
+          <Tooltip cursor={<FeixeCursor uid={uid} horizontal={horizontal} />} animationDuration={180} wrapperStyle={{ outline: "none", zIndex: 5 }} position={toque && !horizontal ? { y: 0 } : undefined} offset={toque ? 8 : 14} content={<AnTip linhas={tip} dica={dica} />} />
+          {legenda && <Legend wrapperStyle={{ fontSize: 12, color: "#58635D" }} formatter={legenda} />}
+          {series.map((s, si) => (
+            <Bar key={s.key} dataKey={s.key} name={s.key} fill={s.cor} maxBarSize={maxBarra} isAnimationActive={!reduz} animationDuration={animDur} animationEasing="ease-out" cursor="pointer"
+              shape={(pp) => <BarraViva {...pp} viva={viva(s)} />}>
+              {rotulosFixos && si === 0 ? <LabelList dataKey={s.key} position={horizontal ? "right" : "top"} offset={6} formatter={(x) => (x ? x : "")} style={{ fontSize: 11.5, fill: "#58635D", fontWeight: 600 }} /> : null}
+            </Bar>
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+const SERIE_ESMERALDA = { cor: "#176B46", ponto: "#D9BC72", brilho: "rgba(255,255,255,.95)" };
+const SERIE_SALVIA = { cor: "#7FA592", ponto: "#176B46", brilho: "rgba(255,255,255,.95)" };
+const SERIE_OURO = { cor: "#B89A5E", ponto: "#176B46", brilho: "rgba(255,255,255,.95)" };
+const SERIE_PREVISTO = { cor: "#D9D4C7", ponto: "#176B46", brilho: "#176B46" };
+
 function AnKpi({ k, v, d, onClick, on }) {
   const C = onClick ? "button" : "div";
-  return <C className={`an-kpi ${onClick ? "clk" : ""} ${on ? "on" : ""}`} onClick={onClick} type={onClick ? "button" : undefined}><span>{k}</span><b key={String(v)}>{v}</b>{d && <small>{d}</small>}</C>;
+  return <C className={`an-kpi ${onClick ? "clk" : ""} ${on ? "on" : ""}`} onClick={onClick} type={onClick ? "button" : undefined}><span>{k}</span><b key={typeof v === "object" ? "n" : String(v)}>{v}</b>{d && <small>{d}</small>}</C>;
 }
 // barras de resumo (tabela visual) — mesma seleção do gráfico; ótima no celular
 function AnFaixas({ dados, sel, onSel, fmtV, cor }) {
@@ -1861,14 +1995,53 @@ function AnLista({ titulo, sub, itens, render, onAbrir, rowClick, ordem, setOrde
   );
 }
 
-const AN_TITULOS = { idade: "Idade do plantel", evolucao: "Evolução financeira", socio: "Investimentos por sociedade", criatorio: "Investimentos por criatório", participacao: "Participação da SM" };
+const AN_TITULOS = { idade: "Idade do plantel", evolucao: "Evolução financeira", socio: "Investimentos por sociedade", criatorio: "Investimentos por criatório", participacao: "Participação da SM",
+  "ind-patrimonio": "Patrimônio estimado", "ind-total": "Total investido", "ind-pago": "Já pago", "ind-aberto": "Saldo a pagar" };
 
+/* Janela de análise. A abertura é uma transição de continuidade: um "cartão fantasma"
+   parte da posição exata do cartão clicado e se expande até a janela; o conteúdo surge em
+   etapas. O fechamento faz o caminho inverso, de volta ao cartão. Tudo com transform/opacity
+   (Web Animations API), sem recalcular layout a cada quadro. */
 function AnaliseGrafico({ tipo, inicial, reais, money, privado, onAbrir, bloqueado, onClose, onVerLista }) {
   useTravaFundo();
   const estreito = useEstreito();
-  const [saindo, setSaindo] = useState(false);
+  const [saindo, setSaindo] = useState("");
+  const modalRef = useRef(null), fantRef = useRef(null);
   const bloqRef = useRef(bloqueado); bloqRef.current = bloqueado;
-  const fechar = () => { if (saindo) return; if (reduzMovimento()) { onClose(); return; } setSaindo(true); setTimeout(onClose, 210); };
+  const comOrigem = !!inicial.origem && !reduzMovimento();
+  const rectDoCartao = () => {
+    const el = inicial.alvo && document.querySelector(`[data-an="${inicial.alvo}"]`);
+    if (!el) return null; const r = el.getBoundingClientRect();
+    return r.bottom > 0 && r.top < window.innerHeight && r.width > 0 ? r : null;
+  };
+  const caixaVisivel = (m) => { const r = m.getBoundingClientRect(); const top = Math.max(r.top, 0), bot = Math.min(r.bottom, window.innerHeight); return { left: r.left, top, width: r.width, height: Math.max(80, bot - top) }; };
+  const transf = (o, f) => `translate(${o.left - f.left}px, ${o.top - f.top}px) scale(${o.width / f.width}, ${o.height / f.height})`;
+  React.useLayoutEffect(() => {
+    const m = modalRef.current, g = fantRef.current, o = inicial.origem;
+    if (!comOrigem || !m || !g || !o || !g.animate) return;
+    const f = caixaVisivel(m);
+    Object.assign(g.style, { display: "block", left: f.left + "px", top: f.top + "px", width: f.width + "px", height: f.height + "px" });
+    const dur = estreito ? 300 : 380;
+    const a = g.animate([{ transform: transf(o, f), opacity: 1 }, { transform: "none", opacity: 1, offset: 0.72 }, { transform: "none", opacity: 0 }], { duration: dur + 140, easing: "cubic-bezier(.2,.75,.2,1)", fill: "forwards" });
+    const b = m.animate([{ opacity: 0 }, { opacity: 0, offset: 0.5 }, { opacity: 1 }], { duration: dur + 80, easing: "ease-out" });
+    a.onfinish = () => { g.style.display = "none"; };
+    return () => { a.cancel(); b.cancel(); };
+  }, []);
+  const fechar = () => {
+    if (saindo) return;
+    if (reduzMovimento()) { onClose(); return; }
+    const m = modalRef.current, g = fantRef.current, alvo = rectDoCartao();
+    if (m && g && g.animate && alvo) {
+      setSaindo("fantasma");
+      const f = caixaVisivel(m);
+      Object.assign(g.style, { display: "block", left: f.left + "px", top: f.top + "px", width: f.width + "px", height: f.height + "px" });
+      m.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 140, easing: "ease-in", fill: "forwards" });
+      g.animate([{ transform: "none", opacity: 0 }, { transform: "none", opacity: 1, offset: 0.25 }, { transform: transf(alvo, f), opacity: 1, offset: 0.85 }, { transform: transf(alvo, f), opacity: 0 }], { duration: estreito ? 300 : 340, easing: "cubic-bezier(.4,0,.2,1)", fill: "forwards" });
+      setTimeout(onClose, estreito ? 290 : 330);
+      return;
+    }
+    setSaindo("simples"); setTimeout(onClose, 210);
+  };
   const fecharRef = useRef(fechar); fecharRef.current = fechar;
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape" && !bloqRef.current) fecharRef.current(); };
@@ -1881,7 +2054,8 @@ function AnaliseGrafico({ tipo, inicial, reais, money, privado, onAbrir, bloquea
   // opções dos seletores a partir dos registros reais
   const opSocios = useMemo(() => { const s = new Set(); reais.forEach((a) => sociosDe(a).forEach((x) => s.add(x.nome))); return [...s].sort((x, y) => lc(x).localeCompare(lc(y))); }, [reais]);
   const opCriat = useMemo(() => { const s = new Set(); reais.forEach((a) => { const c = criatorioDe(a); if (c) s.add(c); }); return [...s].sort((x, y) => lc(x).localeCompare(lc(y))); }, [reais]);
-  const animal = tipo !== "evolucao";
+  const indicador = tipo.startsWith("ind-");
+  const animal = tipo !== "evolucao" && !indicador;
   const base = useMemo(() => filtraPainel(reais, animal ? f : { ...f, sexo: "" }), [reais, f, animal]);
   const animais = useMemo(() => base.filter((a) => a.tipo === "animal"), [base]);
   const filtrosAtivos = f.sit !== "ativos" || f.socio || f.criatorio || f.sexo;
@@ -1891,11 +2065,13 @@ function AnaliseGrafico({ tipo, inicial, reais, money, privado, onAbrir, bloquea
     : tipo === "evolucao" ? <AnEvolucao base={base} periodo={f.periodo} setPeriodo={(v) => muda("periodo", v)} sel={sel} alterna={alterna} estreito={estreito} money={money} privado={privado} onAbrir={onAbrir} />
     : tipo === "socio" || tipo === "criatorio" ? <AnInvest modo={tipo} animais={animais} sel={sel} alterna={alterna} estreito={estreito} money={money} privado={privado} onAbrir={onAbrir} onVerLista={onVerLista} />
     : tipo === "participacao" ? <AnPart animais={animais.filter((a) => !a.arquivada)} sel={sel} alterna={alterna} estreito={estreito} onAbrir={onAbrir} />
+    : indicador ? <AnIndicador campo={tipo.slice(4)} base={base} sel={sel} alterna={alterna} estreito={estreito} money={money} privado={privado} onAbrir={onAbrir} />
     : null;
 
   return (
-    <div className={`modal-bg an-bg ${saindo ? "saindo" : ""}`} onClick={fechar}>
-      <div className="modal an-modal" role="dialog" aria-modal="true" aria-label={titulo} onClick={(e) => e.stopPropagation()}>
+    <div className={`modal-bg an-bg ${saindo === "simples" ? "saindo" : ""} ${saindo === "fantasma" ? "saindo-fantasma" : ""}`} onClick={fechar}>
+      <div className="an-fantasma" ref={fantRef} aria-hidden="true" />
+      <div className={`modal an-modal ${comOrigem ? "com-origem" : ""}`} ref={modalRef} role="dialog" aria-modal="true" aria-label={titulo} onClick={(e) => e.stopPropagation()}>
         <div className="an-head">
           <div><div className="eyebrow">Painel · análise detalhada</div><h2>{titulo}</h2></div>
           <button type="button" className="x" onClick={fechar} aria-label="Fechar"><Ico n="fechar" size={16} /></button>
@@ -1906,6 +2082,7 @@ function AnaliseGrafico({ tipo, inicial, reais, money, privado, onAbrir, bloquea
           <select className="df-sel" value={f.socio} onChange={(e) => muda("socio", e.target.value)} aria-label="Sócio"><option value="">Todos os sócios</option>{opSocios.map((s) => <option key={s} value={s}>{s}</option>)}</select>
           <select className="df-sel" value={f.criatorio} onChange={(e) => muda("criatorio", e.target.value)} aria-label="Criatório"><option value="">Todos os criatórios</option>{opCriat.map((c) => <option key={c} value={c}>{c}</option>)}</select>
           {filtrosAtivos && <button type="button" className="btn btn-mini" onClick={() => { setF((p) => ({ ...p, sit: "ativos", socio: "", criatorio: "", sexo: "" })); setSel(null); }}>Limpar</button>}
+          {!animal && <span className="an-filtro-nota">Situação vale para animais; prenhezes e aspirações entram sempre.</span>}
         </div>
         <div className="an-body">{corpo}</div>
       </div>
@@ -1928,11 +2105,15 @@ function AnIdade({ animais, sel, alterna, setSel, estreito, onAbrir }) {
       const maxA = com.reduce((m, x) => Math.max(m, Math.floor(x.meses / 12)), 0);
       grupos = Array.from({ length: maxA + 1 }, (_, y) => ({ key: "a" + y, name: y === 0 ? "< 1" : String(y), curto: y === 0 ? "< 1" : String(y), tit: y === 0 ? "Menos de 1 ano" : `${y} ${y === 1 ? "ano" : "anos"}`, lo: y * 12, hi: (y + 1) * 12 }));
     }
-    grupos.forEach((g) => { g.itens = com.filter((x) => x.meses >= g.lo && x.meses < g.hi); g.value = g.itens.length; g.pct = total ? (g.value / total) * 100 : 0; g.media = g.value ? g.itens.reduce((s, x) => s + x.meses, 0) / g.value : null; });
+    grupos.forEach((g) => { g.itens = com.filter((x) => x.meses >= g.lo && x.meses < g.hi); g.value = g.itens.length; g.pct = total ? (g.value / total) * 100 : 0; g.media = g.value ? g.itens.reduce((s, x) => s + x.meses, 0) / g.value : null; g.femeas = g.itens.filter((x) => sexoTxt(x.a) === "Fêmea").length; g.machos = g.itens.filter((x) => sexoTxt(x.a) === "Macho").length; });
     const media = total ? com.reduce((s, x) => s + x.meses, 0) / total : null;
     const ord = com.slice().sort((x, y) => x.meses - y.meses);
     const femeas = com.filter((x) => sexoTxt(x.a) === "Fêmea").length, machos = com.filter((x) => sexoTxt(x.a) === "Macho").length;
-    return { com, sem, total, grupos, media, novo: ord[0], velho: ord[ord.length - 1], femeas, machos };
+    // concentração: faixa com mais animais (só quando há uma única maior)
+    const maxV = Math.max(0, ...grupos.map((g) => g.value));
+    const picos = grupos.filter((g) => g.value === maxV && maxV > 0);
+    const mediana = total ? (total % 2 ? ord[(total - 1) / 2].meses : (ord[total / 2 - 1].meses + ord[total / 2].meses) / 2) : null;
+    return { com, sem, total, grupos, media, mediana, novo: ord[0], velho: ord[ord.length - 1], femeas, machos, pico: picos.length === 1 ? picos[0] : null };
   }, [animais, modo]);
   // a seleção deixa de valer se o grupo sumiu ao trocar filtro/modo
   useEffect(() => { if (sel && sel !== "semdata" && !d.grupos.some((g) => g.key === sel && g.value)) setSel(null); }, [d]);
@@ -1946,12 +2127,11 @@ function AnIdade({ animais, sel, alterna, setSel, estreito, onAbrir }) {
     else l.sort(cmpN);
     return l;
   }, [d, sel, ordem]);
-  const dados = d.grupos;
-  const H = estreito ? 230 : 300;
   return (
     <>
       <div className="an-kpis">
-        <AnKpi k="Idade média" v={mesesTxt(d.media)} d={`${d.total} animal(is) com nascimento`} />
+        <AnKpi k="Idade média" v={mesesTxt(d.media)} d={d.mediana != null ? `mediana ${mesesTxt(d.mediana)} · ${d.total} animal(is)` : "sem animais com nascimento"} />
+        <AnKpi k="Maior concentração" v={d.pico ? d.pico.tit : "—"} d={d.pico ? `${d.pico.value} animal(is) · ${pctTxt(d.pico.pct)}` : d.total ? "faixas empatadas" : ""} onClick={d.pico ? () => alterna(d.pico.key) : undefined} on={d.pico && sel === d.pico.key} />
         <AnKpi k="Mais novo" v={d.novo ? mesesTxt(d.novo.meses) : "—"} d={d.novo ? d.novo.a.nome : ""} onClick={d.novo ? () => onAbrir(d.novo.a) : undefined} />
         <AnKpi k="Mais velho" v={d.velho ? mesesTxt(d.velho.meses) : "—"} d={d.velho ? d.velho.a.nome : ""} onClick={d.velho ? () => onAbrir(d.velho.a) : undefined} />
         <AnKpi k="Sem data de nascimento" v={d.sem.length} d={d.sem.length ? "toque para ver quais" : "todos com data"} onClick={d.sem.length ? () => alterna("semdata") : undefined} on={sel === "semdata"} />
@@ -1962,19 +2142,10 @@ function AnIdade({ animais, sel, alterna, setSel, estreito, onAbrir }) {
           <span className="seg-group sm">{[["faixas", "Faixas"], ["anos", "Idade individual"]].map(([k, l]) => <button type="button" key={k} className={`seg ${modo === k ? "on" : ""}`} onClick={() => { setModo(k); setSel(null); }}>{l}</button>)}</span>
         </div>
         {d.total > 0 ? (
-          <div className="an-chart">
-            <ResponsiveContainer width="100%" height={H}>
-              <BarChart data={dados} margin={{ left: 0, right: 8, top: 22, bottom: 0 }} onClick={(e) => { const p = e && e.activePayload && e.activePayload[0]; if (p && p.payload.value) alterna(p.payload.key); }}>
-                <CartesianGrid stroke={CH.grid} vertical={false} />
-                <XAxis dataKey={estreito ? "curto" : "name"} tick={CH.tick} interval={0} tickLine={false} axisLine={{ stroke: CH.grid }} />
-                <YAxis allowDecimals={false} tick={CH.tick} width={30} tickLine={false} axisLine={false} />
-                <Tooltip cursor={CH.tip.cursor} animationDuration={160} content={<AnTip linhas={(x) => [["Animais", x.value, "#176B46"], ["Do plantel filtrado", pctTxt(x.pct)], ["Idade média da faixa", mesesTxt(x.media)]]} />} />
-                <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={modo === "anos" ? 34 : 64} animationDuration={520} animationEasing="ease-out" cursor="pointer">
-                  {dados.map((x) => <Cell key={x.key} fill="#176B46" fillOpacity={sel && sel !== x.key ? 0.28 : 1} />)}
-                  {!estreito || modo === "faixas" ? <LabelList dataKey="value" position="top" offset={6} formatter={(v) => (v ? v : "")} style={{ fontSize: 11.5, fill: "#58635D", fontWeight: 600 }} /> : null}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+          <div className="an-chart" key={modo}>
+            <BarrasVivas dados={d.grupos} series={[{ key: "value", ...SERIE_ESMERALDA }]} altura={estreito ? 230 : 300} xKey={estreito ? "curto" : "name"} chave={(x) => x.key} sel={sel}
+              onEscolher={(x) => x.value && alterna(x.key)} contagem maxBarra={modo === "anos" ? 34 : 64} rotulosFixos={!estreito || modo === "faixas"} yLargura={30}
+              tip={(x) => [["Animais", x.value, "#176B46"], ["Do plantel filtrado", pctTxt(x.pct)], ["Idade média da faixa", x.media != null ? mesesTxt(x.media) : "—"], ["Fêmeas · machos", `${x.femeas} · ${x.machos}`]]} />
           </div>
         ) : <p className="muted small">Nenhum animal com data de nascimento no conjunto filtrado.</p>}
         {modo === "faixas" && d.total > 0 && <AnFaixas dados={d.grupos} sel={sel} onSel={alterna} cor="#176B46" />}
@@ -2024,15 +2195,14 @@ function AnEvolucao({ base, periodo, setPeriodo, sel, alterna, estreito, money, 
     else l.sort((x, y) => (x.p.venc || "").localeCompare(y.p.venc || ""));
     return l;
   }, [m, ordem]);
-  const H = estreito ? 240 : 320;
   const STATUS = { pago: ["Pago", "pos"], parcial: ["Parcial", "gold"], vencido: ["Vencido", "neg"], aberto: ["A vencer", "muted"] };
   const k = (v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`);
   return (
     <>
       <div className="an-kpis">
-        <AnKpi k="Previsto no período" v={money(tot.previsto)} d={`${meses.length} mês(es) com parcelas`} />
-        <AnKpi k="Realizado (pago)" v={money(tot.pago)} d={tot.previsto ? `${Math.round((tot.pago / tot.previsto) * 100)}% do previsto` : ""} />
-        <AnKpi k="Previsto ainda não pago" v={money(Math.max(0, tot.previsto - tot.pago))} d="no período selecionado" />
+        <AnKpi k="Previsto no período" v={<MoneyViva v={tot.previsto} money={money} />} d={`${meses.length} mês(es) com parcelas`} />
+        <AnKpi k="Realizado (pago)" v={<MoneyViva v={tot.pago} money={money} />} d={tot.previsto ? `${Math.round((tot.pago / tot.previsto) * 100)}% do previsto` : ""} />
+        <AnKpi k="Previsto ainda não pago" v={<MoneyViva v={Math.max(0, tot.previsto - tot.pago)} money={money} />} d="no período selecionado" />
       </div>
       <div className="an-card">
         <div className="an-card-h"><span>Previsto × realizado por mês</span>
@@ -2040,21 +2210,9 @@ function AnEvolucao({ base, periodo, setPeriodo, sel, alterna, estreito, money, 
         </div>
         {meses.length > 0 ? (
           <div className="an-chart">
-            <ResponsiveContainer width="100%" height={H}>
-              <BarChart data={meses} margin={{ left: 0, right: 8, top: 8, bottom: 0 }} barGap={2} onClick={(e) => { const p = e && e.activePayload && e.activePayload[0]; if (p) alterna(p.payload.ym); }}>
-                <CartesianGrid stroke={CH.grid} vertical={false} />
-                <XAxis dataKey="name" tick={CH.tick} tickLine={false} axisLine={{ stroke: CH.grid }} minTickGap={8} />
-                <YAxis tick={CH.tick} tickFormatter={k} width={40} tickLine={false} axisLine={false} />
-                <Tooltip cursor={CH.tip.cursor} animationDuration={160} content={<AnTip linhas={(x) => [["Previsto", money(x.previsto), "#D9D4C7"], ["Realizado", money(x.pago), "#176B46"], ["Não pago", money(Math.max(0, x.previsto - x.pago))], ["Parcelas", x.itens.length]]} />} />
-                <Legend wrapperStyle={{ fontSize: 12, color: "#58635D" }} formatter={(v) => (v === "previsto" ? "Previsto" : "Realizado")} />
-                <Bar dataKey="previsto" name="previsto" fill="#D9D4C7" radius={[4, 4, 0, 0]} maxBarSize={28} animationDuration={520} animationEasing="ease-out" cursor="pointer">
-                  {meses.map((x) => <Cell key={x.ym} fillOpacity={sel && sel !== x.ym ? 0.35 : 1} />)}
-                </Bar>
-                <Bar dataKey="pago" name="pago" fill="#176B46" radius={[4, 4, 0, 0]} maxBarSize={28} animationDuration={520} animationEasing="ease-out" cursor="pointer">
-                  {meses.map((x) => <Cell key={x.ym} fillOpacity={sel && sel !== x.ym ? 0.28 : 1} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            <BarrasVivas dados={meses} series={[{ key: "previsto", ...SERIE_PREVISTO }, { key: "pago", ...SERIE_ESMERALDA }]} altura={estreito ? 240 : 320} chave={(x) => x.ym} sel={sel}
+              onEscolher={(x) => alterna(x.ym)} eixoValor={k} yLargura={40} maxBarra={28} legenda={(v) => (v === "previsto" ? "Previsto" : "Realizado")}
+              tip={(x) => [["Previsto", money(x.previsto), "#D9D4C7"], ["Realizado", money(x.pago), "#176B46"], ["Não pago", money(Math.max(0, x.previsto - x.pago))], ["Parcelas", x.itens.length]]} />
           </div>
         ) : <p className="muted small">Nenhuma parcela no período selecionado.</p>}
         <p className="muted small an-nota">Previsto = parcelas com vencimento no mês (compra original + compras adicionais). Realizado = valor registrado como pago.</p>
@@ -2090,7 +2248,7 @@ function AnInvest({ modo, animais, sel, alterna, estreito, money, privado, onAbr
     return [...m.values()].map((o) => ({ ...o, value: o[met] })).sort((x, y) => y.value - x.value || lc(x.name).localeCompare(lc(y.name)));
   }, [animais, modo, met]);
   const g = sel ? grupos.find((x) => x.key === sel) : null;
-  const unicos = animais.length, investTot = animais.reduce((s, a) => s + finance(a).total, 0);
+  const unicos = animais.length, investTot = useMemo(() => animais.reduce((s, a) => s + finance(a).total, 0), [animais]);
   const itens = useMemo(() => {
     if (!g) return [];
     const l = g.itens.slice();
@@ -2100,36 +2258,28 @@ function AnInvest({ modo, animais, sel, alterna, estreito, money, privado, onAbr
     else l.sort((x, y) => y.f.total - x.f.total);
     return l;
   }, [g, ordem]);
-  const cor = modo === "socio" ? "#176B46" : "#7FA592";
+  const serie = modo === "socio" ? SERIE_ESMERALDA : SERIE_SALVIA;
   const metNome = { total: "Investido", pago: "Pago", aberto: "Em aberto" }[met];
   const k = (v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`);
-  const H = Math.max(200, grupos.length * (estreito ? 34 : 38) + 30);
-  const yW = estreito ? 96 : 150;
+  const kk = (v) => (privado ? "•••" : v >= 1e6 ? `${(v / 1e6).toLocaleString("pt-BR", { maximumFractionDigits: 2 })} mi` : `${Math.round(v / 1000).toLocaleString("pt-BR")} mil`);
   const corta = (s) => (s.length > (estreito ? 13 : 22) ? s.slice(0, estreito ? 12 : 21) + "…" : s);
   return (
     <>
       <div className="an-kpis">
         <AnKpi k={modo === "socio" ? "Sócios no conjunto" : "Criatórios no conjunto"} v={grupos.filter((x) => x.key !== SEM).length} d={`${unicos} animal(is) único(s)`} />
-        <AnKpi k="Investido nos animais do conjunto" v={money(investTot)} d={modo === "socio" ? "total sem dupla contagem" : "cada animal em um criatório"} />
-        <AnKpi k={`Maior ${metNome.toLowerCase()}`} v={grupos[0] ? money(grupos[0].value) : "—"} d={grupos[0] ? grupos[0].name : ""} onClick={grupos[0] ? () => alterna(grupos[0].key) : undefined} on={grupos[0] && sel === grupos[0].key} />
+        <AnKpi k="Investido nos animais do conjunto" v={<MoneyViva v={investTot} money={money} />} d={modo === "socio" ? "total sem dupla contagem" : "cada animal em um criatório"} />
+        <AnKpi k={`Maior ${metNome.toLowerCase()}`} v={grupos[0] ? <MoneyViva v={grupos[0].value} money={money} /> : "—"} d={grupos[0] ? grupos[0].name : ""} onClick={grupos[0] ? () => alterna(grupos[0].key) : undefined} on={grupos[0] && sel === grupos[0].key} />
       </div>
       <div className="an-card">
         <div className="an-card-h"><span>{metNome} por {modo === "socio" ? "sócio" : "criatório"}</span>
-          <span className="seg-group sm">{[["total", "Investido"], ["pago", "Pago"], ["aberto", "Em aberto"]].map(([kk, l]) => <button type="button" key={kk} className={`seg ${met === kk ? "on" : ""}`} onClick={() => setMet(kk)}>{l}</button>)}</span>
+          <span className="seg-group sm">{[["total", "Investido"], ["pago", "Pago"], ["aberto", "Em aberto"]].map(([m2, l]) => <button type="button" key={m2} className={`seg ${met === m2 ? "on" : ""}`} onClick={() => setMet(m2)}>{l}</button>)}</span>
         </div>
         {grupos.length > 0 ? (
           <div className="an-chart">
-            <ResponsiveContainer width="100%" height={H}>
-              <BarChart data={grupos} layout="vertical" margin={{ left: 4, right: 18, top: 4, bottom: 4 }} onClick={(e) => { const p = e && e.activePayload && e.activePayload[0]; if (p) alterna(p.payload.key); }}>
-                <CartesianGrid stroke={CH.grid} horizontal={false} />
-                <XAxis type="number" tick={CH.tick} tickFormatter={k} tickLine={false} axisLine={false} />
-                <YAxis type="category" dataKey="name" width={yW} tick={CH.tick} tickFormatter={corta} tickLine={false} axisLine={false} interval={0} />
-                <Tooltip cursor={CH.tip.cursor} animationDuration={160} content={<AnTip linhas={(x) => [["Investido", money(x.total), cor], ["Pago", money(x.pago)], ["Em aberto", money(x.aberto)], ["Animais", x.qtd]]} />} />
-                <Bar dataKey="value" radius={[0, 4, 4, 0]} maxBarSize={22} animationDuration={520} animationEasing="ease-out" cursor="pointer">
-                  {grupos.map((x) => <Cell key={x.key} fill={cor} fillOpacity={sel && sel !== x.key ? 0.28 : 1} />)}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            <BarrasVivas horizontal dados={grupos} series={[{ key: "value", ...serie }]} altura={Math.max(200, grupos.length * (estreito ? 34 : 38) + 30)} chave={(x) => x.key} sel={sel}
+              onEscolher={(x) => alterna(x.key)} eixoValor={k} eixoCat={corta} yLargura={estreito ? 96 : 150} maxBarra={22} rotulo={(x) => kk(x.value)}
+              margem={{ left: 4, right: estreito ? 46 : 64, top: 4, bottom: 4 }}
+              tip={(x) => [["Investido", money(x.total), serie.cor], ["Pago", money(x.pago)], ["Em aberto", money(x.aberto)], ["Animais", x.qtd]]} />
           </div>
         ) : <p className="muted small">Nenhum registro no conjunto filtrado.</p>}
         <p className="muted small an-nota">{modo === "socio" ? "Valores da SM associados a cada sócio. Um animal com vários sócios aparece em cada um — a soma entre sócios não é o total investido." : "Cada animal entra em um criatório só (sem dupla contagem)."}</p>
@@ -2168,7 +2318,6 @@ function AnPart({ animais, sel, alterna, estreito, onAbrir }) {
   }, [g, animais, ordem]);
   const integral = animais.filter((a) => participacaoAtual(a) >= 100).length;
   const soc = animais.filter((a) => { const p = participacaoAtual(a); return p > 0 && p < 100; }).length;
-  const H = estreito ? 220 : 280;
   return (
     <>
       <div className="an-kpis">
@@ -2180,18 +2329,8 @@ function AnPart({ animais, sel, alterna, estreito, onAbrir }) {
         <div className="an-card-h"><span>Animais por faixa de participação da SM</span></div>
         {grupos.length > 0 ? (
           <div className="an-chart">
-            <ResponsiveContainer width="100%" height={H}>
-              <BarChart data={grupos} margin={{ left: 0, right: 8, top: 22, bottom: 0 }} onClick={(e) => { const p = e && e.activePayload && e.activePayload[0]; if (p) alterna(p.payload.key); }}>
-                <CartesianGrid stroke={CH.grid} vertical={false} />
-                <XAxis dataKey="name" tick={CH.tick} interval={0} tickLine={false} axisLine={{ stroke: CH.grid }} />
-                <YAxis allowDecimals={false} tick={CH.tick} width={30} tickLine={false} axisLine={false} />
-                <Tooltip cursor={CH.tip.cursor} animationDuration={160} content={<AnTip linhas={(x) => [["Animais", x.value, "#B89A5E"], ["Do conjunto", pctTxt(x.pct)]]} />} />
-                <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={64} animationDuration={520} animationEasing="ease-out" cursor="pointer">
-                  {grupos.map((x) => <Cell key={x.key} fill="#B89A5E" fillOpacity={sel && sel !== x.key ? 0.3 : 1} />)}
-                  <LabelList dataKey="value" position="top" offset={6} style={{ fontSize: 11.5, fill: "#58635D", fontWeight: 600 }} />
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
+            <BarrasVivas dados={grupos} series={[{ key: "value", ...SERIE_OURO }]} altura={estreito ? 220 : 280} chave={(x) => x.key} sel={sel} onEscolher={(x) => alterna(x.key)}
+              contagem rotulosFixos maxBarra={64} yLargura={30} tip={(x) => [["Animais", x.value, "#B89A5E"], ["Do conjunto", pctTxt(x.pct)]]} />
           </div>
         ) : <p className="muted small">Nenhum animal no conjunto filtrado.</p>}
         {grupos.length > 0 && <AnFaixas dados={grupos} sel={sel} onSel={alterna} cor="#B89A5E" />}
@@ -2201,6 +2340,57 @@ function AnPart({ animais, sel, alterna, estreito, onAbrir }) {
         extra={g ? <button type="button" className="btn btn-mini" onClick={() => alterna(g.key)}>Ver todos</button> : null} onAbrir={onAbrir}
         render={(a) => ({ key: a.id, a, nome: a.nome || "(sem nome)", meta: [rgTxt(a), sociosDe(a).length ? `sócios: ${sociosDe(a).map((s) => s.nome).join(", ")}` : "sem sócios"].filter(Boolean).join(" · "),
           vals: [["SM", pctTxt(participacaoAtual(a))], ["Idade", a.nascimento ? idadeTexto(a.nascimento) || "—" : "—"], ["Situação", ehAtivo(a) ? "Ativo" : "Inativo", ehAtivo(a) ? "pos" : "muted"]] })} />
+    </>
+  );
+}
+
+/* ---------- indicadores financeiros: quais registros compõem o valor ---------- */
+const IND_CAMPO = { patrimonio: ["totalEstimado", "Patrimônio estimado"], total: ["total", "Total investido"], pago: ["pago", "Já pago"], aberto: ["aberto", "Saldo a pagar"] };
+function AnIndicador({ campo, base, sel, alterna, estreito, money, privado, onAbrir }) {
+  const [ordem, setOrdem] = useState("valor");
+  const [chave, nome] = IND_CAMPO[campo] || IND_CAMPO.total;
+  // mesmo cálculo do cartão do Painel: soma de finance(a)[campo] nos registros filtrados
+  const regs = useMemo(() => base.map((a) => { const f = finance(a); return { a, f, v: num(f[chave]) }; }), [base, chave]);
+  const total = regs.reduce((s, r) => s + r.v, 0);
+  const comValor = useMemo(() => regs.filter((r) => Math.abs(r.v) > 0.004).sort((x, y) => y.v - x.v), [regs]);
+  const porTipo = useMemo(() => ["animal", "prenhez", "aspiracao"].map((t) => { const l = comValor.filter((r) => r.a.tipo === t); const v = l.reduce((s, r) => s + r.v, 0); return { key: t, name: TIPO_NOME_PAINEL[t], value: v, qtd: l.length, pct: total ? (v / total) * 100 : 0 }; }).filter((x) => x.qtd), [comValor, total]);
+  const lista = useMemo(() => {
+    const l = (sel ? comValor.filter((r) => r.a.tipo === sel) : comValor).slice();
+    if (ordem === "nome") l.sort((x, y) => lc(x.a.nome).localeCompare(lc(y.a.nome)));
+    else if (ordem === "menor") l.sort((x, y) => x.v - y.v);
+    return l;
+  }, [comValor, sel, ordem]);
+  const top = (sel ? comValor.filter((r) => r.a.tipo === sel) : comValor).slice(0, 10).map((r) => ({ key: r.a.id, name: r.a.nome || "(sem nome)", tit: r.a.nome || "(sem nome)", value: r.v, pct: total ? (r.v / total) * 100 : 0, a: r.a, tipo: r.a.tipo }));
+  const k = (v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`);
+  const corta = (s) => (s.length > (estreito ? 13 : 24) ? s.slice(0, estreito ? 12 : 23) + "…" : s);
+  const serie = campo === "pago" ? SERIE_ESMERALDA : campo === "aberto" ? SERIE_OURO : campo === "patrimonio" ? SERIE_ESMERALDA : SERIE_SALVIA;
+  return (
+    <>
+      <div className="an-kpis">
+        <AnKpi k={nome} v={<MoneyViva v={total} money={money} />} d="mesmo valor do cartão, com os filtros acima" />
+        <AnKpi k="Registros que compõem" v={comValor.length} d={porTipo.map((t) => `${t.qtd} ${t.name.toLowerCase()}`).join(" · ") || "—"} />
+        <AnKpi k="Maior contribuição" v={top[0] ? pctTxt(top[0].pct) : "—"} d={top[0] ? top[0].name : ""} onClick={top[0] ? () => onAbrir(top[0].a) : undefined} />
+      </div>
+      <div className="an-card">
+        <div className="an-card-h"><span>Composição por tipo de registro</span></div>
+        {porTipo.length > 0 ? <AnFaixas dados={porTipo} sel={sel} onSel={alterna} cor={serie.cor} fmtV={(x) => money(x.value)} /> : <p className="muted small">Nenhum registro com valor no conjunto filtrado.</p>}
+      </div>
+      {top.length > 0 && (
+        <div className="an-card">
+          <div className="an-card-h"><span>Maiores contribuições{sel ? ` · ${TIPO_NOME_PAINEL[sel]}` : ""}</span><small className="an-un">toque numa barra para abrir a ficha</small></div>
+          <div className="an-chart">
+            <BarrasVivas horizontal dados={top} series={[{ key: "value", ...serie }]} altura={Math.max(180, top.length * (estreito ? 32 : 36) + 30)} chave={(x) => x.key}
+              onEscolher={(x) => onAbrir(x.a)} eixoValor={k} eixoCat={corta} yLargura={estreito ? 100 : 170} maxBarra={20} rotulo={(x) => pctTxt(x.pct)}
+              margem={{ left: 4, right: 48, top: 4, bottom: 4 }} dica="Toque ou clique para abrir a ficha"
+              tip={(x) => [[nome, money(x.value), serie.cor], ["Do total", pctTxt(x.pct)], ["Tipo", TIPO_UM_PAINEL[x.tipo] || x.tipo]]} />
+          </div>
+        </div>
+      )}
+      <AnLista titulo={sel ? `${TIPO_NOME_PAINEL[sel]} que compõem o valor` : "Todos os registros que compõem o valor"} sub={`${lista.length} registro(s)`}
+        itens={lista} ordem={ordem} setOrdem={setOrdem} ordens={[["valor", "Maior valor"], ["menor", "Menor valor"], ["nome", "Nome (A–Z)"]]}
+        extra={sel ? <button type="button" className="btn btn-mini" onClick={() => alterna(sel)}>Ver todos</button> : null} onAbrir={onAbrir}
+        render={({ a, v }) => ({ key: a.id, a, nome: a.nome || "(sem nome)", meta: [TIPO_UM_PAINEL[a.tipo] || a.tipo, rgTxt(a), a.tipo === "animal" ? `SM ${pctTxt(participacaoAtual(a))}` : a.status].filter(Boolean).join(" · "),
+          vals: [[nome, money(v)], ["Do total", total ? pctTxt((v / total) * 100) : "—"]] })} />
     </>
   );
 }
@@ -4671,14 +4861,19 @@ export default function App() {
 
   // abre o gráfico em análise detalhada; os filtros começam iguais aos do Painel
   const cliqueGrafico = useRef(null);
-  const abrirAnalise = (tipo, sel) => setAnalise({ tipo, sel: sel ?? null, filtros: { sit: tipo === "participacao" ? "ativos" : dfSituacao, socio: dfSocio, criatorio: dfCriatorio, periodo: dfPeriodo } });
-  const marcaClique = (campo) => (e) => { const p = e && e.activePayload && e.activePayload[0]; cliqueGrafico.current = p && p.payload ? p.payload[campo] : null; };
+  const abrirAnalise = (tipo, sel, el) => {
+    const card = el || document.querySelector(`[data-an="${tipo}"]`);
+    let origem = null;
+    if (card) { const r = card.getBoundingClientRect(); origem = { left: r.left, top: r.top, width: r.width, height: r.height }; card.classList.add("card-foco"); }
+    setAnalise({ tipo, alvo: tipo, origem, sel: sel ?? null, filtros: { sit: tipo === "participacao" ? "ativos" : dfSituacao, socio: dfSocio, criatorio: dfCriatorio, periodo: dfPeriodo } });
+  };
+  const fecharAnalise = () => { document.querySelectorAll(".card-foco").forEach((x) => x.classList.remove("card-foco")); setAnalise(null); };
   const areaGrafico = (tipo, rotulo) => ({
     className: "chart-clk", role: "button", tabIndex: 0, "aria-label": `Ampliar e analisar: ${rotulo}`, title: "Clique para ampliar e analisar",
-    onClick: () => { const s = cliqueGrafico.current; cliqueGrafico.current = null; abrirAnalise(tipo, s); },
-    onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrirAnalise(tipo); } },
+    onClick: (e) => { const s = cliqueGrafico.current; cliqueGrafico.current = null; abrirAnalise(tipo, s, e.currentTarget.closest("[data-an]")); },
+    onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrirAnalise(tipo, null, e.currentTarget.closest("[data-an]")); } },
   });
-  const botaoAnalise = (tipo) => <button type="button" className="exp-btn" onClick={() => abrirAnalise(tipo)} title="Ampliar e analisar"><Ico n="expandir" size={13} /><span>Analisar</span></button>;
+  const botaoAnalise = (tipo) => <button type="button" className="exp-btn" onClick={(e) => abrirAnalise(tipo, null, e.currentTarget.closest("[data-an]"))} title="Ampliar e analisar"><Ico n="expandir" size={13} /><span>Analisar</span></button>;
   const limparFiltrosDash = () => { setDfSituacao("ativos"); setDfSocio(""); setDfCriatorio(""); setDfPeriodo("12m"); };
 
   const exportCSV = () => {
@@ -4803,40 +4998,42 @@ export default function App() {
               </button>
             </div>
 
-            {/* ÁREA 1 — VISÃO GERAL (cartões financeiros) */}
+            {/* ÁREA 1 — VISÃO GERAL (cartões financeiros) — clique abre os registros que compõem cada valor */}
             {(() => {
               const quit = fKpis.total > 0 ? Math.max(0, Math.min(1, fKpis.pago / fKpis.total)) : 0;
+              const cartao = (tipo, rotulo) => ({ "data-an": tipo, role: "button", tabIndex: 0, title: `Ver os registros que compõem: ${rotulo}`, "aria-label": `${rotulo}: ver composição`,
+                onClick: (e) => abrirAnalise(tipo, null, e.currentTarget), onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrirAnalise(tipo, null, e.currentTarget); } } });
               return (
                 <div className="fin-hero">
-                  <div className="fh-card fh-main">
+                  <div className="fh-card fh-main fh-clk" {...cartao("ind-patrimonio", "Patrimônio estimado")}>
                     <span className="fh-k">Patrimônio estimado</span>
-                    <MoneyBig v={fKpis.patrimonio} money={money} className="fh-v" />
+                    <MoneyViva v={fKpis.patrimonio} money={money} className="fh-v" />
                     <span className="fh-d">{nAtivos} animais ativos · {count("prenhez")} prenhezes · {count("aspiracao")} aspirações</span>
                   </div>
-                  <div className="fh-card">
+                  <div className="fh-card fh-clk" {...cartao("ind-total", "Total investido")}>
                     <span className="fh-k">Total investido</span>
-                    <MoneyBig v={fKpis.total} money={money} className="fh-v" />
+                    <MoneyViva v={fKpis.total} money={money} className="fh-v" />
                     <span className="fh-d">compra + custos + compras adicionais</span>
                   </div>
-                  <div className="fh-card">
+                  <div className="fh-card fh-clk" {...cartao("ind-pago", "Já pago")}>
                     <span className="fh-k">Já pago</span>
-                    <MoneyBig v={fKpis.pago} money={money} className="fh-v pos" />
+                    <MoneyViva v={fKpis.pago} money={money} className="fh-v pos" />
                     <span className="fh-bar" aria-hidden="true"><i style={{ width: `${(quit * 100).toFixed(1)}%` }} /></span>
                     <span className="fh-d">{Math.round(quit * 100)}% do investido</span>
                   </div>
-                  <div className="fh-card">
+                  <div className="fh-card fh-clk" {...cartao("ind-aberto", "Saldo a pagar")}>
                     <span className="fh-k">Saldo a pagar</span>
-                    <MoneyBig v={fKpis.aberto} money={money} className="fh-v" />
+                    <MoneyViva v={fKpis.aberto} money={money} className="fh-v" />
                     <span className="fh-d">Este mês: {money(parcelasMes.total)} · {parcelasMes.pagas} de {parcelasMes.qtd} pagas</span>
                   </div>
                 </div>
               );
             })()}
             <div className="kpi-row kpi-plantel">
-              <KPI label="Animais ativos" value={nAtivos} icon={<Ico n="animal" size={15} />} onClick={() => { setFiltroSit("ativos"); setView("animal"); }} />
-              <KPI label="Animais inativos" value={nInativos} icon={<Ico n="animal" size={15} />} onClick={() => { setFiltroSit("inativos"); setView("animal"); }} />
-              <KPI label="Prenhezes" value={count("prenhez")} icon={<Ico n="prenhez" size={15} />} onClick={() => setView("prenhez")} />
-              <KPI label="Aspirações" value={count("aspiracao")} icon={<Ico n="aspiracao" size={15} />} onClick={() => setView("aspiracao")} />
+              <KPI label="Animais ativos" value={<ContaViva v={nAtivos} />} icon={<Ico n="animal" size={15} />} onClick={() => { setFiltroSit("ativos"); setView("animal"); }} />
+              <KPI label="Animais inativos" value={<ContaViva v={nInativos} />} icon={<Ico n="animal" size={15} />} onClick={() => { setFiltroSit("inativos"); setView("animal"); }} />
+              <KPI label="Prenhezes" value={<ContaViva v={count("prenhez")} />} icon={<Ico n="prenhez" size={15} />} onClick={() => setView("prenhez")} />
+              <KPI label="Aspirações" value={<ContaViva v={count("aspiracao")} />} icon={<Ico n="aspiracao" size={15} />} onClick={() => setView("aspiracao")} />
             </div>
 
             {/* FILTROS */}
@@ -4851,36 +5048,41 @@ export default function App() {
 
             {/* ÁREA 2 — INTELIGÊNCIA FINANCEIRA */}
             <div className="dash-sec-tit">Inteligência financeira</div>
-            <div className="card card-exp">
+            <div className="card card-exp" data-an="evolucao">
               <div className="card-h card-h-flex"><span>Evolução financeira</span>
                 <span className="card-h-tools"><span className="seg-group sm">{[["6m", "6 meses"], ["12m", "12 meses"], ["ano", "Ano atual"], ["tudo", "Tudo"]].map(([k, l]) => <button key={k} className={`seg ${dfPeriodo === k ? "on" : ""}`} onClick={() => setDfPeriodo(k)}>{l}</button>)}</span>{botaoAnalise("evolucao")}</span>
               </div>
               {evolucao.length > 0 ? (
-                <div {...areaGrafico("evolucao", "Evolução financeira")}><ResponsiveContainer width="100%" height={250}><BarChart data={evolucao} margin={{ left: 6, right: 10, top: 6 }} onClick={marcaClique("ym")}>
-                  <CartesianGrid strokeDasharray="0" stroke={CH.grid} vertical={false} /><XAxis dataKey="mes" tick={CH.tick} />
-                  <YAxis tick={CH.tick} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} />
-                  <Tooltip {...CH.tip} formatter={(v, n) => [money(v), n === "previsto" ? "Previsto" : "Realizado"]} /><Legend wrapperStyle={{ fontSize: 12, color: "#58635D" }} formatter={(v) => (v === "previsto" ? "Previsto" : "Realizado")} />
-                  <Bar dataKey="previsto" name="previsto" fill="#E4E0D6" radius={[5, 5, 0, 0]} /><Bar dataKey="pago" name="pago" fill="#176B46" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer></div>
+                <div {...areaGrafico("evolucao", "Evolução financeira")}>
+                  <BarrasVivas dados={evolucao} series={[{ key: "previsto", ...SERIE_PREVISTO }, { key: "pago", ...SERIE_ESMERALDA }]} altura={250} xKey="mes" chave={(x) => x.ym}
+                    onEscolher={(x) => { cliqueGrafico.current = x.ym; }} eixoValor={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} yLargura={40} maxBarra={26}
+                    legenda={(v) => (v === "previsto" ? "Previsto" : "Realizado")} dica="Clique para analisar o mês" animDur={700}
+                    tip={(x) => [["Previsto", money(x.previsto), "#D9D4C7"], ["Realizado", money(x.pago), "#176B46"], ["Não pago", money(Math.max(0, x.previsto - x.pago))]]} />
+                </div>
               ) : <p className="muted small">Nenhuma parcela no período selecionado.</p>}
               <p className="muted small" style={{ marginTop: 6 }}>Previsto = parcelas com vencimento no mês. Realizado = parcelas registradas como pagas.</p>
             </div>
 
             <div className="cols-2">
-              <div className="card card-exp"><div className="card-h"><span>Investimentos por sociedade</span>{botaoAnalise("socio")}</div>
+              <div className="card card-exp" data-an="socio"><div className="card-h"><span>Investimentos por sociedade</span>{botaoAnalise("socio")}</div>
                 {porSocio.length > 0 ? (
-                  <div {...areaGrafico("socio", "Investimentos por sociedade")}><ResponsiveContainer width="100%" height={Math.max(150, Math.min(porSocio.length, 8) * 40)}><BarChart data={porSocio.slice(0, 8)} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }} onClick={marcaClique("nome")}>
-                    <CartesianGrid strokeDasharray="0" stroke={CH.grid} horizontal={false} /><XAxis type="number" tick={CH.tick} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} />
-                    <YAxis type="category" dataKey="nome" width={100} tick={CH.tick} /><Tooltip {...CH.tip} formatter={(v, n, p) => [money(v), `${p && p.payload ? p.payload.qtd : 0} animal(is)`]} />
-                    <Bar dataKey="invest" fill="#176B46" radius={[0, 6, 6, 0]} cursor="pointer" /></BarChart></ResponsiveContainer></div>
+                  <div {...areaGrafico("socio", "Investimentos por sociedade")}>
+                    <BarrasVivas horizontal dados={porSocio.slice(0, 8)} series={[{ key: "invest", ...SERIE_ESMERALDA }]} altura={Math.max(150, Math.min(porSocio.length, 8) * 40)} xKey="nome" chave={(x) => x.nome}
+                      onEscolher={(x) => { cliqueGrafico.current = x.nome; }} eixoValor={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} yLargura={100} maxBarra={22}
+                      rotulo={(x) => (privado ? "•••" : `${Math.round(x.invest / 1000).toLocaleString("pt-BR")} mil`)} dica="Clique para ver os animais" animDur={700}
+                      tip={(x) => [["Investido", money(x.invest), "#176B46"], ["Animais", x.qtd]]} />
+                  </div>
                 ) : <p className="muted small">Nenhum sócio no conjunto filtrado.</p>}
                 <p className="muted small" style={{ marginTop: 6 }}>Investimentos da SM <b>associados</b> a cada sócio. Um animal com vários sócios aparece em mais de um — a soma entre sócios não é o patrimônio total. Clique para analisar e ver os animais.</p>
               </div>
-              <div className="card card-exp"><div className="card-h"><span>Investimentos por criatório</span>{botaoAnalise("criatorio")}</div>
+              <div className="card card-exp" data-an="criatorio"><div className="card-h"><span>Investimentos por criatório</span>{botaoAnalise("criatorio")}</div>
                 {porCriatorio.length > 0 ? (
-                  <div {...areaGrafico("criatorio", "Investimentos por criatório")}><ResponsiveContainer width="100%" height={Math.max(150, Math.min(porCriatorio.length, 8) * 40)}><BarChart data={porCriatorio.slice(0, 8)} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }} onClick={marcaClique("nome")}>
-                    <CartesianGrid strokeDasharray="0" stroke={CH.grid} horizontal={false} /><XAxis type="number" tick={CH.tick} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} />
-                    <YAxis type="category" dataKey="nome" width={100} tick={CH.tick} /><Tooltip {...CH.tip} formatter={(v, n, p) => [money(v), `${p && p.payload ? p.payload.qtd : 0} animal(is)`]} />
-                    <Bar dataKey="invest" fill="#7FA592" radius={[0, 6, 6, 0]} cursor="pointer" /></BarChart></ResponsiveContainer></div>
+                  <div {...areaGrafico("criatorio", "Investimentos por criatório")}>
+                    <BarrasVivas horizontal dados={porCriatorio.slice(0, 8)} series={[{ key: "invest", ...SERIE_SALVIA }]} altura={Math.max(150, Math.min(porCriatorio.length, 8) * 40)} xKey="nome" chave={(x) => x.nome}
+                      onEscolher={(x) => { cliqueGrafico.current = x.nome; }} eixoValor={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} yLargura={100} maxBarra={22}
+                      rotulo={(x) => (privado ? "•••" : `${Math.round(x.invest / 1000).toLocaleString("pt-BR")} mil`)} dica="Clique para ver os animais" animDur={700}
+                      tip={(x) => [["Investido", money(x.invest), "#7FA592"], ["Animais", x.qtd]]} />
+                  </div>
                 ) : <p className="muted small">Nenhum criatório no conjunto filtrado.</p>}
                 <p className="muted small" style={{ marginTop: 6 }}>Cada animal entra em um criatório só (sem dupla contagem).</p>
               </div>
@@ -4889,20 +5091,22 @@ export default function App() {
             {/* ÁREA 3 — COMPOSIÇÃO DO PLANTEL */}
             <div className="dash-sec-tit">Composição do plantel</div>
             <div className="cols-2">
-              <div className="card card-exp"><div className="card-h"><span>Por faixa de idade</span>{botaoAnalise("idade")}</div>
+              <div className="card card-exp" data-an="idade"><div className="card-h"><span>Por faixa de idade</span>{botaoAnalise("idade")}</div>
                 <div className="plantel-media">Idade média: <b>{plantel.mediaTxt}</b></div>
-                {plantelF.length > 0 ? (
-                  <div {...areaGrafico("idade", "Idade do plantel")}><ResponsiveContainer width="100%" height={200}><BarChart data={plantelF} margin={{ left: 6, right: 10, top: 6 }} onClick={marcaClique("key")}>
-                    <CartesianGrid strokeDasharray="0" stroke={CH.grid} vertical={false} /><XAxis dataKey="name" tick={CH.tick} interval={0} /><YAxis allowDecimals={false} tick={CH.tick} />
-                    <Tooltip {...CH.tip} formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#176B46" radius={[6, 6, 0, 0]} cursor="pointer" /></BarChart></ResponsiveContainer></div>
-                ) : <p className="muted small">Nenhum animal com data de nascimento válida.</p>}
+                {plantelF.length > 0 ? (() => { const tot = plantelF.reduce((s, x) => s + x.value, 0); return (
+                  <div {...areaGrafico("idade", "Idade do plantel")}>
+                    <BarrasVivas dados={plantelF} series={[{ key: "value", ...SERIE_ESMERALDA }]} altura={200} chave={(x) => x.key} contagem maxBarra={56} yLargura={30}
+                      onEscolher={(x) => { cliqueGrafico.current = x.key; }} rotulo={(x) => x.value} dica="Clique para ver os animais da faixa" animDur={700}
+                      tip={(x) => [["Animais", x.value, "#176B46"], ["Do plantel no gráfico", tot ? pctTxt((x.value / tot) * 100) : "—"]]} />
+                  </div>); })() : <p className="muted small">Nenhum animal com data de nascimento válida.</p>}
               </div>
-              <div className="card card-exp"><div className="card-h"><span>Por participação da SM</span>{botaoAnalise("participacao")}</div>
-                {porParticipacao.length > 0 ? (
-                  <div {...areaGrafico("participacao", "Participação da SM")}><ResponsiveContainer width="100%" height={200}><BarChart data={porParticipacao} margin={{ left: 6, right: 10, top: 6 }} onClick={marcaClique("name")}>
-                    <CartesianGrid strokeDasharray="0" stroke={CH.grid} vertical={false} /><XAxis dataKey="name" tick={CH.tick} interval={0} /><YAxis allowDecimals={false} tick={CH.tick} />
-                    <Tooltip {...CH.tip} formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#B89A5E" radius={[6, 6, 0, 0]} cursor="pointer" /></BarChart></ResponsiveContainer></div>
-                ) : <p className="muted small">Nenhum animal ativo no conjunto filtrado.</p>}
+              <div className="card card-exp" data-an="participacao"><div className="card-h"><span>Por participação da SM</span>{botaoAnalise("participacao")}</div>
+                {porParticipacao.length > 0 ? (() => { const tot = porParticipacao.reduce((s, x) => s + x.value, 0); return (
+                  <div {...areaGrafico("participacao", "Participação da SM")}>
+                    <BarrasVivas dados={porParticipacao} series={[{ key: "value", ...SERIE_OURO }]} altura={200} chave={(x) => x.name} contagem maxBarra={56} yLargura={30}
+                      onEscolher={(x) => { cliqueGrafico.current = x.name; }} rotulo={(x) => x.value} dica="Clique para ver os animais da faixa" animDur={700}
+                      tip={(x) => [["Animais", x.value, "#B89A5E"], ["Dos ativos no gráfico", tot ? pctTxt((x.value / tot) * 100) : "—"]]} />
+                  </div>); })() : <p className="muted small">Nenhum animal ativo no conjunto filtrado.</p>}
               </div>
             </div>
 
@@ -5222,8 +5426,8 @@ export default function App() {
       )}
 
       {analise && <AnaliseGrafico key={analise.tipo} tipo={analise.tipo} inicial={analise} reais={reais} money={money} privado={privado}
-        onAbrir={setAberto} bloqueado={!!aberto || !!form || !!confirmar} onClose={() => setAnalise(null)}
-        onVerLista={(nome) => { setAnalise(null); setBusca(nome); setView("animal"); }} />}
+        onAbrir={setAberto} bloqueado={!!aberto || !!form || !!confirmar} onClose={fecharAnalise}
+        onVerLista={(nome) => { fecharAnalise(); setBusca(nome); setView("animal"); }} />}
       {form && <FichaForm tipo={form.tipo} initial={form.initial}
         animalNames={animalNames} animalReg={animalReg} genIndex={genIndex} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
@@ -5918,6 +6122,7 @@ a{color:var(--em)}
   .an-kpis{grid-template-columns:1fr 1fr;gap:8px}
   .an-kpis > :last-child:nth-child(odd){grid-column:1/-1}
   .an-kpi{padding:10px 12px}.an-kpi b{font-size:16px}
+  .an-kpi small{white-space:normal}
   .an-card{padding:12px}
   .an-card-h .seg-group{width:100%}.an-card-h .seg-group .seg{flex:1}
   .an-fx{grid-template-columns:88px 1fr auto;gap:8px;padding:8px 6px}
@@ -5930,6 +6135,49 @@ a{color:var(--em)}
   .exp-btn span{display:none}.exp-btn{padding:6px 8px}
 }
 .card-h-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+
+/* ---------- gráficos vivos (foco por mouse/toque) ---------- */
+.bv-wrap{position:relative;-webkit-tap-highlight-color:transparent}
+.bv-wrap .recharts-wrapper,.bv-wrap svg{outline:none}
+.bv .bv-corpo{transition:opacity .3s var(--ease),filter .3s var(--ease)}
+.bv.apaga .bv-corpo{opacity:.3}
+.bv.marcado .bv-corpo{opacity:1}
+.bv.ativo .bv-corpo{filter:drop-shadow(0 6px 12px rgba(23,107,70,.26))}
+.bv-fx{animation:bvForma .42s cubic-bezier(.2,.8,.2,1) both}
+.bv-traco{stroke-width:1.3;stroke-dasharray:100;stroke-dashoffset:100;opacity:.85;animation:bvTraco .7s cubic-bezier(.4,0,.2,1) .05s forwards}
+.bv-pts{animation:bvPts .5s ease .1s both;filter:drop-shadow(0 0 2.5px rgba(217,188,114,.9))}
+.bv-luz{transform:translate(var(--mx,-300px),var(--my,-300px));mix-blend-mode:screen;pointer-events:none}
+.bv-rot{font-size:11.5px;font-weight:650;fill:var(--ink);font-variant-numeric:tabular-nums;animation:bvRot .26s var(--ease) both;pointer-events:none}
+.bv-feixe{animation:bvFeixe .22s ease both}
+@keyframes bvForma{from{opacity:0;transform:scale(.35)}to{opacity:1;transform:none}}
+@keyframes bvTraco{to{stroke-dashoffset:0}}
+@keyframes bvPts{from{opacity:0}to{opacity:1}}
+@keyframes bvRot{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@keyframes bvFeixe{from{opacity:0}to{opacity:1}}
+@media(hover:none),(pointer:coarse){.bv.ativo .bv-corpo{filter:none}.bv-pts{filter:none}.an-tip{padding:7px 10px;min-width:0;font-size:12px;box-shadow:0 6px 18px rgba(20,30,25,.14)}.an-tip-t{margin-bottom:3px}.an-tip-h{display:none}}
+/* indicadores financeiros clicáveis */
+.fh-clk{cursor:pointer;transition:transform .25s var(--ease),box-shadow .25s var(--ease)}
+@media(hover:hover){.fh-clk:hover{transform:translateY(-2px);box-shadow:var(--sh2)}.fh-main.fh-clk:hover{box-shadow:0 14px 34px rgba(15,59,42,.28)}}
+.fh-clk:active{transform:scale(.985)}
+.fh-clk:focus-visible{outline:2px solid rgba(23,107,70,.4);outline-offset:3px}
+/* destaque do cartão de origem enquanto a análise está aberta */
+.card-foco{box-shadow:0 0 0 2px rgba(23,107,70,.28),var(--sh2)!important}
+/* expansão com continuidade: cartão fantasma do cartão até a janela */
+.an-fantasma{display:none;position:fixed;z-index:4;pointer-events:none;transform-origin:0 0;border-radius:18px;background:linear-gradient(180deg,#FFFFFF,#F7F5F0);box-shadow:0 0 0 1px rgba(23,107,70,.16),0 30px 70px rgba(15,40,28,.22);overflow:hidden;will-change:transform,opacity}
+.an-fantasma::after{content:"";position:absolute;inset:0;background:linear-gradient(115deg,transparent 30%,rgba(201,169,97,.20) 46%,rgba(23,107,70,.10) 54%,transparent 70%);background-size:250% 100%;animation:anVarre .55s ease-out both}
+@keyframes anVarre{from{background-position:120% 0}to{background-position:-30% 0}}
+.an-modal.com-origem{animation:none}
+.an-modal .an-filtros{animation:anProg .38s var(--ease) .08s both}
+.an-modal .an-body > *{animation:anProg .42s var(--ease) both}
+.an-modal .an-body > :nth-child(1){animation-delay:.12s}
+.an-modal .an-body > :nth-child(2){animation-delay:.19s}
+.an-modal .an-body > :nth-child(3){animation-delay:.26s}
+.an-modal .an-body > :nth-child(4){animation-delay:.32s}
+@keyframes anProg{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.an-bg{transition:background-color .3s ease}
+.an-bg.saindo-fantasma{background-color:transparent;-webkit-backdrop-filter:none;backdrop-filter:none}
+.an-filtro-nota{font-size:12px;color:var(--muted2)}
+@media(max-width:560px){.an-modal.com-origem{animation:none}.an-filtro-nota{flex:1 1 100%}}
 
 /* ---------- microanimações ---------- */
 @keyframes entra{from{opacity:.001;transform:translateY(6px)}to{opacity:1;transform:none}}
