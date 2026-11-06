@@ -3,7 +3,7 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid, Legend, LineChart, Line,
+  ResponsiveContainer, CartesianGrid, Legend, LineChart, Line, LabelList,
 } from "recharts";
 import { supabase } from "./supabase";
 import * as XLSX from "xlsx-js-style";
@@ -1760,6 +1760,448 @@ function SituacaoSecao({ a, onInativar, onReativar }) {
         </div>
       )}
     </div>
+  );
+}
+
+/* ======================= PAINEL — análise expandida dos gráficos =======================
+   Cada gráfico do Painel abre uma janela de análise com filtros próprios (iniciados com os
+   filtros do Painel), tooltips detalhados, seleção de categoria e a lista dos registros reais
+   por trás de cada barra. Só leitura: nenhum dado é alterado aqui. */
+const FAIXAS_IDADE_PAINEL = [["< 1 ano", 0, 12, "< 1"], ["1 a 2 anos", 12, 24, "1–2"], ["2 a 4 anos", 24, 48, "2–4"], ["4 a 6 anos", 48, 72, "4–6"], ["6 a 8 anos", 72, 96, "6–8"], ["+ 8 anos", 96, Infinity, "8+"]];
+const FAIXAS_PART_PAINEL = [["100%", (p) => p >= 100], ["75–99%", (p) => p >= 75 && p < 100], ["50–74%", (p) => p >= 50 && p < 75], ["25–49%", (p) => p >= 25 && p < 50], ["1–24%", (p) => p > 0 && p < 25], ["0% (vendido)", (p) => p <= 0]];
+const rgTxt = (a) => (a && a.registro ? (/^\s*rg/i.test(a.registro) ? a.registro : `RG ${a.registro}`) : "");
+const sexoTxt = (a) => { const s = lc(a && a.sexo); return s.startsWith("f") ? "Fêmea" : s.startsWith("m") ? "Macho" : ""; };
+const sociosDe = (a) => (a.sociedadeAtual || a.socios || []).filter((s) => s && s.nome);
+const criatorioDe = (a) => (a.ondeEsta || a.criatorio || "").trim();
+function mesesTxt(m) {
+  if (m == null || isNaN(m)) return "—";
+  const anos = Math.floor(m / 12), mes = Math.round(m - anos * 12);
+  if (anos <= 0) return `${mes} ${mes === 1 ? "mês" : "meses"}`;
+  return `${anos} ${anos === 1 ? "ano" : "anos"}${mes ? ` e ${mes} ${mes === 1 ? "mês" : "meses"}` : ""}`;
+}
+const pctTxt = (v) => `${(Math.round(v * 10) / 10).toLocaleString("pt-BR")}%`;
+// mesmas regras de filtro do Painel (situação, sócio, criatório) + sexo opcional
+function filtraPainel(lista, f) {
+  return lista.filter((a) => {
+    if (f.socio && !sociosDe(a).some((s) => lc(s.nome) === lc(f.socio))) return false;
+    if (f.criatorio && lc(criatorioDe(a)) !== lc(f.criatorio)) return false;
+    if (f.sit !== "todos" && a.tipo === "animal") { const at = ehAtivo(a); if (f.sit === "ativos" && !at) return false; if (f.sit === "inativos" && at) return false; }
+    if (f.sexo && a.tipo === "animal" && sexoTxt(a) !== f.sexo) return false;
+    return true;
+  });
+}
+function useEstreito(q = "(max-width: 560px)") {
+  const [m, setM] = useState(() => { try { return window.matchMedia(q).matches; } catch (e) { return false; } });
+  useEffect(() => {
+    let mq; try { mq = window.matchMedia(q); } catch (e) { return; }
+    const h = () => setM(mq.matches);
+    mq.addEventListener ? mq.addEventListener("change", h) : mq.addListener(h);
+    return () => { mq.removeEventListener ? mq.removeEventListener("change", h) : mq.removeListener(h); };
+  }, [q]);
+  return m;
+}
+const reduzMovimento = () => { try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { return false; } };
+// tooltip próprio: aparece suavemente e mostra o detalhe da barra
+function AnTip({ active, payload, label, linhas }) {
+  if (!active || !payload || !payload.length) return null;
+  const d = payload[0].payload;
+  return (
+    <div className="an-tip">
+      <div className="an-tip-t">{d.tit || d.name || label}</div>
+      {linhas(d).map(([k, v, cor]) => <div className="an-tip-l" key={k}>{cor && <i style={{ background: cor }} />}<span>{k}</span><b>{v}</b></div>)}
+      <div className="an-tip-h">Toque ou clique para ver os registros</div>
+    </div>
+  );
+}
+function AnKpi({ k, v, d, onClick, on }) {
+  const C = onClick ? "button" : "div";
+  return <C className={`an-kpi ${onClick ? "clk" : ""} ${on ? "on" : ""}`} onClick={onClick} type={onClick ? "button" : undefined}><span>{k}</span><b key={String(v)}>{v}</b>{d && <small>{d}</small>}</C>;
+}
+// barras de resumo (tabela visual) — mesma seleção do gráfico; ótima no celular
+function AnFaixas({ dados, sel, onSel, fmtV, cor }) {
+  const max = Math.max(1, ...dados.map((d) => d.value));
+  return (
+    <div className="an-faixas" role="list">
+      {dados.map((d) => (
+        <button type="button" role="listitem" key={d.key} className={`an-fx ${sel === d.key ? "on" : ""} ${sel != null && sel !== d.key ? "apaga" : ""}`} onClick={() => onSel(d.key)} disabled={!d.value}>
+          <span className="an-fx-n">{d.name}</span>
+          <span className="an-fx-bar"><i style={{ width: `${(d.value / max) * 100}%`, background: cor }} /></span>
+          <span className="an-fx-v"><b>{fmtV ? fmtV(d) : d.value}</b>{d.pct != null && <small>{pctTxt(d.pct)}</small>}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+// lista de registros da categoria selecionada; cada linha abre a ficha
+function AnLista({ titulo, sub, itens, render, onAbrir, rowClick, ordem, setOrdem, ordens, extra, vazio }) {
+  const [n, setN] = useState(60);
+  useEffect(() => setN(60), [titulo, itens.length]);
+  return (
+    <div className="an-lista" key={titulo}>
+      <div className="an-lista-h">
+        <div><b>{titulo}</b>{sub && <span>{sub}</span>}</div>
+        <div className="an-lista-tools">
+          {extra}
+          {ordens && <select className="df-sel" value={ordem} onChange={(e) => setOrdem(e.target.value)} aria-label="Ordenar">{ordens.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>}
+        </div>
+      </div>
+      {itens.length === 0 ? <p className="muted small an-vazio">{vazio || "Nenhum registro."}</p> : (
+        <div className="an-rows">
+          {itens.slice(0, n).map((it, i) => { const r = render(it); return (
+            <button type="button" key={r.key || i} className="an-row" onClick={() => (r.a ? onAbrir(r.a) : rowClick && rowClick(r.key))} title={r.a ? "Abrir a ficha" : undefined}>
+              <span className="an-row-main"><b>{r.nome}</b><small>{r.meta || "—"}</small></span>
+              <span className="an-row-vals">{r.vals.map(([l, v, cls]) => <span key={l} className={cls || ""}><small>{l}</small><b>{v}</b></span>)}</span>
+              <span className="an-row-go" aria-hidden="true">›</span>
+            </button>
+          ); })}
+          {itens.length > n && <button type="button" className="btn btn-mini an-mais" onClick={() => setN((x) => x + 120)}>Mostrar mais {Math.min(120, itens.length - n)} de {itens.length - n}</button>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const AN_TITULOS = { idade: "Idade do plantel", evolucao: "Evolução financeira", socio: "Investimentos por sociedade", criatorio: "Investimentos por criatório", participacao: "Participação da SM" };
+
+function AnaliseGrafico({ tipo, inicial, reais, money, privado, onAbrir, bloqueado, onClose, onVerLista }) {
+  useTravaFundo();
+  const estreito = useEstreito();
+  const [saindo, setSaindo] = useState(false);
+  const bloqRef = useRef(bloqueado); bloqRef.current = bloqueado;
+  const fechar = () => { if (saindo) return; if (reduzMovimento()) { onClose(); return; } setSaindo(true); setTimeout(onClose, 210); };
+  const fecharRef = useRef(fechar); fecharRef.current = fechar;
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape" && !bloqRef.current) fecharRef.current(); };
+    window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
+  }, []);
+  const [f, setF] = useState(() => ({ sit: "ativos", socio: "", criatorio: "", periodo: "12m", sexo: "", ...inicial.filtros }));
+  const [sel, setSel] = useState(inicial.sel ?? null);
+  const alterna = (k) => setSel((s) => (s === k ? null : k));
+  const muda = (campo, v) => { setF((p) => ({ ...p, [campo]: v })); setSel(null); };
+  // opções dos seletores a partir dos registros reais
+  const opSocios = useMemo(() => { const s = new Set(); reais.forEach((a) => sociosDe(a).forEach((x) => s.add(x.nome))); return [...s].sort((x, y) => lc(x).localeCompare(lc(y))); }, [reais]);
+  const opCriat = useMemo(() => { const s = new Set(); reais.forEach((a) => { const c = criatorioDe(a); if (c) s.add(c); }); return [...s].sort((x, y) => lc(x).localeCompare(lc(y))); }, [reais]);
+  const animal = tipo !== "evolucao";
+  const base = useMemo(() => filtraPainel(reais, animal ? f : { ...f, sexo: "" }), [reais, f, animal]);
+  const animais = useMemo(() => base.filter((a) => a.tipo === "animal"), [base]);
+  const filtrosAtivos = f.sit !== "ativos" || f.socio || f.criatorio || f.sexo;
+
+  const titulo = AN_TITULOS[tipo] || "Análise";
+  const corpo = tipo === "idade" ? <AnIdade animais={animais.filter((a) => !a.arquivada)} sel={sel} alterna={alterna} setSel={setSel} estreito={estreito} onAbrir={onAbrir} />
+    : tipo === "evolucao" ? <AnEvolucao base={base} periodo={f.periodo} setPeriodo={(v) => muda("periodo", v)} sel={sel} alterna={alterna} estreito={estreito} money={money} privado={privado} onAbrir={onAbrir} />
+    : tipo === "socio" || tipo === "criatorio" ? <AnInvest modo={tipo} animais={animais} sel={sel} alterna={alterna} estreito={estreito} money={money} privado={privado} onAbrir={onAbrir} onVerLista={onVerLista} />
+    : tipo === "participacao" ? <AnPart animais={animais.filter((a) => !a.arquivada)} sel={sel} alterna={alterna} estreito={estreito} onAbrir={onAbrir} />
+    : null;
+
+  return (
+    <div className={`modal-bg an-bg ${saindo ? "saindo" : ""}`} onClick={fechar}>
+      <div className="modal an-modal" role="dialog" aria-modal="true" aria-label={titulo} onClick={(e) => e.stopPropagation()}>
+        <div className="an-head">
+          <div><div className="eyebrow">Painel · análise detalhada</div><h2>{titulo}</h2></div>
+          <button type="button" className="x" onClick={fechar} aria-label="Fechar"><Ico n="fechar" size={16} /></button>
+        </div>
+        <div className="an-filtros">
+          <div className="seg-group sm">{[["ativos", "Ativos"], ["inativos", "Inativos"], ["todos", "Todos"]].map(([k, l]) => <button type="button" key={k} className={`seg ${f.sit === k ? "on" : ""}`} onClick={() => muda("sit", k)}>{l}</button>)}</div>
+          {animal && <div className="seg-group sm">{[["", "Ambos"], ["Fêmea", "Fêmeas"], ["Macho", "Machos"]].map(([k, l]) => <button type="button" key={l} className={`seg ${f.sexo === k ? "on" : ""}`} onClick={() => muda("sexo", k)}>{l}</button>)}</div>}
+          <select className="df-sel" value={f.socio} onChange={(e) => muda("socio", e.target.value)} aria-label="Sócio"><option value="">Todos os sócios</option>{opSocios.map((s) => <option key={s} value={s}>{s}</option>)}</select>
+          <select className="df-sel" value={f.criatorio} onChange={(e) => muda("criatorio", e.target.value)} aria-label="Criatório"><option value="">Todos os criatórios</option>{opCriat.map((c) => <option key={c} value={c}>{c}</option>)}</select>
+          {filtrosAtivos && <button type="button" className="btn btn-mini" onClick={() => { setF((p) => ({ ...p, sit: "ativos", socio: "", criatorio: "", sexo: "" })); setSel(null); }}>Limpar</button>}
+        </div>
+        <div className="an-body">{corpo}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- idade do plantel ---------- */
+function AnIdade({ animais, sel, alterna, setSel, estreito, onAbrir }) {
+  const [modo, setModo] = useState("faixas");
+  const [ordem, setOrdem] = useState("novo");
+  const d = useMemo(() => {
+    const com = [], sem = [];
+    animais.forEach((a) => { const m = mesesDe(a.nascimento); if (m == null || m < 0) sem.push({ a, meses: null }); else com.push({ a, meses: m }); });
+    const total = com.length;
+    let grupos;
+    if (modo === "faixas") {
+      grupos = FAIXAS_IDADE_PAINEL.map(([name, lo, hi, curto]) => ({ key: "f" + lo, name, curto, tit: name, lo, hi }));
+    } else {
+      const maxA = com.reduce((m, x) => Math.max(m, Math.floor(x.meses / 12)), 0);
+      grupos = Array.from({ length: maxA + 1 }, (_, y) => ({ key: "a" + y, name: y === 0 ? "< 1" : String(y), curto: y === 0 ? "< 1" : String(y), tit: y === 0 ? "Menos de 1 ano" : `${y} ${y === 1 ? "ano" : "anos"}`, lo: y * 12, hi: (y + 1) * 12 }));
+    }
+    grupos.forEach((g) => { g.itens = com.filter((x) => x.meses >= g.lo && x.meses < g.hi); g.value = g.itens.length; g.pct = total ? (g.value / total) * 100 : 0; g.media = g.value ? g.itens.reduce((s, x) => s + x.meses, 0) / g.value : null; });
+    const media = total ? com.reduce((s, x) => s + x.meses, 0) / total : null;
+    const ord = com.slice().sort((x, y) => x.meses - y.meses);
+    const femeas = com.filter((x) => sexoTxt(x.a) === "Fêmea").length, machos = com.filter((x) => sexoTxt(x.a) === "Macho").length;
+    return { com, sem, total, grupos, media, novo: ord[0], velho: ord[ord.length - 1], femeas, machos };
+  }, [animais, modo]);
+  // a seleção deixa de valer se o grupo sumiu ao trocar filtro/modo
+  useEffect(() => { if (sel && sel !== "semdata" && !d.grupos.some((g) => g.key === sel && g.value)) setSel(null); }, [d]);
+  const g = sel && sel !== "semdata" ? d.grupos.find((x) => x.key === sel) : null;
+  const itens = useMemo(() => {
+    const l = (sel === "semdata" ? d.sem : g ? g.itens : d.com).slice();
+    const cmpN = (x, y) => lc(x.a.nome).localeCompare(lc(y.a.nome));
+    if (ordem === "novo") l.sort((x, y) => (x.meses ?? 1e9) - (y.meses ?? 1e9) || cmpN(x, y));
+    else if (ordem === "velho") l.sort((x, y) => (y.meses ?? -1) - (x.meses ?? -1) || cmpN(x, y));
+    else if (ordem === "part") l.sort((x, y) => participacaoAtual(y.a) - participacaoAtual(x.a) || cmpN(x, y));
+    else l.sort(cmpN);
+    return l;
+  }, [d, sel, ordem]);
+  const dados = d.grupos;
+  const H = estreito ? 230 : 300;
+  return (
+    <>
+      <div className="an-kpis">
+        <AnKpi k="Idade média" v={mesesTxt(d.media)} d={`${d.total} animal(is) com nascimento`} />
+        <AnKpi k="Mais novo" v={d.novo ? mesesTxt(d.novo.meses) : "—"} d={d.novo ? d.novo.a.nome : ""} onClick={d.novo ? () => onAbrir(d.novo.a) : undefined} />
+        <AnKpi k="Mais velho" v={d.velho ? mesesTxt(d.velho.meses) : "—"} d={d.velho ? d.velho.a.nome : ""} onClick={d.velho ? () => onAbrir(d.velho.a) : undefined} />
+        <AnKpi k="Sem data de nascimento" v={d.sem.length} d={d.sem.length ? "toque para ver quais" : "todos com data"} onClick={d.sem.length ? () => alterna("semdata") : undefined} on={sel === "semdata"} />
+      </div>
+      <div className="an-card">
+        <div className="an-card-h">
+          <span>Distribuição {modo === "faixas" ? "por faixa etária" : "por idade"} <small className="an-un">(em anos{modo === "anos" ? " completos" : ""})</small></span>
+          <span className="seg-group sm">{[["faixas", "Faixas"], ["anos", "Idade individual"]].map(([k, l]) => <button type="button" key={k} className={`seg ${modo === k ? "on" : ""}`} onClick={() => { setModo(k); setSel(null); }}>{l}</button>)}</span>
+        </div>
+        {d.total > 0 ? (
+          <div className="an-chart">
+            <ResponsiveContainer width="100%" height={H}>
+              <BarChart data={dados} margin={{ left: 0, right: 8, top: 22, bottom: 0 }} onClick={(e) => { const p = e && e.activePayload && e.activePayload[0]; if (p && p.payload.value) alterna(p.payload.key); }}>
+                <CartesianGrid stroke={CH.grid} vertical={false} />
+                <XAxis dataKey={estreito ? "curto" : "name"} tick={CH.tick} interval={0} tickLine={false} axisLine={{ stroke: CH.grid }} />
+                <YAxis allowDecimals={false} tick={CH.tick} width={30} tickLine={false} axisLine={false} />
+                <Tooltip cursor={CH.tip.cursor} animationDuration={160} content={<AnTip linhas={(x) => [["Animais", x.value, "#176B46"], ["Do plantel filtrado", pctTxt(x.pct)], ["Idade média da faixa", mesesTxt(x.media)]]} />} />
+                <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={modo === "anos" ? 34 : 64} animationDuration={520} animationEasing="ease-out" cursor="pointer">
+                  {dados.map((x) => <Cell key={x.key} fill="#176B46" fillOpacity={sel && sel !== x.key ? 0.28 : 1} />)}
+                  {!estreito || modo === "faixas" ? <LabelList dataKey="value" position="top" offset={6} formatter={(v) => (v ? v : "")} style={{ fontSize: 11.5, fill: "#58635D", fontWeight: 600 }} /> : null}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        ) : <p className="muted small">Nenhum animal com data de nascimento no conjunto filtrado.</p>}
+        {modo === "faixas" && d.total > 0 && <AnFaixas dados={d.grupos} sel={sel} onSel={alterna} cor="#176B46" />}
+        {d.total > 0 && <p className="muted small an-nota">{d.femeas} fêmea(s) · {d.machos} macho(s){d.total - d.femeas - d.machos > 0 ? ` · ${d.total - d.femeas - d.machos} sem sexo informado` : ""}. Idades calculadas hoje a partir das datas de nascimento cadastradas.</p>}
+      </div>
+      <AnLista
+        titulo={sel === "semdata" ? "Animais sem data de nascimento" : g ? g.tit : "Todos os animais do conjunto"}
+        sub={sel === "semdata" ? `${d.sem.length} animal(is)` : g ? `${g.value} animal(is) · ${pctTxt(g.pct)} · idade média ${mesesTxt(g.media)}` : `${d.total} animal(is) com nascimento · toque em uma barra para filtrar`}
+        itens={itens} ordem={ordem} setOrdem={setOrdem}
+        ordens={[["novo", "Mais novos primeiro"], ["velho", "Mais velhos primeiro"], ["nome", "Nome (A–Z)"], ["part", "Participação da SM"]]}
+        extra={sel ? <button type="button" className="btn btn-mini" onClick={() => setSel(null)}>Ver todos</button> : null}
+        onAbrir={onAbrir}
+        render={({ a, meses }) => ({ key: a.id, a, nome: a.nome || "(sem nome)", meta: [rgTxt(a), sexoTxt(a), a.nascimento ? `nasc. ${dataBR(a.nascimento)}` : ""].filter(Boolean).join(" · "),
+          vals: [["Idade", meses == null ? "—" : idadeTexto(a.nascimento) || mesesTxt(meses)], ["SM", pctTxt(participacaoAtual(a))], ["Situação", ehAtivo(a) ? "Ativo" : "Inativo", ehAtivo(a) ? "pos" : "muted"]] })}
+      />
+    </>
+  );
+}
+
+/* ---------- evolução financeira ---------- */
+function AnEvolucao({ base, periodo, setPeriodo, sel, alterna, estreito, money, privado, onAbrir }) {
+  const [ordem, setOrdem] = useState("venc");
+  const meses = useMemo(() => {
+    const by = {};
+    base.forEach((a) => cronograma(a).forEach((p) => {
+      const ym = (p.venc || "").slice(0, 7); if (!ym) return;
+      if (!by[ym]) by[ym] = { key: ym, ym, previsto: 0, pago: 0, itens: [] };
+      const v = num(p.valor); by[ym].previsto += v; by[ym].pago += Math.min(num(p.valorPago), v); by[ym].itens.push({ a, p });
+    }));
+    let arr = Object.values(by).sort((x, y) => x.ym.localeCompare(y.ym));
+    const now = new Date(); const ymNow = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0");
+    if (periodo === "6m" || periodo === "12m") {
+      const n = periodo === "6m" ? 6 : 12; const lim = new Date(now.getFullYear(), now.getMonth() - (n - 1), 1);
+      const ymLim = lim.getFullYear() + "-" + String(lim.getMonth() + 1).padStart(2, "0");
+      arr = arr.filter((x) => x.ym >= ymLim && x.ym <= ymNow);
+    } else if (periodo === "ano") arr = arr.filter((x) => x.ym.startsWith(String(now.getFullYear())));
+    return arr.map((x) => ({ ...x, name: mesLabel(x.ym), tit: mesLabel(x.ym), value: x.previsto }));
+  }, [base, periodo]);
+  const tot = meses.reduce((s, x) => ({ previsto: s.previsto + x.previsto, pago: s.pago + x.pago }), { previsto: 0, pago: 0 });
+  const m = sel ? meses.find((x) => x.ym === sel) : null;
+  const itens = useMemo(() => {
+    if (!m) return [];
+    const l = m.itens.slice();
+    if (ordem === "valor") l.sort((x, y) => num(y.p.valor) - num(x.p.valor));
+    else if (ordem === "nome") l.sort((x, y) => lc(x.a.nome).localeCompare(lc(y.a.nome)));
+    else if (ordem === "status") { const o = { vencido: 0, parcial: 1, aberto: 2, pago: 3 }; l.sort((x, y) => (o[x.p.status] ?? 9) - (o[y.p.status] ?? 9)); }
+    else l.sort((x, y) => (x.p.venc || "").localeCompare(y.p.venc || ""));
+    return l;
+  }, [m, ordem]);
+  const H = estreito ? 240 : 320;
+  const STATUS = { pago: ["Pago", "pos"], parcial: ["Parcial", "gold"], vencido: ["Vencido", "neg"], aberto: ["A vencer", "muted"] };
+  const k = (v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`);
+  return (
+    <>
+      <div className="an-kpis">
+        <AnKpi k="Previsto no período" v={money(tot.previsto)} d={`${meses.length} mês(es) com parcelas`} />
+        <AnKpi k="Realizado (pago)" v={money(tot.pago)} d={tot.previsto ? `${Math.round((tot.pago / tot.previsto) * 100)}% do previsto` : ""} />
+        <AnKpi k="Previsto ainda não pago" v={money(Math.max(0, tot.previsto - tot.pago))} d="no período selecionado" />
+      </div>
+      <div className="an-card">
+        <div className="an-card-h"><span>Previsto × realizado por mês</span>
+          <span className="seg-group sm">{[["6m", "6 meses"], ["12m", "12 meses"], ["ano", "Ano atual"], ["tudo", "Tudo"]].map(([kk, l]) => <button type="button" key={kk} className={`seg ${periodo === kk ? "on" : ""}`} onClick={() => setPeriodo(kk)}>{l}</button>)}</span>
+        </div>
+        {meses.length > 0 ? (
+          <div className="an-chart">
+            <ResponsiveContainer width="100%" height={H}>
+              <BarChart data={meses} margin={{ left: 0, right: 8, top: 8, bottom: 0 }} barGap={2} onClick={(e) => { const p = e && e.activePayload && e.activePayload[0]; if (p) alterna(p.payload.ym); }}>
+                <CartesianGrid stroke={CH.grid} vertical={false} />
+                <XAxis dataKey="name" tick={CH.tick} tickLine={false} axisLine={{ stroke: CH.grid }} minTickGap={8} />
+                <YAxis tick={CH.tick} tickFormatter={k} width={40} tickLine={false} axisLine={false} />
+                <Tooltip cursor={CH.tip.cursor} animationDuration={160} content={<AnTip linhas={(x) => [["Previsto", money(x.previsto), "#D9D4C7"], ["Realizado", money(x.pago), "#176B46"], ["Não pago", money(Math.max(0, x.previsto - x.pago))], ["Parcelas", x.itens.length]]} />} />
+                <Legend wrapperStyle={{ fontSize: 12, color: "#58635D" }} formatter={(v) => (v === "previsto" ? "Previsto" : "Realizado")} />
+                <Bar dataKey="previsto" name="previsto" fill="#D9D4C7" radius={[4, 4, 0, 0]} maxBarSize={28} animationDuration={520} animationEasing="ease-out" cursor="pointer">
+                  {meses.map((x) => <Cell key={x.ym} fillOpacity={sel && sel !== x.ym ? 0.35 : 1} />)}
+                </Bar>
+                <Bar dataKey="pago" name="pago" fill="#176B46" radius={[4, 4, 0, 0]} maxBarSize={28} animationDuration={520} animationEasing="ease-out" cursor="pointer">
+                  {meses.map((x) => <Cell key={x.ym} fillOpacity={sel && sel !== x.ym ? 0.28 : 1} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        ) : <p className="muted small">Nenhuma parcela no período selecionado.</p>}
+        <p className="muted small an-nota">Previsto = parcelas com vencimento no mês (compra original + compras adicionais). Realizado = valor registrado como pago.</p>
+      </div>
+      {m ? (
+        <AnLista titulo={`Parcelas de ${m.tit}`} sub={`${m.itens.length} parcela(s) · previsto ${money(m.previsto)} · pago ${money(m.pago)}`}
+          itens={itens} ordem={ordem} setOrdem={setOrdem} ordens={[["venc", "Vencimento"], ["valor", "Maior valor"], ["status", "Situação"], ["nome", "Nome (A–Z)"]]}
+          extra={<button type="button" className="btn btn-mini" onClick={() => alterna(m.ym)}>Ver meses</button>} onAbrir={onAbrir}
+          render={({ a, p }) => { const st = STATUS[p.status] || [p.status, ""]; return { key: `${a.id}-${p.origem}-${p.compraId || ""}-${p.numero}`, a, nome: a.nome || "(sem nome)",
+            meta: [p.origemLabel || "Compra original", `parcela ${p.numero}`, `venc. ${dataBR(p.venc)}`].join(" · "),
+            vals: [["Valor", money(p.valor)], ["Pago", money(Math.min(num(p.valorPago), num(p.valor)))], ["Situação", st[0], st[1]]] }; }} />
+      ) : (
+        <AnLista titulo="Meses do período" sub="toque em um mês (ou numa barra) para ver as parcelas" itens={meses.slice().reverse()} onAbrir={() => {}}
+          render={(x) => ({ key: x.ym, a: null, nome: x.tit, meta: `${x.itens.length} parcela(s)`, vals: [["Previsto", money(x.previsto)], ["Realizado", money(x.pago), "pos"], ["%", x.previsto ? `${Math.round((x.pago / x.previsto) * 100)}%` : "—"]] })}
+          rowClick={alterna} />
+      )}
+    </>
+  );
+}
+
+/* ---------- investimentos por sociedade / criatório ---------- */
+function AnInvest({ modo, animais, sel, alterna, estreito, money, privado, onAbrir, onVerLista }) {
+  const [met, setMet] = useState("total");
+  const [ordem, setOrdem] = useState("valor");
+  const SEM = "Sem criatório informado";
+  const grupos = useMemo(() => {
+    const m = new Map();
+    animais.forEach((a) => {
+      const f = finance(a);
+      const chaves = modo === "socio" ? [...new Set(sociosDe(a).map((s) => s.nome))] : [criatorioDe(a) || SEM];
+      chaves.forEach((c) => { if (!m.has(c)) m.set(c, { key: c, name: c, tit: c, qtd: 0, total: 0, pago: 0, aberto: 0, itens: [] }); const o = m.get(c); o.qtd += 1; o.total += f.total; o.pago += f.pago; o.aberto += f.aberto; o.itens.push({ a, f }); });
+    });
+    return [...m.values()].map((o) => ({ ...o, value: o[met] })).sort((x, y) => y.value - x.value || lc(x.name).localeCompare(lc(y.name)));
+  }, [animais, modo, met]);
+  const g = sel ? grupos.find((x) => x.key === sel) : null;
+  const unicos = animais.length, investTot = animais.reduce((s, a) => s + finance(a).total, 0);
+  const itens = useMemo(() => {
+    if (!g) return [];
+    const l = g.itens.slice();
+    if (ordem === "nome") l.sort((x, y) => lc(x.a.nome).localeCompare(lc(y.a.nome)));
+    else if (ordem === "aberto") l.sort((x, y) => y.f.aberto - x.f.aberto);
+    else if (ordem === "part") l.sort((x, y) => participacaoAtual(y.a) - participacaoAtual(x.a));
+    else l.sort((x, y) => y.f.total - x.f.total);
+    return l;
+  }, [g, ordem]);
+  const cor = modo === "socio" ? "#176B46" : "#7FA592";
+  const metNome = { total: "Investido", pago: "Pago", aberto: "Em aberto" }[met];
+  const k = (v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`);
+  const H = Math.max(200, grupos.length * (estreito ? 34 : 38) + 30);
+  const yW = estreito ? 96 : 150;
+  const corta = (s) => (s.length > (estreito ? 13 : 22) ? s.slice(0, estreito ? 12 : 21) + "…" : s);
+  return (
+    <>
+      <div className="an-kpis">
+        <AnKpi k={modo === "socio" ? "Sócios no conjunto" : "Criatórios no conjunto"} v={grupos.filter((x) => x.key !== SEM).length} d={`${unicos} animal(is) único(s)`} />
+        <AnKpi k="Investido nos animais do conjunto" v={money(investTot)} d={modo === "socio" ? "total sem dupla contagem" : "cada animal em um criatório"} />
+        <AnKpi k={`Maior ${metNome.toLowerCase()}`} v={grupos[0] ? money(grupos[0].value) : "—"} d={grupos[0] ? grupos[0].name : ""} onClick={grupos[0] ? () => alterna(grupos[0].key) : undefined} on={grupos[0] && sel === grupos[0].key} />
+      </div>
+      <div className="an-card">
+        <div className="an-card-h"><span>{metNome} por {modo === "socio" ? "sócio" : "criatório"}</span>
+          <span className="seg-group sm">{[["total", "Investido"], ["pago", "Pago"], ["aberto", "Em aberto"]].map(([kk, l]) => <button type="button" key={kk} className={`seg ${met === kk ? "on" : ""}`} onClick={() => setMet(kk)}>{l}</button>)}</span>
+        </div>
+        {grupos.length > 0 ? (
+          <div className="an-chart">
+            <ResponsiveContainer width="100%" height={H}>
+              <BarChart data={grupos} layout="vertical" margin={{ left: 4, right: 18, top: 4, bottom: 4 }} onClick={(e) => { const p = e && e.activePayload && e.activePayload[0]; if (p) alterna(p.payload.key); }}>
+                <CartesianGrid stroke={CH.grid} horizontal={false} />
+                <XAxis type="number" tick={CH.tick} tickFormatter={k} tickLine={false} axisLine={false} />
+                <YAxis type="category" dataKey="name" width={yW} tick={CH.tick} tickFormatter={corta} tickLine={false} axisLine={false} interval={0} />
+                <Tooltip cursor={CH.tip.cursor} animationDuration={160} content={<AnTip linhas={(x) => [["Investido", money(x.total), cor], ["Pago", money(x.pago)], ["Em aberto", money(x.aberto)], ["Animais", x.qtd]]} />} />
+                <Bar dataKey="value" radius={[0, 4, 4, 0]} maxBarSize={22} animationDuration={520} animationEasing="ease-out" cursor="pointer">
+                  {grupos.map((x) => <Cell key={x.key} fill={cor} fillOpacity={sel && sel !== x.key ? 0.28 : 1} />)}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        ) : <p className="muted small">Nenhum registro no conjunto filtrado.</p>}
+        <p className="muted small an-nota">{modo === "socio" ? "Valores da SM associados a cada sócio. Um animal com vários sócios aparece em cada um — a soma entre sócios não é o total investido." : "Cada animal entra em um criatório só (sem dupla contagem)."}</p>
+      </div>
+      {g ? (
+        <AnLista titulo={g.tit} sub={`${g.qtd} animal(is) · investido ${money(g.total)} · em aberto ${money(g.aberto)}`}
+          itens={itens} ordem={ordem} setOrdem={setOrdem} ordens={[["valor", "Maior investimento"], ["aberto", "Maior saldo em aberto"], ["part", "Participação da SM"], ["nome", "Nome (A–Z)"]]}
+          extra={<>{g.key !== SEM && <button type="button" className="btn btn-mini" onClick={() => onVerLista(g.key)}>Abrir em Animais</button>}<button type="button" className="btn btn-mini" onClick={() => alterna(g.key)}>Ver todos</button></>}
+          onAbrir={onAbrir}
+          render={({ a, f }) => ({ key: a.id, a, nome: a.nome || "(sem nome)", meta: [rgTxt(a), modo === "socio" ? criatorioDe(a) : sociosDe(a).map((s) => s.nome).join(", ")].filter(Boolean).join(" · "),
+            vals: [["SM", pctTxt(participacaoAtual(a))], ["Investido", money(f.total)], ["Em aberto", money(f.aberto), f.aberto > 0 ? "" : "pos"]] })} />
+      ) : (
+        <AnLista titulo={modo === "socio" ? "Todos os sócios" : "Todos os criatórios"} sub="toque em um nome (ou numa barra) para ver os animais" itens={grupos} onAbrir={() => {}}
+          render={(x) => ({ key: x.key, a: null, nome: x.name, meta: `${x.qtd} animal(is)`, vals: [["Investido", money(x.total)], ["Pago", money(x.pago), "pos"], ["Em aberto", money(x.aberto)]] })}
+          rowClick={(x) => alterna(x)} />
+      )}
+    </>
+  );
+}
+
+/* ---------- participação da SM ---------- */
+function AnPart({ animais, sel, alterna, estreito, onAbrir }) {
+  const [ordem, setOrdem] = useState("part");
+  const grupos = useMemo(() => {
+    const total = animais.length;
+    return FAIXAS_PART_PAINEL.map(([name, fn]) => { const itens = animais.filter((a) => fn(participacaoAtual(a))); return { key: name, name, tit: `Participação ${name}`, value: itens.length, pct: total ? (itens.length / total) * 100 : 0, itens }; })
+      .filter((x) => x.value > 0);
+  }, [animais]);
+  const g = sel ? grupos.find((x) => x.key === sel) : null;
+  const itens = useMemo(() => {
+    const l = (g ? g.itens : animais).slice();
+    if (ordem === "nome") l.sort((x, y) => lc(x.nome).localeCompare(lc(y.nome)));
+    else if (ordem === "idade") l.sort((x, y) => (mesesDe(x.nascimento) ?? 1e9) - (mesesDe(y.nascimento) ?? 1e9));
+    else l.sort((x, y) => participacaoAtual(y) - participacaoAtual(x) || lc(x.nome).localeCompare(lc(y.nome)));
+    return l;
+  }, [g, animais, ordem]);
+  const integral = animais.filter((a) => participacaoAtual(a) >= 100).length;
+  const soc = animais.filter((a) => { const p = participacaoAtual(a); return p > 0 && p < 100; }).length;
+  const H = estreito ? 220 : 280;
+  return (
+    <>
+      <div className="an-kpis">
+        <AnKpi k="Animais no conjunto" v={animais.length} />
+        <AnKpi k="100% da SM" v={integral} d={animais.length ? pctTxt((integral / animais.length) * 100) : ""} onClick={integral ? () => alterna("100%") : undefined} on={sel === "100%"} />
+        <AnKpi k="Em sociedade" v={soc} d="participação entre 1% e 99%" />
+      </div>
+      <div className="an-card">
+        <div className="an-card-h"><span>Animais por faixa de participação da SM</span></div>
+        {grupos.length > 0 ? (
+          <div className="an-chart">
+            <ResponsiveContainer width="100%" height={H}>
+              <BarChart data={grupos} margin={{ left: 0, right: 8, top: 22, bottom: 0 }} onClick={(e) => { const p = e && e.activePayload && e.activePayload[0]; if (p) alterna(p.payload.key); }}>
+                <CartesianGrid stroke={CH.grid} vertical={false} />
+                <XAxis dataKey="name" tick={CH.tick} interval={0} tickLine={false} axisLine={{ stroke: CH.grid }} />
+                <YAxis allowDecimals={false} tick={CH.tick} width={30} tickLine={false} axisLine={false} />
+                <Tooltip cursor={CH.tip.cursor} animationDuration={160} content={<AnTip linhas={(x) => [["Animais", x.value, "#B89A5E"], ["Do conjunto", pctTxt(x.pct)]]} />} />
+                <Bar dataKey="value" radius={[4, 4, 0, 0]} maxBarSize={64} animationDuration={520} animationEasing="ease-out" cursor="pointer">
+                  {grupos.map((x) => <Cell key={x.key} fill="#B89A5E" fillOpacity={sel && sel !== x.key ? 0.3 : 1} />)}
+                  <LabelList dataKey="value" position="top" offset={6} style={{ fontSize: 11.5, fill: "#58635D", fontWeight: 600 }} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        ) : <p className="muted small">Nenhum animal no conjunto filtrado.</p>}
+        {grupos.length > 0 && <AnFaixas dados={grupos} sel={sel} onSel={alterna} cor="#B89A5E" />}
+      </div>
+      <AnLista titulo={g ? g.tit : "Todos os animais do conjunto"} sub={g ? `${g.value} animal(is) · ${pctTxt(g.pct)}` : `${animais.length} animal(is) · toque em uma barra para filtrar`}
+        itens={itens} ordem={ordem} setOrdem={setOrdem} ordens={[["part", "Maior participação"], ["idade", "Mais novos primeiro"], ["nome", "Nome (A–Z)"]]}
+        extra={g ? <button type="button" className="btn btn-mini" onClick={() => alterna(g.key)}>Ver todos</button> : null} onAbrir={onAbrir}
+        render={(a) => ({ key: a.id, a, nome: a.nome || "(sem nome)", meta: [rgTxt(a), sociosDe(a).length ? `sócios: ${sociosDe(a).map((s) => s.nome).join(", ")}` : "sem sócios"].filter(Boolean).join(" · "),
+          vals: [["SM", pctTxt(participacaoAtual(a))], ["Idade", a.nascimento ? idadeTexto(a.nascimento) || "—" : "—"], ["Situação", ehAtivo(a) ? "Ativo" : "Inativo", ehAtivo(a) ? "pos" : "muted"]] })} />
+    </>
   );
 }
 
@@ -3603,6 +4045,7 @@ export default function App() {
   const [view, setView] = useState("dashboard");
   const [busca, setBusca] = useState("");
   const [aberto, setAberto] = useState(null);
+  const [analise, setAnalise] = useState(null);   // gráfico do Painel aberto em análise detalhada
   const [form, setForm] = useState(null);
   const [novo, setNovo] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
@@ -4205,7 +4648,7 @@ export default function App() {
   const plantelF = useMemo(() => {
     const comIdade = fAnimais.filter((a) => participacaoAtual(a) > 0).map((a) => mesesDe(a.nascimento)).filter((m) => m != null && m >= 0);
     const faixasDef = [["< 1 ano", 0, 12], ["1 a 2", 12, 24], ["2 a 4", 24, 48], ["4 a 6", 48, 72], ["6 a 8", 72, 96], ["+ 8", 96, Infinity]];
-    return faixasDef.map(([name, lo, hi]) => ({ name, value: comIdade.filter((m) => m >= lo && m < hi).length })).filter((x) => x.value > 0);
+    return faixasDef.map(([name, lo, hi]) => ({ name, key: "f" + lo, value: comIdade.filter((m) => m >= lo && m < hi).length })).filter((x) => x.value > 0);
   }, [fAnimais]);
 
   // evolução financeira (previsto x realizado) por mês, respeitando filtros e período
@@ -4226,6 +4669,16 @@ export default function App() {
     return arr.map((x) => ({ ...x, mes: mesLabel(x.ym) }));
   }, [fReais, dfPeriodo]);
 
+  // abre o gráfico em análise detalhada; os filtros começam iguais aos do Painel
+  const cliqueGrafico = useRef(null);
+  const abrirAnalise = (tipo, sel) => setAnalise({ tipo, sel: sel ?? null, filtros: { sit: tipo === "participacao" ? "ativos" : dfSituacao, socio: dfSocio, criatorio: dfCriatorio, periodo: dfPeriodo } });
+  const marcaClique = (campo) => (e) => { const p = e && e.activePayload && e.activePayload[0]; cliqueGrafico.current = p && p.payload ? p.payload[campo] : null; };
+  const areaGrafico = (tipo, rotulo) => ({
+    className: "chart-clk", role: "button", tabIndex: 0, "aria-label": `Ampliar e analisar: ${rotulo}`, title: "Clique para ampliar e analisar",
+    onClick: () => { const s = cliqueGrafico.current; cliqueGrafico.current = null; abrirAnalise(tipo, s); },
+    onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); abrirAnalise(tipo); } },
+  });
+  const botaoAnalise = (tipo) => <button type="button" className="exp-btn" onClick={() => abrirAnalise(tipo)} title="Ampliar e analisar"><Ico n="expandir" size={13} /><span>Analisar</span></button>;
   const limparFiltrosDash = () => { setDfSituacao("ativos"); setDfSocio(""); setDfCriatorio(""); setDfPeriodo("12m"); };
 
   const exportCSV = () => {
@@ -4398,36 +4851,36 @@ export default function App() {
 
             {/* ÁREA 2 — INTELIGÊNCIA FINANCEIRA */}
             <div className="dash-sec-tit">Inteligência financeira</div>
-            <div className="card">
+            <div className="card card-exp">
               <div className="card-h card-h-flex"><span>Evolução financeira</span>
-                <span className="seg-group sm">{[["6m", "6 meses"], ["12m", "12 meses"], ["ano", "Ano atual"], ["tudo", "Tudo"]].map(([k, l]) => <button key={k} className={`seg ${dfPeriodo === k ? "on" : ""}`} onClick={() => setDfPeriodo(k)}>{l}</button>)}</span>
+                <span className="card-h-tools"><span className="seg-group sm">{[["6m", "6 meses"], ["12m", "12 meses"], ["ano", "Ano atual"], ["tudo", "Tudo"]].map(([k, l]) => <button key={k} className={`seg ${dfPeriodo === k ? "on" : ""}`} onClick={() => setDfPeriodo(k)}>{l}</button>)}</span>{botaoAnalise("evolucao")}</span>
               </div>
               {evolucao.length > 0 ? (
-                <ResponsiveContainer width="100%" height={250}><BarChart data={evolucao} margin={{ left: 6, right: 10, top: 6 }}>
+                <div {...areaGrafico("evolucao", "Evolução financeira")}><ResponsiveContainer width="100%" height={250}><BarChart data={evolucao} margin={{ left: 6, right: 10, top: 6 }} onClick={marcaClique("ym")}>
                   <CartesianGrid strokeDasharray="0" stroke={CH.grid} vertical={false} /><XAxis dataKey="mes" tick={CH.tick} />
                   <YAxis tick={CH.tick} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} />
                   <Tooltip {...CH.tip} formatter={(v, n) => [money(v), n === "previsto" ? "Previsto" : "Realizado"]} /><Legend wrapperStyle={{ fontSize: 12, color: "#58635D" }} formatter={(v) => (v === "previsto" ? "Previsto" : "Realizado")} />
-                  <Bar dataKey="previsto" name="previsto" fill="#E4E0D6" radius={[5, 5, 0, 0]} /><Bar dataKey="pago" name="pago" fill="#176B46" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer>
+                  <Bar dataKey="previsto" name="previsto" fill="#E4E0D6" radius={[5, 5, 0, 0]} /><Bar dataKey="pago" name="pago" fill="#176B46" radius={[5, 5, 0, 0]} /></BarChart></ResponsiveContainer></div>
               ) : <p className="muted small">Nenhuma parcela no período selecionado.</p>}
               <p className="muted small" style={{ marginTop: 6 }}>Previsto = parcelas com vencimento no mês. Realizado = parcelas registradas como pagas.</p>
             </div>
 
             <div className="cols-2">
-              <div className="card"><div className="card-h">Investimentos por sociedade</div>
+              <div className="card card-exp"><div className="card-h"><span>Investimentos por sociedade</span>{botaoAnalise("socio")}</div>
                 {porSocio.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={Math.max(150, Math.min(porSocio.length, 8) * 40)}><BarChart data={porSocio.slice(0, 8)} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                  <div {...areaGrafico("socio", "Investimentos por sociedade")}><ResponsiveContainer width="100%" height={Math.max(150, Math.min(porSocio.length, 8) * 40)}><BarChart data={porSocio.slice(0, 8)} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }} onClick={marcaClique("nome")}>
                     <CartesianGrid strokeDasharray="0" stroke={CH.grid} horizontal={false} /><XAxis type="number" tick={CH.tick} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} />
                     <YAxis type="category" dataKey="nome" width={100} tick={CH.tick} /><Tooltip {...CH.tip} formatter={(v, n, p) => [money(v), `${p && p.payload ? p.payload.qtd : 0} animal(is)`]} />
-                    <Bar dataKey="invest" fill="#176B46" radius={[0, 6, 6, 0]} cursor="pointer" onClick={(d) => d && d.nome && (setBusca(d.nome), setView("animal"))} /></BarChart></ResponsiveContainer>
+                    <Bar dataKey="invest" fill="#176B46" radius={[0, 6, 6, 0]} cursor="pointer" /></BarChart></ResponsiveContainer></div>
                 ) : <p className="muted small">Nenhum sócio no conjunto filtrado.</p>}
-                <p className="muted small" style={{ marginTop: 6 }}>Investimentos da SM <b>associados</b> a cada sócio. Um animal com vários sócios aparece em mais de um — a soma entre sócios não é o patrimônio total. Clique para ver os animais.</p>
+                <p className="muted small" style={{ marginTop: 6 }}>Investimentos da SM <b>associados</b> a cada sócio. Um animal com vários sócios aparece em mais de um — a soma entre sócios não é o patrimônio total. Clique para analisar e ver os animais.</p>
               </div>
-              <div className="card"><div className="card-h">Investimentos por criatório</div>
+              <div className="card card-exp"><div className="card-h"><span>Investimentos por criatório</span>{botaoAnalise("criatorio")}</div>
                 {porCriatorio.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={Math.max(150, Math.min(porCriatorio.length, 8) * 40)}><BarChart data={porCriatorio.slice(0, 8)} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }}>
+                  <div {...areaGrafico("criatorio", "Investimentos por criatório")}><ResponsiveContainer width="100%" height={Math.max(150, Math.min(porCriatorio.length, 8) * 40)}><BarChart data={porCriatorio.slice(0, 8)} layout="vertical" margin={{ left: 8, right: 16, top: 4, bottom: 4 }} onClick={marcaClique("nome")}>
                     <CartesianGrid strokeDasharray="0" stroke={CH.grid} horizontal={false} /><XAxis type="number" tick={CH.tick} tickFormatter={(v) => (privado ? "•••" : `${(v / 1000).toFixed(0)}k`)} />
                     <YAxis type="category" dataKey="nome" width={100} tick={CH.tick} /><Tooltip {...CH.tip} formatter={(v, n, p) => [money(v), `${p && p.payload ? p.payload.qtd : 0} animal(is)`]} />
-                    <Bar dataKey="invest" fill="#7FA592" radius={[0, 6, 6, 0]} cursor="pointer" onClick={(d) => d && d.nome && d.nome !== "Sem criatório informado" && (setBusca(d.nome), setView("animal"))} /></BarChart></ResponsiveContainer>
+                    <Bar dataKey="invest" fill="#7FA592" radius={[0, 6, 6, 0]} cursor="pointer" /></BarChart></ResponsiveContainer></div>
                 ) : <p className="muted small">Nenhum criatório no conjunto filtrado.</p>}
                 <p className="muted small" style={{ marginTop: 6 }}>Cada animal entra em um criatório só (sem dupla contagem).</p>
               </div>
@@ -4436,19 +4889,19 @@ export default function App() {
             {/* ÁREA 3 — COMPOSIÇÃO DO PLANTEL */}
             <div className="dash-sec-tit">Composição do plantel</div>
             <div className="cols-2">
-              <div className="card"><div className="card-h">Por faixa de idade</div>
+              <div className="card card-exp"><div className="card-h"><span>Por faixa de idade</span>{botaoAnalise("idade")}</div>
                 <div className="plantel-media">Idade média: <b>{plantel.mediaTxt}</b></div>
                 {plantelF.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={200}><BarChart data={plantelF} margin={{ left: 6, right: 10, top: 6 }}>
+                  <div {...areaGrafico("idade", "Idade do plantel")}><ResponsiveContainer width="100%" height={200}><BarChart data={plantelF} margin={{ left: 6, right: 10, top: 6 }} onClick={marcaClique("key")}>
                     <CartesianGrid strokeDasharray="0" stroke={CH.grid} vertical={false} /><XAxis dataKey="name" tick={CH.tick} interval={0} /><YAxis allowDecimals={false} tick={CH.tick} />
-                    <Tooltip {...CH.tip} formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#176B46" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>
+                    <Tooltip {...CH.tip} formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#176B46" radius={[6, 6, 0, 0]} cursor="pointer" /></BarChart></ResponsiveContainer></div>
                 ) : <p className="muted small">Nenhum animal com data de nascimento válida.</p>}
               </div>
-              <div className="card"><div className="card-h">Por participação da SM</div>
+              <div className="card card-exp"><div className="card-h"><span>Por participação da SM</span>{botaoAnalise("participacao")}</div>
                 {porParticipacao.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={200}><BarChart data={porParticipacao} margin={{ left: 6, right: 10, top: 6 }}>
+                  <div {...areaGrafico("participacao", "Participação da SM")}><ResponsiveContainer width="100%" height={200}><BarChart data={porParticipacao} margin={{ left: 6, right: 10, top: 6 }} onClick={marcaClique("name")}>
                     <CartesianGrid strokeDasharray="0" stroke={CH.grid} vertical={false} /><XAxis dataKey="name" tick={CH.tick} interval={0} /><YAxis allowDecimals={false} tick={CH.tick} />
-                    <Tooltip {...CH.tip} formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#B89A5E" radius={[6, 6, 0, 0]} /></BarChart></ResponsiveContainer>
+                    <Tooltip {...CH.tip} formatter={(v) => [`${v} animal(is)`, "Quantidade"]} /><Bar dataKey="value" fill="#B89A5E" radius={[6, 6, 0, 0]} cursor="pointer" /></BarChart></ResponsiveContainer></div>
                 ) : <p className="muted small">Nenhum animal ativo no conjunto filtrado.</p>}
               </div>
             </div>
@@ -4768,6 +5221,9 @@ export default function App() {
         </div>
       )}
 
+      {analise && <AnaliseGrafico key={analise.tipo} tipo={analise.tipo} inicial={analise} reais={reais} money={money} privado={privado}
+        onAbrir={setAberto} bloqueado={!!aberto || !!form || !!confirmar} onClose={() => setAnalise(null)}
+        onVerLista={(nome) => { setAnalise(null); setBusca(nome); setView("animal"); }} />}
       {form && <FichaForm tipo={form.tipo} initial={form.initial}
         animalNames={animalNames} animalReg={animalReg} genIndex={genIndex} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
@@ -5371,6 +5827,109 @@ a{color:var(--em)}
 .save-retry{margin-left:4px;border:0;background:var(--neg);color:#fff;border-radius:999px;padding:3px 9px;font-size:11.5px;font-weight:600;cursor:pointer;font-family:inherit}
 .topbar .save-chip{margin-left:auto}
 .save-chip-desk{display:inline-flex}
+
+/* ---------- Painel: gráficos expansíveis e análise detalhada ---------- */
+.card-exp .card-h{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.exp-btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line2);background:var(--surf);color:var(--muted);font:inherit;font-size:12.5px;font-weight:500;padding:5px 11px;border-radius:999px;cursor:pointer;transition:background .18s,color .18s,border-color .18s,transform .18s var(--ease)}
+.exp-btn:hover{background:var(--em-l);color:var(--em);border-color:rgba(23,107,70,.25)}
+.exp-btn:active{transform:scale(.96)}
+.chart-clk{cursor:zoom-in;border-radius:12px;transition:background .2s}
+.chart-clk:hover{background:rgba(23,107,70,.025)}
+.chart-clk:focus-visible{outline:2px solid rgba(23,107,70,.35);outline-offset:3px}
+.card-exp{transition:box-shadow .25s var(--ease),transform .25s var(--ease)}
+@media(hover:hover){.card-exp:hover{box-shadow:var(--sh2)}}
+.an-bg{z-index:95}
+.an-modal{width:min(1080px,100%);overflow:visible;animation:anEntra .32s var(--ease);background:var(--bg)}
+.an-bg.saindo{animation:fundoSai .21s ease forwards}
+.an-bg.saindo .an-modal{animation:anSai .21s ease forwards}
+.an-head{position:sticky;top:0;z-index:3;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:18px 22px 12px;background:var(--bg);border-radius:18px 18px 0 0}
+.an-head h2{margin:2px 0 0;font-size:22px;font-weight:700;letter-spacing:-.02em;color:var(--ink)}
+.an-filtros{display:flex;flex-wrap:wrap;gap:8px 10px;align-items:center;padding:0 22px 14px;border-bottom:1px solid var(--line)}
+.an-body{padding:16px 22px 24px;display:flex;flex-direction:column;gap:14px}
+.an-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+.an-kpi{display:flex;flex-direction:column;gap:2px;text-align:left;font:inherit;color:inherit;background:var(--surf);border:1px solid var(--line);border-radius:14px;padding:12px 14px;box-shadow:var(--sh1);min-width:0;transition:border-color .2s,box-shadow .2s,transform .2s var(--ease)}
+.an-kpi span{font-size:12.5px;font-weight:500;color:var(--muted)}
+.an-kpi b{font-size:19px;font-weight:650;letter-spacing:-.015em;color:var(--ink);font-variant-numeric:tabular-nums;animation:entra .35s var(--ease)}
+.an-kpi small{font-size:12px;color:var(--muted2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.an-kpi.clk{cursor:pointer}
+.an-kpi.clk:hover{border-color:rgba(23,107,70,.28);box-shadow:var(--sh2)}
+.an-kpi.clk:active{transform:scale(.985)}
+.an-kpi.on{border-color:var(--em);box-shadow:0 0 0 3px rgba(23,107,70,.12)}
+.an-card{background:var(--surf);border:1px solid var(--line);border-radius:16px;padding:16px 18px;box-shadow:var(--sh1)}
+.an-card-h{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px;margin-bottom:10px;font-size:15px;font-weight:600;color:var(--ink)}
+.an-chart{animation:entra .3s var(--ease)}
+.an-chart .recharts-bar-rectangle path,.an-chart .recharts-rectangle{transition:fill-opacity .28s ease}
+.an-chart .recharts-wrapper{cursor:pointer}
+.an-chart .recharts-surface:focus,.an-chart .recharts-wrapper:focus{outline:none}
+.an-nota{margin:8px 0 0}
+.an-un{font-size:12px;font-weight:500;color:var(--muted2)}
+.an-tip{background:rgba(255,255,255,.97);border:1px solid rgba(28,40,33,.1);border-radius:12px;padding:10px 12px;box-shadow:0 12px 30px rgba(20,30,25,.15);font-size:12.5px;min-width:170px;animation:tipEntra .16s ease-out;pointer-events:none}
+.an-tip-t{font-weight:650;color:var(--ink);margin-bottom:6px}
+.an-tip-l{display:flex;align-items:center;gap:7px;color:var(--muted);padding:1px 0}
+.an-tip-l i{width:9px;height:9px;border-radius:3px;flex:none}
+.an-tip-l b{margin-left:auto;color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums;padding-left:12px}
+.an-tip-h{margin-top:6px;padding-top:6px;border-top:1px solid var(--line);font-size:11px;color:var(--muted2)}
+.an-faixas{display:flex;flex-direction:column;gap:4px;margin-top:12px}
+.an-fx{display:grid;grid-template-columns:110px 1fr auto;align-items:center;gap:12px;border:0;background:transparent;font:inherit;color:inherit;text-align:left;padding:7px 10px;border-radius:10px;cursor:pointer;transition:background .2s,opacity .25s}
+.an-fx:hover:not(:disabled){background:rgba(28,40,33,.04)}
+.an-fx:disabled{cursor:default;opacity:.45}
+.an-fx.on{background:var(--em-l)}
+.an-fx.apaga{opacity:.5}
+.an-fx-n{font-size:13px;font-weight:500;color:var(--txt)}
+.an-fx-bar{height:8px;border-radius:99px;background:rgba(28,40,33,.06);overflow:hidden}
+.an-fx-bar i{display:block;height:100%;border-radius:99px;transition:width .5s var(--ease)}
+.an-fx-v{display:flex;align-items:baseline;gap:8px;min-width:78px;justify-content:flex-end;font-variant-numeric:tabular-nums}
+.an-fx-v b{font-size:13.5px;color:var(--ink)}
+.an-fx-v small{font-size:12px;color:var(--muted2);min-width:40px;text-align:right}
+.an-lista{background:var(--surf);border:1px solid var(--line);border-radius:16px;box-shadow:var(--sh1);overflow:hidden;animation:entra .3s var(--ease)}
+.an-lista-h{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px;padding:14px 16px;border-bottom:1px solid var(--line);background:var(--surf2)}
+.an-lista-h > div:first-child{display:flex;flex-direction:column;gap:1px;min-width:0}
+.an-lista-h b{font-size:15px;font-weight:650;color:var(--ink)}
+.an-lista-h span{font-size:12.5px;color:var(--muted)}
+.an-lista-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.an-vazio{padding:16px}
+.an-rows{display:flex;flex-direction:column}
+.an-row{display:grid;grid-template-columns:minmax(0,1fr) auto 14px;align-items:center;gap:14px;border:0;border-bottom:1px solid var(--line);background:transparent;font:inherit;color:inherit;text-align:left;padding:11px 16px;cursor:pointer;transition:background .18s}
+.an-row:last-of-type{border-bottom:0}
+.an-row:hover{background:rgba(23,107,70,.04)}
+.an-row:active{background:rgba(23,107,70,.08)}
+.an-row-main{display:flex;flex-direction:column;min-width:0}
+.an-row-main b{font-size:14px;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.an-row-main small{font-size:12px;color:var(--muted2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.an-row-vals{display:flex;gap:18px}
+.an-row-vals > span{display:flex;flex-direction:column;align-items:flex-end;min-width:64px}
+.an-row-vals small{font-size:11px;color:var(--muted2)}
+.an-row-vals b{font-size:13.5px;font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums;white-space:nowrap}
+.an-row-vals .pos b{color:var(--pos)}.an-row-vals .neg b{color:var(--neg)}.an-row-vals .gold b{color:var(--champ-d)}.an-row-vals .muted b{color:var(--muted)}
+.an-row-go{font-size:20px;color:var(--muted2);line-height:1}
+.an-mais{margin:10px auto 12px;display:block}
+@keyframes anEntra{from{opacity:.001;transform:translateY(10px) scale(.975)}to{opacity:1;transform:none}}
+@keyframes anSai{from{opacity:1;transform:none}to{opacity:0;transform:translateY(8px) scale(.98)}}
+@keyframes fundoSai{from{opacity:1}to{opacity:0}}
+@keyframes tipEntra{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+@keyframes folhaSai{from{transform:none;opacity:1}to{transform:translateY(60px);opacity:0}}
+@media(max-width:560px){
+  .an-head{padding:16px 16px 10px;border-radius:16px 16px 0 0}
+  .an-head h2{font-size:20px}
+  .an-filtros{padding:0 16px 12px;gap:8px}
+  .an-filtros .seg-group{flex:1 1 100%}.an-filtros .seg-group .seg{flex:1}
+  .an-filtros .df-sel{flex:1 1 calc(50% - 4px);max-width:none;min-width:0}
+  .an-body{padding:12px 12px calc(28px + env(safe-area-inset-bottom,0px));gap:12px}
+  .an-kpis{grid-template-columns:1fr 1fr;gap:8px}
+  .an-kpis > :last-child:nth-child(odd){grid-column:1/-1}
+  .an-kpi{padding:10px 12px}.an-kpi b{font-size:16px}
+  .an-card{padding:12px}
+  .an-card-h .seg-group{width:100%}.an-card-h .seg-group .seg{flex:1}
+  .an-fx{grid-template-columns:88px 1fr auto;gap:8px;padding:8px 6px}
+  .an-row{grid-template-columns:minmax(0,1fr) 12px;gap:6px 10px;padding:11px 12px}
+  .an-row-vals{grid-column:1;grid-row:2;gap:14px;justify-content:flex-start}
+  .an-row-vals > span{align-items:flex-start;min-width:0}
+  .an-row-go{grid-column:2;grid-row:1/3}
+  .an-lista-h{padding:12px}
+  .an-bg.saindo .an-modal{animation:folhaSai .21s ease forwards}
+  .exp-btn span{display:none}.exp-btn{padding:6px 8px}
+}
+.card-h-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 
 /* ---------- microanimações ---------- */
 @keyframes entra{from{opacity:.001;transform:translateY(6px)}to{opacity:1;transform:none}}
