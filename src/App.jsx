@@ -913,17 +913,102 @@ function Genealogia({ a }) {
   const natW = 2 * maxX, natH = 2 * maxY;
   const vb = `${-maxX} ${-maxY} ${natW} ${natH}`;
   const sym = (s) => (s === "M" ? "♂" : s === "F" ? "♀" : "");
-  const [zoom, setZoom] = useState("fit");
-  const zNum = zoom === "fit" ? null : zoom;
-  const passo = (dz) => setZoom((z) => { const atual = z === "fit" ? 0.8 : z; return Math.max(0.5, Math.min(1.8, Math.round((atual + dz) * 10) / 10)); });
-  const lista = (gens, side, titulo) => (
-    <div className={`pedm-side pedm-${side}`}>
-      <div className="pedm-t">{titulo}</div>
-      {gens.map((g, gi) => g.map((n, j) => (
-        <div className={`pedm-n g${gi}`} key={gi + "-" + j}><span className="pedm-l">{n.label} {sym(n.sex)}</span><span className="pedm-v">{n.name || "—"}</span></div>
-      )))}
-    </div>
-  );
+  // ---- navegação da árvore (mesmo componente no notebook e no celular) ----
+  const viewRef = useRef(null), svgRef = useRef(null);
+  const [esc, setEsc] = useState(null);            // escala atual (null = ainda medindo)
+  const [altura, setAltura] = useState(null);      // altura da janela da árvore
+  const mexeu = useRef(false);                     // o usuário já ajustou o zoom?
+  const foco = useRef(null);                       // ponto a manter fixo após mudar o zoom
+  const toque = useRef(null);
+  const MIN = 0.2, MAX = 2.2, LEGIVEL = 0.62;      // abaixo de ~0,62 os nomes ficam pequenos demais
+  const limita = (v) => Math.max(MIN, Math.min(MAX, v));
+  const medidas = () => {
+    const v = viewRef.current; if (!v) return null;
+    const w = v.clientWidth - 16, hMax = Math.max(260, Math.min(window.innerHeight * 0.62, 620));
+    const ajuste = Math.min(w / natW, (hMax - 16) / natH);
+    return { w, hMax, ajuste };
+  };
+  // posição do desenho dentro da janela rolável (SVG não tem offsetLeft)
+  const origem = () => { const v = viewRef.current, svg = svgRef.current; const a = v.getBoundingClientRect(), b = svg.getBoundingClientRect(); return { x: b.left - a.left + v.scrollLeft, y: b.top - a.top + v.scrollTop }; };
+  const centraliza = (s) => {          // centraliza no animal principal
+    const v = viewRef.current, svg = svgRef.current; if (!v || !svg) return;
+    const o = origem();
+    v.scrollLeft = o.x + (natW / 2) * s - v.clientWidth / 2;
+    v.scrollTop = o.y + (natH / 2) * s - v.clientHeight / 2;
+  };
+  const inicial = () => {
+    const m = medidas(); if (!m) return;
+    // enquadra a árvore inteira quando continua legível; senão abre em escala de leitura, centrada no animal
+    const s = m.ajuste >= LEGIVEL ? m.ajuste : Math.max(m.ajuste, LEGIVEL);
+    setAltura(Math.round(Math.min(m.hMax, natH * s + 16)));
+    foco.current = { centro: true };
+    setEsc(limita(s));
+  };
+  useEffect(() => { mexeu.current = false; inicial(); }, [natW, natH]);
+  useEffect(() => {
+    const v = viewRef.current; if (!v || typeof ResizeObserver === "undefined") return;
+    let w0 = v.clientWidth;
+    const ro = new ResizeObserver(() => { if (Math.abs(v.clientWidth - w0) > 4) { w0 = v.clientWidth; if (!mexeu.current) inicial(); } });
+    ro.observe(v); return () => ro.disconnect();
+  }, [natW, natH]);
+  // depois de mudar a escala, ajusta a rolagem para manter o ponto de foco no lugar
+  React.useLayoutEffect(() => {
+    const f = foco.current; foco.current = null;
+    const v = viewRef.current, svg = svgRef.current; if (!f || !v || !svg || esc == null) return;
+    if (f.centro) { centraliza(esc); return; }
+    const o = origem();
+    v.scrollLeft = o.x + f.cx * esc - f.fx;
+    v.scrollTop = o.y + f.cy * esc - f.fy;
+  }, [esc]);
+  const zoomEm = (novo, fx, fy) => {   // fx, fy: ponto na janela da árvore
+    const v = viewRef.current, svg = svgRef.current; if (!v || !svg || esc == null) return;
+    const s1 = limita(novo); if (Math.abs(s1 - esc) < 0.001) return;
+    const px = fx == null ? v.clientWidth / 2 : fx, py = fy == null ? v.clientHeight / 2 : fy;
+    const o = origem();
+    foco.current = { fx: px, fy: py, cx: (v.scrollLeft + px - o.x) / esc, cy: (v.scrollTop + py - o.y) / esc };
+    mexeu.current = true; setEsc(s1);
+  };
+  const ajustarTudo = () => { const m = medidas(); if (!m) return; mexeu.current = true; foco.current = { centro: true }; setEsc(limita(m.ajuste)); };
+  const tamanhoReal = () => { mexeu.current = true; foco.current = { centro: true }; setEsc(1); };
+  // gestos: pinça (2 dedos) e trackpad/Ctrl+roda; 1 dedo e roda comum rolam normalmente
+  useEffect(() => {
+    const v = viewRef.current; if (!v) return;
+    const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    const meio = (t) => { const r = v.getBoundingClientRect(); return { x: (t[0].clientX + t[1].clientX) / 2 - r.left, y: (t[0].clientY + t[1].clientY) / 2 - r.top }; };
+    const ts = (e) => { if (e.touches.length === 2) { toque.current = { d0: dist(e.touches), s0: escRef.current }; e.preventDefault(); } };
+    const tm = (e) => {
+      if (e.touches.length === 2 && toque.current) {
+        e.preventDefault();
+        const m = meio(e.touches); zoomRef.current(toque.current.s0 * dist(e.touches) / toque.current.d0, m.x, m.y);
+      }
+    };
+    const te = (e) => { if (e.touches.length < 2) toque.current = null; };
+    const wh = (e) => {
+      if (!e.ctrlKey) return;            // pinça no trackpad chega como Ctrl+roda
+      e.preventDefault();
+      const r = v.getBoundingClientRect(); zoomRef.current(escRef.current * Math.exp(-e.deltaY / 200), e.clientX - r.left, e.clientY - r.top);
+    };
+    const gs = (e) => e.preventDefault(); // Safari: impede o zoom da página inteira dentro da árvore
+    v.addEventListener("touchstart", ts, { passive: false });
+    v.addEventListener("touchmove", tm, { passive: false });
+    v.addEventListener("touchend", te); v.addEventListener("touchcancel", te);
+    v.addEventListener("wheel", wh, { passive: false });
+    v.addEventListener("gesturestart", gs); v.addEventListener("gesturechange", gs);
+    return () => {
+      v.removeEventListener("touchstart", ts); v.removeEventListener("touchmove", tm);
+      v.removeEventListener("touchend", te); v.removeEventListener("touchcancel", te);
+      v.removeEventListener("wheel", wh); v.removeEventListener("gesturestart", gs); v.removeEventListener("gesturechange", gs);
+    };
+  }, []);
+  const escRef = useRef(esc); escRef.current = esc;
+  const zoomRef = useRef(zoomEm); zoomRef.current = zoomEm;
+  // arrastar com o mouse (no notebook)
+  const arrasto = useRef(null);
+  const pd = (e) => { if (e.pointerType !== "mouse" || e.button !== 0) return; const v = viewRef.current; arrasto.current = { x: e.clientX, y: e.clientY, l: v.scrollLeft, t: v.scrollTop }; v.classList.add("arrastando"); };
+  const pm = (e) => { const a = arrasto.current; if (!a) return; const v = viewRef.current; v.scrollLeft = a.l - (e.clientX - a.x); v.scrollTop = a.t - (e.clientY - a.y); };
+  const pu = () => { if (!arrasto.current) return; arrasto.current = null; viewRef.current && viewRef.current.classList.remove("arrastando"); };
+  const s = esc || 1;
+  const pct = Math.round(s * 100);
   return (
     <div className="geneal ped">
       <div className="ped-bar">
@@ -933,37 +1018,35 @@ function Genealogia({ a }) {
           <span><i className="sw sw-p" /> Família paterna</span>
         </div>
         <div className="ped-zoom" role="group" aria-label="Zoom da genealogia">
-          <button type="button" className={zoom === "fit" ? "on" : ""} onClick={() => setZoom("fit")}>Ajustar</button>
-          <button type="button" onClick={() => passo(-0.1)} aria-label="Diminuir"><Ico n="zoomMenos" size={15} /></button>
-          <span className="ped-zv">{zoom === "fit" ? "auto" : `${Math.round(zNum * 100)}%`}</span>
-          <button type="button" onClick={() => passo(0.1)} aria-label="Aumentar"><Ico n="zoomMais" size={15} /></button>
+          <button type="button" onClick={ajustarTudo} title="Mostrar a árvore inteira">Ajustar</button>
+          <button type="button" onClick={() => zoomEm(s / 1.25)} aria-label="Diminuir"><Ico n="zoomMenos" size={15} /></button>
+          <button type="button" className="ped-zv" onClick={tamanhoReal} title="Restaurar zoom (100%)">{pct}%</button>
+          <button type="button" onClick={() => zoomEm(s * 1.25)} aria-label="Aumentar"><Ico n="zoomMais" size={15} /></button>
         </div>
       </div>
-      <div className={`ped-view ${zoom === "fit" ? "fit" : ""}`}>
-        <svg className="ped-svg" viewBox={vb} preserveAspectRatio="xMidYMid meet"
-          style={zoom === "fit" ? { width: "100%", height: "auto", maxWidth: natW * 1.1 } : { width: natW * zNum, height: natH * zNum, maxWidth: "none" }}>
-          <text x={-maxX + 4} y={-maxY + 16} className="ph-m" fontSize="12" fontWeight="600">FAMÍLIA MATERNA</text>
-          <text x={maxX - 4} y={-maxY + 16} textAnchor="end" className="ph-p" fontSize="12" fontWeight="600">FAMÍLIA PATERNA</text>
-          {links.map((l, i) => <path key={i} d={caminho(l)} fill="none" className={l.sign < 0 ? "pl-m" : "pl-p"} strokeWidth="1.5" />)}
-          {nodes.map((n, i) => {
-            const main = n.side === "C";
-            const h = main ? GH + 8 : GH;
-            return (
-              <g key={i} className={`pn pn-${n.side}${n.name ? "" : " vazio"}`}>
-                <rect x={n.x - GW / 2} y={n.y - h / 2} width={GW} height={h} rx="12" className="pn-box" />
-                <text x={n.x - GW / 2 + 13} y={n.y - h / 2 + 20} fontSize="11.5" fontWeight="600" className="pn-l">{n.label} {sym(n.sex)}</text>
-                <text x={n.x - GW / 2 + 13} y={n.y + h / 2 - 14} fontSize={main ? 15.5 : 14.5} fontWeight="600" className="pn-v">{truncNome(n.name, 21)}</text>
-                <title>{n.name || "—"}</title>
-              </g>
-            );
-          })}
-        </svg>
+      <div className="ped-view" ref={viewRef} style={altura ? { height: altura } : undefined}
+        onPointerDown={pd} onPointerMove={pm} onPointerUp={pu} onPointerLeave={pu} onPointerCancel={pu}>
+        <div className="ped-canvas">
+          <svg ref={svgRef} className="ped-svg" viewBox={vb} width={Math.round(natW * s)} height={Math.round(natH * s)} style={{ visibility: esc == null ? "hidden" : "visible" }}>
+            <text x={-maxX + 4} y={-maxY + 16} className="ph-m" fontSize="12" fontWeight="600">FAMÍLIA MATERNA</text>
+            <text x={maxX - 4} y={-maxY + 16} textAnchor="end" className="ph-p" fontSize="12" fontWeight="600">FAMÍLIA PATERNA</text>
+            {links.map((l, i) => <path key={i} d={caminho(l)} fill="none" className={l.sign < 0 ? "pl-m" : "pl-p"} strokeWidth="1.5" vectorEffect="non-scaling-stroke" />)}
+            {nodes.map((n, i) => {
+              const main = n.side === "C";
+              const h = main ? GH + 8 : GH;
+              return (
+                <g key={i} className={`pn pn-${n.side}${n.name ? "" : " vazio"}`}>
+                  <rect x={n.x - GW / 2} y={n.y - h / 2} width={GW} height={h} rx="12" className="pn-box" />
+                  <text x={n.x - GW / 2 + 13} y={n.y - h / 2 + 20} fontSize="11.5" fontWeight="600" className="pn-l">{n.label} {sym(n.sex)}</text>
+                  <text x={n.x - GW / 2 + 13} y={n.y + h / 2 - 14} fontSize={main ? 15.5 : 14.5} fontWeight="600" className="pn-v">{truncNome(n.name, 21)}</text>
+                  <title>{n.name || "—"}</title>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
       </div>
-      <div className="ped-mobile">
-        <div className="pedm-c"><span className="pedm-l">{center.label} {sym(center.sex)}</span><span className="pedm-v">{center.name || "—"}</span></div>
-        {lista(materna, "m", "Família materna")}
-        {lista(paterna, "p", "Família paterna")}
-      </div>
+      <div className="ped-dica">Arraste para navegar · pinça ou botões para zoom · "Ajustar" mostra a árvore inteira</div>
     </div>
   );
 }
@@ -5000,9 +5083,13 @@ a{color:var(--em)}
 .ped-zoom button{border:0;background:transparent;font:inherit;font-size:12.5px;font-weight:500;color:var(--txt);padding:5px 9px;border-radius:7px;cursor:pointer;display:inline-flex;align-items:center;min-height:28px}
 .ped-zoom button:hover{background:rgba(28,40,33,.06)}
 .ped-zoom button.on{background:var(--surf);box-shadow:var(--sh1);font-weight:600}
-.ped-zv{font-size:12px;color:var(--muted);min-width:40px;text-align:center}
-.ped-view{overflow:auto;max-height:70vh;background:linear-gradient(180deg,#FCFBF8,#F7F5F0);overscroll-behavior:contain;padding:8px}
-.ped-view.fit{overflow:hidden;display:flex;justify-content:center}
+.ped-zoom .ped-zv{font-size:12px;color:var(--muted);min-width:48px;justify-content:center;font-variant-numeric:tabular-nums}
+.ped-view{position:relative;overflow:auto;background:linear-gradient(180deg,#FCFBF8,#F7F5F0);touch-action:pan-x pan-y;-webkit-overflow-scrolling:touch;cursor:grab;user-select:none;-webkit-user-select:none}
+.ped-view.arrastando{cursor:grabbing}
+.ped-canvas{display:flex;align-items:center;justify-content:center;min-width:100%;min-height:100%;width:max-content;padding:8px;box-sizing:border-box}
+.ped-canvas svg{flex:none;max-width:none}
+.ped-dica{display:none;font-size:11.5px;color:var(--muted2);text-align:center;padding:7px 10px;border-top:1px solid var(--line)}
+
 .ped-svg{display:block;font-family:var(--f)}
 .ped-svg .ph-m{fill:#84485A}.ped-svg .ph-p{fill:#3E5676}
 .ped-svg .pl-m{stroke:#9E5D6B;stroke-opacity:.62}.ped-svg .pl-p{stroke:#4F6A8C;stroke-opacity:.62}
@@ -5014,18 +5101,6 @@ a{color:var(--em)}
 .ped-svg .pn-v{fill:#1C2621}.ped-svg .pn-C .pn-v{fill:#fff}
 .ped-svg .pn.vazio .pn-v{fill:#A3AAA6;font-weight:500}
 .ped-svg .pn.vazio .pn-box{stroke-dasharray:3 3}
-.ped-mobile{display:none;padding:12px}
-.pedm-c{display:flex;flex-direction:column;gap:1px;background:var(--em);color:#fff;border-radius:var(--r2);padding:11px 13px;margin-bottom:10px}
-.pedm-c .pedm-l{color:rgba(255,255,255,.8)}.pedm-c .pedm-v{color:#fff;font-size:17px;text-align:left}
-.pedm-side{border-radius:var(--r2);padding:10px 12px 4px;margin-bottom:10px;border:1px solid}
-.pedm-m{border-color:rgba(158,93,107,.32);background:#F4E5E8}
-.pedm-p{border-color:rgba(79,106,140,.32);background:#E6EDF5}
-.pedm-t{font-size:12px;font-weight:600;margin-bottom:4px}
-.pedm-m .pedm-t{color:#84485A}.pedm-p .pedm-t{color:#3E5676}
-.pedm-n{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding:8px 0;border-top:1px solid rgba(28,40,33,.06)}
-.pedm-n.g1{padding-left:14px}.pedm-n.g2{padding-left:28px}
-.pedm-l{font-size:12px;color:var(--muted)}
-.pedm-v{font-size:14px;font-weight:600;color:var(--ink);text-align:right}
 .geneal.tree{display:flex;flex-direction:column;gap:24px;padding:16px}
 .tree-row{display:flex;justify-content:center;gap:14px;flex-wrap:wrap}.tree-row.bisrow{gap:8px;flex-wrap:nowrap;min-width:min-content}
 .gnode{background:var(--surf2);border:1px solid var(--line);border-radius:var(--r2);padding:9px 14px;min-width:130px;text-align:center}.gnode-sm{min-width:96px;padding:6px 9px}
@@ -5277,8 +5352,10 @@ a{color:var(--em)}
   .auth-name{font-size:22px;margin-top:4px}
 }
 @media(max-width:640px){
-  .ped-view,.ped-view.fit,.ped-zoom{display:none}
-  .ped-mobile{display:block}
+  .ped-legend{font-size:11.5px;gap:4px 10px}
+  .ped-zoom{margin-left:0;width:100%;justify-content:space-between}
+  .ped-zoom button{min-height:34px;padding:6px 12px}
+  .ped-dica{display:block}
 }
 @media(max-width:560px){
   .main{padding-bottom:52px}
