@@ -1829,6 +1829,56 @@ function useContagem(v, dur = 650) {
 function MoneyViva({ v, money, className }) { const x = useContagem(v); return <MoneyBig v={Math.abs(x - v) < 0.005 ? v : x} money={money} className={className} />; }
 function ContaViva({ v }) { return <>{Math.round(useContagem(v, 500))}</>; }
 
+/* Ciclo holográfico automático: 5 s ativo → 0,7 s de saída suave → descanso até completar 15 s.
+   UM agendador para todos os gráficos: calcula a próxima troca de fase de todos e arma um único
+   setTimeout até ela (nada de intervalos por gráfico). Cada gráfico do Painel tem uma defasagem
+   própria (vagas de 3 s), para o movimento ficar distribuído. Pausa quando a aba está em segundo
+   plano, quando o gráfico não está visível, e quando há uma janela por cima (ficha/análise). */
+const holo = (() => {
+  const CICLO = 15000, ATIVO = 5000, SAIDA = 700;
+  const itens = new Map();
+  let timer = 0, io = null, susp = 0;
+  const agora = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+  const obs = () => {
+    if (io || typeof IntersectionObserver === "undefined") return io;
+    io = new IntersectionObserver((es) => { es.forEach((e) => { const it = itens.get(e.target); if (it) it.visivel = e.isIntersecting; }); tick(); }, { threshold: 0.25 });
+    return io;
+  };
+  const fase = (it, t) => {
+    if (typeof document !== "undefined" && document.hidden) return ["off", Infinity];
+    if (!it.visivel) return ["off", Infinity];
+    if (it.modal ? susp > 1 : susp > 0) return ["off", Infinity];   // coberto por uma janela
+    const d = t - it.t0; if (d < 0) return ["off", it.t0];
+    const p = d % CICLO, ini = t - p;
+    if (p < ATIVO) return ["on", ini + ATIVO];
+    if (p < ATIVO + SAIDA) return ["sai", ini + ATIVO + SAIDA];
+    return ["off", ini + CICLO];
+  };
+  function tick() {
+    clearTimeout(timer); timer = 0;
+    const t = agora(); let prox = Infinity;
+    itens.forEach((it) => { const [fz, n] = fase(it, t); if (fz !== it.f) { it.f = fz; it.set(fz); } if (n < prox) prox = n; });
+    if (prox < Infinity) timer = setTimeout(tick, Math.max(20, prox - t + 4));
+  }
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", tick);
+  return {
+    registrar(el, set) {
+      if (!el) return () => {};
+      const modal = !!el.closest(".modal");
+      // vaga livre (0–4) entre os gráficos do Painel → defasagem de 3 s entre eles
+      const usadas = new Set([...itens.values()].filter((x) => !x.modal).map((x) => x.vaga));
+      let vaga = 0; while (usadas.has(vaga) && vaga < 4) vaga++;
+      const it = { set, f: "off", visivel: false, modal, vaga, t0: agora() + (modal ? 1400 : 1600 + vaga * 3000) };
+      itens.set(el, it);
+      const o = obs(); if (o) o.observe(el); else it.visivel = true;
+      tick();
+      return () => { if (o) o.unobserve(el); itens.delete(el); tick(); };
+    },
+    suspender(sim) { susp = Math.max(0, susp + (sim ? 1 : -1)); tick(); },
+    _estado() { return { graficos: itens.size, timerArmado: !!timer, suspensoes: susp }; },
+  };
+})();
+if (typeof window !== "undefined") window.__holo = holo; // diagnóstico (somente leitura)
 let bvSeq = 0;
 // contorno da barra com a ponta de dados arredondada (base reta, ancorada no eixo)
 function caminhoBarra(x, y, w, h, r, horizontal) {
@@ -1849,6 +1899,8 @@ function BarraViva(p) {
   const dur = Math.max(1.8, Math.min(4.2, per / 70));
   const cid = `${v.uid}-c${i}-${v.serie}`;
   const rot = ativo && v.rotulo ? v.rotulo(payload) : null;
+  // geometria real da barra para a camada do ciclo automático (composta pela GPU, fora do SVG)
+  if (v.geo) v.geo.set(`${v.serie}-${i}`, { x, y, w, h, i, si: v.si, ok: !(v.sel != null && v.sel !== k), horizontal: v.horizontal, ponto: v.ponto, brilho: v.brilho });
   return (
     <g className={`bv${fora ? " apaga" : ""}${ativo ? " ativo" : ""}${marcado ? " marcado" : ""}`}>
       <path d={d} fill={v.cor} className="bv-corpo" />
@@ -1899,6 +1951,9 @@ function BarrasVivas({ dados, series, horizontal = false, altura, xKey = "name",
   const wrap = useRef(null), caixa = useRef(null);
   const toque = useMemo(semHover, []);
   const reduz = useMemo(reduzMovimento, []);
+  // limite de partículas automáticas por gráfico (celular: versão simplificada)
+  const nBarras = Math.max(1, dados.length * series.length);
+  const autoPts = Math.max(0, Math.min(toque ? 2 : 5, Math.floor((toque ? 10 : 36) / nBarras)));
   const foco = (i) => { if (i !== hovRef.current) { hovRef.current = i; setHov(i); } };
   const mm = (s) => foco(s && s.isTooltipActive && s.activeTooltipIndex != null ? s.activeTooltipIndex : null);
   const ck = (s) => {
@@ -1910,7 +1965,61 @@ function BarrasVivas({ dados, series, horizontal = false, altura, xKey = "name",
   // luz que segue o cursor: só variáveis CSS (sem render do React)
   const medir = () => { const s = wrap.current && wrap.current.querySelector("svg.recharts-surface"); caixa.current = s ? s.getBoundingClientRect() : null; };
   const luz = (e) => { if (toque || !wrap.current) return; if (!caixa.current) medir(); const r = caixa.current; if (!r) return; wrap.current.style.setProperty("--mx", `${e.clientX - r.left}px`); wrap.current.style.setProperty("--my", `${e.clientY - r.top}px`); };
-  const viva = (s) => ({ hov, sel, chave, uid, horizontal, serie: s.key, cor: s.cor, ponto: s.ponto || "#C9A961", brilho: s.brilho || "rgba(255,255,255,.95)", pts: reduz ? 0 : toque ? 4 : 12, luz: !toque && !reduz, rotulo: s.rotulo === false ? null : rotulo });
+  // Ciclo holográfico automático. A fase chega do agendador único (holo) e é aplicada direto
+  // numa camada HTML sobreposta — sem re-renderizar o gráfico. Tudo nessa camada anima só
+  // transform/opacity pela Web Animations API (composto pela GPU, sem repintar o SVG).
+  const geo = useRef(new Map()); geo.current = new Map();
+  const camada = useRef(null), fase = useRef("off");
+  const ptsRef = useRef(autoPts); ptsRef.current = autoPts;
+  const limpaCamada = () => { const c = camada.current; if (!c) return; if (c.getAnimations) c.getAnimations({ subtree: true }).forEach((a) => a.cancel()); c.textContent = ""; c.dataset.ativo = ""; };
+  const montaCamada = (host) => {
+    const nPts = ptsRef.current;
+    [...geo.current.values()].filter((b) => b.ok && b.w > 1 && b.h > 1).forEach((b) => {
+      const atraso = b.i * 160 + b.si * 80;
+      // contorno luminoso + varredura de luz dentro da barra
+      const box = document.createElement("div"); box.className = "bv-cv" + (b.horizontal ? " h" : "");
+      Object.assign(box.style, { left: b.x + "px", top: b.y + "px", width: b.w + "px", height: b.h + "px", boxShadow: `inset 0 0 0 1.2px ${b.brilho}` });
+      const luz = document.createElement("i"); box.appendChild(luz); host.appendChild(box);
+      box.animate([{ opacity: 0 }, { opacity: 0.9 }], { duration: 700, delay: atraso, easing: "ease-out", fill: "both" });
+      const hv = b.horizontal ? b.w : b.h, fx = Math.max(10, hv * 0.5);
+      if (b.horizontal) luz.style.width = fx + "px"; else luz.style.height = fx + "px";
+      luz.animate(b.horizontal ? [{ transform: `translateX(${-fx}px)` }, { transform: `translateX(${b.w}px)` }] : [{ transform: `translateY(${b.h}px)` }, { transform: `translateY(${-fx}px)` }],
+        { duration: 2500, delay: atraso + 200, iterations: 2, easing: "cubic-bezier(.45,0,.25,1)", fill: "both" });
+      // partículas percorrendo o contorno real da barra
+      if (!nPts) return;
+      const { x, y, w, h } = b;
+      const cantos = b.horizontal ? [[x, y], [x + w, y], [x + w, y + h], [x, y + h]] : [[x, y + h], [x, y], [x + w, y], [x + w, y + h]];
+      const lados = b.horizontal ? [w, h, w, h] : [h, w, h, w];
+      const P = lados.reduce((s2, l) => s2 + l, 0);
+      let acc = 0; const offs = [0]; lados.forEach((l) => { acc += l; offs.push(acc / P); });
+      const quadros = cantos.concat([cantos[0]]).map(([px, py], q) => ({ transform: `translate(${(px - 2).toFixed(1)}px, ${(py - 2).toFixed(1)}px)`, offset: Math.min(1, offs[q]) }));
+      const dur = Math.max(1.8, Math.min(4.2, P / 70)) * 1350;
+      for (let j = 0; j < nPts; j++) {
+        const pt = document.createElement("span"); pt.className = "bv-cp" + (j % 2 ? " m" : ""); pt.style.background = b.ponto; host.appendChild(pt);
+        pt.animate(quadros, { duration: dur, iterations: Infinity, delay: -((j * dur) / nPts + b.i * 370), easing: "linear" });
+        pt.animate([{ opacity: 0 }, { opacity: j % 2 ? 0.7 : 0.95 }], { duration: 800, delay: atraso + 350, fill: "both" });
+      }
+    });
+  };
+  const aplica = () => {
+    const host = camada.current, w = wrap.current; if (!host || !w || !host.animate) return;
+    const f = fase.current;
+    w.classList.toggle("auto-on", f === "on"); w.classList.toggle("auto-sai", f === "sai");
+    if (f === "on" && hovRef.current == null) {
+      if (host.dataset.ativo === "1") return;
+      limpaCamada(); host.dataset.ativo = "1"; montaCamada(host);
+    } else if (f === "sai" && hovRef.current == null && host.dataset.ativo === "1") {
+      host.dataset.ativo = "saindo";
+      const a = host.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 700, easing: "ease", fill: "forwards" });
+      a.onfinish = () => limpaCamada();
+    } else if (host.dataset.ativo !== "saindo") limpaCamada();
+  };
+  const aplicaRef = useRef(aplica); aplicaRef.current = aplica;
+  useEffect(() => (reduz ? undefined : holo.registrar(wrap.current, (f) => { fase.current = f; aplicaRef.current(); })), []);
+  // interação, filtros ou seleção mudaram: refaz a camada sobre a geometria atual
+  useEffect(() => { if (camada.current && camada.current.dataset.ativo === "1") limpaCamada(); aplicaRef.current(); }, [hov, dados, sel]);
+  useEffect(() => limpaCamada, []);
+  const viva = (s, si) => ({ hov, sel, chave, uid, horizontal, si, geo: geo.current, serie: s.key, cor: s.cor, ponto: s.ponto || "#C9A961", brilho: s.brilho || "rgba(255,255,255,.95)", pts: reduz ? 0 : toque ? 4 : 12, luz: !toque && !reduz, rotulo: s.rotulo === false ? null : rotulo });
   const eixos = horizontal
     ? [<XAxis key="x" type="number" tick={CH.tick} tickFormatter={eixoValor} tickLine={false} axisLine={false} allowDecimals={!contagem} />,
        <YAxis key="y" type="category" dataKey={xKey} width={yLargura || 100} tick={CH.tick} tickFormatter={eixoCat} tickLine={false} axisLine={false} interval={0} />]
@@ -1933,12 +2042,13 @@ function BarrasVivas({ dados, series, horizontal = false, altura, xKey = "name",
           {legenda && <Legend wrapperStyle={{ fontSize: 12, color: "#58635D" }} formatter={legenda} />}
           {series.map((s, si) => (
             <Bar key={s.key} dataKey={s.key} name={s.key} fill={s.cor} maxBarSize={maxBarra} isAnimationActive={!reduz} animationDuration={animDur} animationEasing="ease-out" cursor="pointer"
-              shape={(pp) => <BarraViva {...pp} viva={viva(s)} />}>
+              shape={(pp) => <BarraViva {...pp} viva={viva(s, si)} />}>
               {rotulosFixos && si === 0 ? <LabelList dataKey={s.key} position={horizontal ? "right" : "top"} offset={6} formatter={(x) => (x ? x : "")} style={{ fontSize: 11.5, fill: "#58635D", fontWeight: 600 }} /> : null}
             </Bar>
           ))}
         </BarChart>
       </ResponsiveContainer>
+      <div className="bv-camada" ref={camada} aria-hidden="true" />
     </div>
   );
 }
@@ -2407,9 +2517,9 @@ function useTravaFundo() {
       travaY = window.scrollY || window.pageYOffset || 0;
       b.style.position = "fixed"; b.style.top = `-${travaY}px`; b.style.left = "0"; b.style.right = "0"; b.style.width = "100%";
     }
-    autoplay.suspender(true);
+    autoplay.suspender(true); holo.suspender(true);
     return () => {
-      autoplay.suspender(false);
+      autoplay.suspender(false); holo.suspender(false);
       if (--travasFundo === 0) {
         b.style.position = ""; b.style.top = ""; b.style.left = ""; b.style.right = ""; b.style.width = "";
         window.scrollTo(0, travaY);
@@ -6155,7 +6265,17 @@ a{color:var(--em)}
 @keyframes bvRot{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @keyframes bvFeixe{from{opacity:0}to{opacity:1}}
 @media(hover:none),(pointer:coarse){.bv.ativo .bv-corpo{filter:none}.bv-pts{filter:none}.an-tip{padding:7px 10px;min-width:0;font-size:12px;box-shadow:0 6px 18px rgba(20,30,25,.14)}.an-tip-t{margin-bottom:3px}.an-tip-h{display:none}}
+/* ciclo holográfico automático (mesmo efeito do foco, mais leve, surgindo barra a barra) */
+.bv-camada{position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;z-index:1}
+.bv-cv{position:absolute;overflow:hidden;border-radius:4px 4px 0 0}
+.bv-cv.h{border-radius:0 4px 4px 0}
+.bv-cv i{position:absolute;left:0;top:0;width:100%;background:linear-gradient(180deg,rgba(255,255,255,.42),rgba(255,255,255,.06) 55%,rgba(255,255,255,0));will-change:transform}
+.bv-cv.h i{width:auto;height:100%;background:linear-gradient(270deg,rgba(255,255,255,.42),rgba(255,255,255,.06) 55%,rgba(255,255,255,0))}
+.bv-cp{position:absolute;left:0;top:0;width:4px;height:4px;border-radius:50%;opacity:0;will-change:transform,opacity;box-shadow:0 0 5px rgba(217,188,114,.85)}
+.bv-cp.m{width:3px;height:3px}
+@media(hover:none),(pointer:coarse){.bv-cp{box-shadow:none}}
 /* indicadores financeiros clicáveis */
+
 .fh-clk{cursor:pointer;transition:transform .25s var(--ease),box-shadow .25s var(--ease)}
 @media(hover:hover){.fh-clk:hover{transform:translateY(-2px);box-shadow:var(--sh2)}.fh-main.fh-clk:hover{box-shadow:0 14px 34px rgba(15,59,42,.28)}}
 .fh-clk:active{transform:scale(.985)}
