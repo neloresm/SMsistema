@@ -1809,9 +1809,9 @@ const semHover = () => { try { return window.matchMedia("(hover: none), (pointer
    • useContagem: número que desliza até o novo valor (só quando o valor muda).
    • BarrasVivas: gráfico de barras (Recharts) com estado "vivo" ao passar o mouse/tocar:
      a barra em foco ganha brilho, contorno luminoso desenhado sobre a geometria real e
-     pontos que percorrem esse contorno; as demais recuam. Nada roda sem interação:
-     os efeitos só existem enquanto a barra está em foco. Celular: poucos pontos e sem
-     luz de cursor. "Reduzir movimento": sem pontos e sem animações. */
+     as demais recuam. As partículas holográficas são contínuas (canvas + laço único, ver holo)
+     e reagem ao cursor. Celular: versão leve, sem luz de cursor. "Reduzir movimento": sem
+     partículas e sem animações. */
 function useContagem(v, dur = 650) {
   const alvo = Number(v) || 0;
   const [x, setX] = useState(alvo);
@@ -1829,55 +1829,176 @@ function useContagem(v, dur = 650) {
 function MoneyViva({ v, money, className }) { const x = useContagem(v); return <MoneyBig v={Math.abs(x - v) < 0.005 ? v : x} money={money} className={className} />; }
 function ContaViva({ v }) { return <>{Math.round(useContagem(v, 500))}</>; }
 
-/* Ciclo holográfico automático: 5 s ativo → 0,7 s de saída suave → descanso até completar 15 s.
-   UM agendador para todos os gráficos: calcula a próxima troca de fase de todos e arma um único
-   setTimeout até ela (nada de intervalos por gráfico). Cada gráfico do Painel tem uma defasagem
-   própria (vagas de 3 s), para o movimento ficar distribuído. Pausa quando a aba está em segundo
-   plano, quando o gráfico não está visível, e quando há uma janela por cima (ficha/análise). */
+/* Animação holográfica contínua. UM laço requestAnimationFrame para todos os gráficos: cada
+   gráfico desenha suas partículas num único <canvas> sobreposto (nada de elementos DOM por
+   partícula, nada de render do React por quadro). O laço só roda enquanto há algum gráfico
+   visível: para com a aba em segundo plano, com o gráfico fora da tela ou coberto por uma janela
+   (ficha/análise) e retoma sozinho. O relógio é próprio (soma de dt), então a animação continua de
+   onde parou, sem saltos. Celular/aparelhos modestos: 30 quadros/s e menos partículas; se o
+   desenho ficar caro no aparelho, passa sozinho para essa versão leve. */
 const holo = (() => {
-  const CICLO = 15000, ATIVO = 5000, SAIDA = 700;
   const itens = new Map();
-  let timer = 0, io = null, susp = 0;
+  let raf = 0, io = null, susp = 0, ult = 0, relogio = 0, custo = 0, quadros = 0;
   const agora = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
+  let leve = (() => { try { const n = navigator; return semHover() || (n.hardwareConcurrency > 0 && n.hardwareConcurrency <= 4) || (n.deviceMemory > 0 && n.deviceMemory <= 4) || !!(n.connection && n.connection.saveData); } catch (e) { return false; } })();
   const obs = () => {
     if (io || typeof IntersectionObserver === "undefined") return io;
-    io = new IntersectionObserver((es) => { es.forEach((e) => { const it = itens.get(e.target); if (it) it.visivel = e.isIntersecting; }); tick(); }, { threshold: 0.25 });
+    io = new IntersectionObserver((es) => { es.forEach((e) => { const it = itens.get(e.target); if (it) it.visivel = e.isIntersecting; }); kick(); }, { threshold: 0 });
     return io;
   };
-  const fase = (it, t) => {
-    if (typeof document !== "undefined" && document.hidden) return ["off", Infinity];
-    if (!it.visivel) return ["off", Infinity];
-    if (it.modal ? susp > 1 : susp > 0) return ["off", Infinity];   // coberto por uma janela
-    const d = t - it.t0; if (d < 0) return ["off", it.t0];
-    const p = d % CICLO, ini = t - p;
-    if (p < ATIVO) return ["on", ini + ATIVO];
-    if (p < ATIVO + SAIDA) return ["sai", ini + ATIVO + SAIDA];
-    return ["off", ini + CICLO];
-  };
-  function tick() {
-    clearTimeout(timer); timer = 0;
-    const t = agora(); let prox = Infinity;
-    itens.forEach((it) => { const [fz, n] = fase(it, t); if (fz !== it.f) { it.f = fz; it.set(fz); } if (n < prox) prox = n; });
-    if (prox < Infinity) timer = setTimeout(tick, Math.max(20, prox - t + 4));
+  const ativo = (it) => !(typeof document !== "undefined" && document.hidden) && it.visivel && !(it.modal ? susp > 1 : susp > 0);
+  const algum = () => { for (const it of itens.values()) if (ativo(it)) return true; return false; };
+  function quadro(t) {
+    raf = 0;
+    if (!algum()) { ult = 0; return; }
+    raf = requestAnimationFrame(quadro);
+    const passo = 1000 / (leve ? 30 : 60);
+    if (ult && t - ult < passo - 4) return;
+    const dt = ult ? Math.min(0.1, (t - ult) / 1000) : passo / 1000; ult = t; relogio += dt;
+    const c0 = agora();
+    itens.forEach((it) => { if (ativo(it)) it.desenha(relogio, dt, leve); });
+    custo = custo * 0.95 + (agora() - c0) * 0.05; quadros++;
+    if (!leve && quadros > 90 && custo > 4) leve = true;   // aparelho sofrendo → versão leve
   }
-  if (typeof document !== "undefined") document.addEventListener("visibilitychange", tick);
+  function kick() { if (!raf && algum()) { ult = 0; raf = requestAnimationFrame(quadro); } }
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", kick);
   return {
-    registrar(el, set) {
+    registrar(el, desenha, info) {
       if (!el) return () => {};
-      const modal = !!el.closest(".modal");
-      // vaga livre (0–4) entre os gráficos do Painel → defasagem de 3 s entre eles
-      const usadas = new Set([...itens.values()].filter((x) => !x.modal).map((x) => x.vaga));
-      let vaga = 0; while (usadas.has(vaga) && vaga < 4) vaga++;
-      const it = { set, f: "off", visivel: false, modal, vaga, t0: agora() + (modal ? 1400 : 1600 + vaga * 3000) };
+      const it = { desenha, info, visivel: false, modal: !!el.closest(".modal") };
       itens.set(el, it);
       const o = obs(); if (o) o.observe(el); else it.visivel = true;
-      tick();
-      return () => { if (o) o.unobserve(el); itens.delete(el); tick(); };
+      kick();
+      return () => { if (o) o.unobserve(el); itens.delete(el); };
     },
-    suspender(sim) { susp = Math.max(0, susp + (sim ? 1 : -1)); tick(); },
-    _estado() { return { graficos: itens.size, timerArmado: !!timer, suspensoes: susp }; },
+    suspender(sim) { susp = Math.max(0, susp + (sim ? 1 : -1)); kick(); },
+    _estado() {
+      const vs = [...itens.values()];
+      return { graficos: vs.length, ativos: vs.filter(ativo).length, rodando: !!raf, suspensoes: susp, leve, quadros, custoMs: +custo.toFixed(3),
+        particulas: vs.reduce((s, it) => s + (it.info ? it.info() : 0), 0) };
+    },
   };
 })();
+// sprites pré-renderizados (um por cor): desenhar uma partícula é um único drawImage
+const HOLO_SPR = new Map();
+const rgbaHex = (hex, a) => { const h = hex.replace("#", ""); const n = parseInt(h.length === 3 ? h.replace(/./g, "$&$&") : h, 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; };
+function spriteHolo(cor, halo) {
+  const k = cor + (halo ? "+" : ""); let s = HOLO_SPR.get(k); if (s) return s;
+  const R = 16; s = document.createElement("canvas"); s.width = s.height = R * 2;
+  const g = s.getContext("2d"), gr = g.createRadialGradient(R, R, 0, R, R, R);
+  if (halo) { gr.addColorStop(0, "rgba(255,255,255,1)"); gr.addColorStop(0.14, rgbaHex(cor, 1)); gr.addColorStop(0.25, rgbaHex(cor, 0.85)); gr.addColorStop(0.42, rgbaHex(cor, 0.22)); gr.addColorStop(1, rgbaHex(cor, 0)); }
+  else { gr.addColorStop(0, rgbaHex(cor, 1)); gr.addColorStop(0.22, rgbaHex(cor, 1)); gr.addColorStop(0.3, rgbaHex(cor, 0)); gr.addColorStop(1, rgbaHex(cor, 0)); }
+  g.fillStyle = gr; g.fillRect(0, 0, R * 2, R * 2); HOLO_SPR.set(k, s); return s;
+}
+function faixaHolo(horizontal) {
+  const k = horizontal ? "fx-h" : "fx-v"; let s = HOLO_SPR.get(k); if (s) return s;
+  s = document.createElement("canvas"); s.width = horizontal ? 64 : 2; s.height = horizontal ? 2 : 64;
+  const g = s.getContext("2d"), gr = horizontal ? g.createLinearGradient(0, 0, 64, 0) : g.createLinearGradient(0, 64, 0, 0);
+  gr.addColorStop(0, "rgba(255,255,255,0)"); gr.addColorStop(0.7, "rgba(255,255,255,.55)"); gr.addColorStop(0.82, "rgba(255,255,255,.9)"); gr.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = gr; g.fillRect(0, 0, s.width, s.height); HOLO_SPR.set(k, s); return s;
+}
+// ponto do contorno real da barra na posição u (0–1) + normal para fora
+function contornoBarra(b, u) {
+  const { x, y, w, h } = b; let d = (((u % 1) + 1) % 1) * 2 * (w + h);
+  if (!b.horizontal) {
+    if (d < h) return [x, y + h - d, -1, 0]; d -= h;
+    if (d < w) return [x + d, y, 0, -1]; d -= w;
+    if (d < h) return [x + w, y + d, 1, 0]; d -= h;
+    return [x + w - d, y + h, 0, 1];
+  }
+  if (d < w) return [x + d, y, 0, -1]; d -= w;
+  if (d < h) return [x + w, y + d, 1, 0]; d -= h;
+  if (d < w) return [x + w - d, y + h, 0, 1]; d -= w;
+  return [x, y + h - d, -1, 0];
+}
+/* Motor de um gráfico: partículas que percorrem o contorno de cada barra com velocidade e
+   afastamento variando suavemente (somas de senoides com fases próprias, sem repetição evidente),
+   uma faixa de luz lenta subindo pelas barras e resposta ao cursor (as partículas próximas são
+   atraídas e acendem; a barra em foco ganha energia). Todas as mudanças de estado são suavizadas
+   exponencialmente: entrar e sair do foco nunca reinicia o movimento. */
+function motorHolo(cv, ler, semente) {
+  const ctx = cv.getContext && cv.getContext("2d");
+  if (!ctx) return null;
+  let sd = (semente * 2654435761) >>> 0 || 1;
+  const rnd = () => { sd ^= sd << 13; sd >>>= 0; sd ^= sd >> 17; sd ^= sd << 5; sd >>>= 0; return sd / 4294967296; };
+  // identidade própria de cada gráfico: ritmo, sentido, período da luz
+  const ritmo = 0.8 + rnd() * 0.45, sentido = rnd() < 0.5 ? 1 : -1, periodoLuz = 6.5 + rnd() * 3.5, defLuz = rnd() * 10;
+  const barras = new Map();
+  let W = 0, H = 0, dpr = 1, total = 0, medirJa = true;
+  const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => { medirJa = true; }) : null;
+  if (ro) ro.observe(cv);
+  const ponto = () => ({ u: rnd(), v: (12 + rnd() * 16) * ritmo * (rnd() < 0.28 ? -sentido : sentido), f1: rnd() * 6.283, w1: 0.22 + rnd() * 0.5, f2: rnd() * 6.283, w2: 0.35 + rnd() * 0.6, f3: rnd() * 6.283, r: rnd() < 0.3 ? 2 : 1.25 + rnd() * 0.4, a: 0, x: NaN, y: NaN, sai: false });
+  const medir = (leve) => {
+    medirJa = false;
+    const w = cv.clientWidth, h = cv.clientHeight, d = Math.min(window.devicePixelRatio || 1, leve ? 1.5 : 2);
+    if (w !== W || h !== H || d !== dpr) { W = w; H = h; dpr = d; cv.width = Math.round(w * d); cv.height = Math.round(h * d); }
+  };
+  let nq = 0;
+  return {
+    info: () => total,
+    parar() { if (ro) ro.disconnect(); barras.clear(); },
+    desenha(t, dt, leve) {
+      if (medirJa || (!ro && ++nq % 60 === 0)) medir(leve);
+      if (!W || !H) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, W, H);
+      const { geo, hov, cur } = ler();
+      const ke = 1 - Math.exp(-dt * 6), kp = 1 - Math.exp(-dt * 11), ka = 1 - Math.exp(-dt * 2.4);
+      const lista = []; geo.forEach((b, ch) => { if (b.w > 1 && b.h > 1) lista.push([ch, b]); });
+      barras.forEach((_, ch) => { if (!geo.has(ch)) barras.delete(ch); });
+      const teto = leve ? 14 : 54, porBarra = Math.max(1, Math.floor(teto / Math.max(1, lista.length)));
+      const R = leve ? 46 : 64, R2 = R * R, luzOn = !leve;
+      total = 0;
+      for (const [ch, b] of lista) {
+        let st = barras.get(ch); if (!st) barras.set(ch, (st = { ps: [], e: 0, foco: 0 }));
+        st.e += ((!b.ok ? 0.28 : hov == null || hov === b.i ? 1 : 0.3) - st.e) * ke;
+        st.foco += ((hov === b.i ? 1 : 0) - st.foco) * ke;
+        const P = 2 * (b.w + b.h), lado = b.horizontal ? b.w : b.h;
+        // faixa de luz lenta, da base até a ponta (cada barra defasada)
+        if (luzOn && st.e > 0.5) {
+          const q = ((t + defLuz + b.i * 0.55 + b.si * 0.3) / periodoLuz) % 1, banda = Math.max(14, lado * 0.42);
+          const pos = -banda + (lado + banda * 2) * (q < 0.5 ? 2 * q * q : 1 - Math.pow(-2 * q + 2, 2) / 2);
+          // recorte feito na conta (fatia do sprite), sem clip do canvas
+          const ini = Math.max(0, pos - banda), fim = Math.min(lado, pos);
+          if (fim - ini > 0.5) {
+            const s0 = ((ini - (pos - banda)) / banda) * 64, s1 = ((fim - (pos - banda)) / banda) * 64;
+            ctx.globalAlpha = 0.2 * st.e + 0.12 * st.foco;
+            if (b.horizontal) ctx.drawImage(faixaHolo(true), s0, 0, s1 - s0, 2, b.x + ini, b.y, fim - ini, b.h);
+            else ctx.drawImage(faixaHolo(false), 0, 64 - s1, 2, s1 - s0, b.x, b.y + b.h - fim, b.w, fim - ini);
+          }
+        }
+        // quantidade de partículas proporcional ao contorno, com teto por gráfico
+        const n = Math.max(1, Math.min(porBarra, leve ? 3 : 7, Math.round(P / (leve ? 70 : 34))));
+        const vivos = st.ps.filter((p) => !p.sai).length;
+        if (vivos < n) for (let j = vivos; j < n; j++) st.ps.push(ponto());
+        else if (vivos > n) { let tira = vivos - n; for (let j = st.ps.length - 1; j >= 0 && tira > 0; j--) if (!st.ps[j].sai) { st.ps[j].sai = true; tira--; } }
+        const spr = spriteHolo(b.ponto || "#C9A961", !leve);
+        for (let j = st.ps.length - 1; j >= 0; j--) {
+          const p = st.ps[j];
+          const vel = p.v * (1 + 0.5 * Math.sin(t * p.w1 + p.f1) + 0.25 * Math.sin(t * p.w2 * 1.7 + p.f3)) * (1 + st.foco * 0.8);
+          p.u += (vel * dt) / P;
+          const c = contornoBarra(b, p.u);
+          const off = 1.3 + 2.1 * Math.sin(t * p.w2 + p.f2) + 1.1 * Math.sin(t * p.w1 * 2.3 + p.f3);
+          let tx = c[0] + c[2] * off, ty = c[1] + c[3] * off, perto = 0;
+          if (cur.on) {
+            const dx = cur.x - tx, dy = cur.y - ty, d2 = dx * dx + dy * dy;
+            if (d2 < R2) { const q = 1 - Math.sqrt(d2) / R; perto = q; const f = q * q * 0.45; tx += dx * f; ty += dy * f; }
+          }
+          if (p.x !== p.x) { p.x = tx; p.y = ty; } else { p.x += (tx - p.x) * kp; p.y += (ty - p.y) * kp; }
+          p.a += ((p.sai ? 0 : 1) - p.a) * ka;
+          if (p.sai && p.a < 0.03) { st.ps.splice(j, 1); continue; }
+          const brilho = 0.6 + 0.4 * Math.sin(t * (p.w2 * 2.2 + 0.4) + p.f1);
+          const al = Math.min(1, p.a * st.e * brilho * 0.9 + perto * 0.45 * p.a);
+          if (al < 0.02) continue;
+          const r = p.r * (1 + st.foco * 0.3 + perto * 0.55), s = r * 8;
+          ctx.globalAlpha = al; ctx.drawImage(spr, p.x - s / 2, p.y - s / 2, s, s);
+          total++;
+        }
+      }
+      ctx.globalAlpha = 1;
+    },
+  };
+}
 if (typeof window !== "undefined") window.__holo = holo; // diagnóstico (somente leitura)
 let bvSeq = 0;
 // contorno da barra com a ponta de dados arredondada (base reta, ancorada no eixo)
@@ -1894,12 +2015,9 @@ function BarraViva(p) {
   const fora = (v.hov != null && !ativo) || (v.sel != null && v.sel !== k && !ativo);
   const marcado = v.sel != null && v.sel === k;
   const d = caminhoBarra(x, y, w, h, 4, v.horizontal);
-  const per = 2 * (w + h);
-  const n = v.pts ? Math.max(3, Math.min(v.pts, Math.round(per / 26))) : 0;
-  const dur = Math.max(1.8, Math.min(4.2, per / 70));
   const cid = `${v.uid}-c${i}-${v.serie}`;
   const rot = ativo && v.rotulo ? v.rotulo(payload) : null;
-  // geometria real da barra para a camada do ciclo automático (composta pela GPU, fora do SVG)
+  // geometria real da barra para a camada holográfica contínua (canvas, fora do SVG)
   if (v.geo) v.geo.set(`${v.serie}-${i}`, { x, y, w, h, i, si: v.si, ok: !(v.sel != null && v.sel !== k), horizontal: v.horizontal, ponto: v.ponto, brilho: v.brilho });
   return (
     <g className={`bv${fora ? " apaga" : ""}${ativo ? " ativo" : ""}${marcado ? " marcado" : ""}`}>
@@ -1912,13 +2030,6 @@ function BarraViva(p) {
             {v.luz && <circle className="bv-luz" r={Math.max(26, Math.min(64, Math.max(w, h) * 0.55))} fill={`url(#${v.uid}-luz)`} />}
           </g>
           <path d={d} className="bv-traco" fill="none" stroke={v.brilho} pathLength="100" />
-          {n > 0 && <g className="bv-pts" fill={v.ponto}>
-            {Array.from({ length: n }, (_, j) => (
-              <circle key={j} r={j % 3 === 0 ? 2.1 : 1.4} opacity={j % 3 === 0 ? 1 : 0.75}>
-                <animateMotion dur={`${dur.toFixed(2)}s`} repeatCount="indefinite" begin={`-${((j * dur) / n).toFixed(2)}s`} path={d} />
-              </circle>
-            ))}
-          </g>}
         </g>
       )}
       {rot != null && (v.horizontal
@@ -1951,9 +2062,6 @@ function BarrasVivas({ dados, series, horizontal = false, altura, xKey = "name",
   const wrap = useRef(null), caixa = useRef(null);
   const toque = useMemo(semHover, []);
   const reduz = useMemo(reduzMovimento, []);
-  // limite de partículas automáticas por gráfico (celular: versão simplificada)
-  const nBarras = Math.max(1, dados.length * series.length);
-  const autoPts = Math.max(0, Math.min(toque ? 2 : 5, Math.floor((toque ? 10 : 36) / nBarras)));
   const foco = (i) => { if (i !== hovRef.current) { hovRef.current = i; setHov(i); } };
   const mm = (s) => foco(s && s.isTooltipActive && s.activeTooltipIndex != null ? s.activeTooltipIndex : null);
   const ck = (s) => {
@@ -1965,68 +2073,29 @@ function BarrasVivas({ dados, series, horizontal = false, altura, xKey = "name",
   // luz que segue o cursor: só variáveis CSS (sem render do React)
   const medir = () => { const s = wrap.current && wrap.current.querySelector("svg.recharts-surface"); caixa.current = s ? s.getBoundingClientRect() : null; };
   const luz = (e) => { if (toque || !wrap.current) return; if (!caixa.current) medir(); const r = caixa.current; if (!r) return; wrap.current.style.setProperty("--mx", `${e.clientX - r.left}px`); wrap.current.style.setProperty("--my", `${e.clientY - r.top}px`); };
-  // Ciclo holográfico automático. A fase chega do agendador único (holo) e é aplicada direto
-  // numa camada HTML sobreposta — sem re-renderizar o gráfico. Tudo nessa camada anima só
-  // transform/opacity pela Web Animations API (composto pela GPU, sem repintar o SVG).
+  // Camada holográfica contínua: um canvas por gráfico, desenhado pelo laço único (holo).
+  // O motor lê a geometria real das barras, o foco e o cursor por referência — o React não
+  // re-renderiza nada por quadro, e passar o mouse não reinicia o movimento.
   const geo = useRef(new Map()); geo.current = new Map();
-  const camada = useRef(null), fase = useRef("off");
-  const ptsRef = useRef(autoPts); ptsRef.current = autoPts;
-  const limpaCamada = () => { const c = camada.current; if (!c) return; if (c.getAnimations) c.getAnimations({ subtree: true }).forEach((a) => a.cancel()); c.textContent = ""; c.dataset.ativo = ""; };
-  const montaCamada = (host) => {
-    const nPts = ptsRef.current;
-    [...geo.current.values()].filter((b) => b.ok && b.w > 1 && b.h > 1).forEach((b) => {
-      const atraso = b.i * 160 + b.si * 80;
-      // contorno luminoso + varredura de luz dentro da barra
-      const box = document.createElement("div"); box.className = "bv-cv" + (b.horizontal ? " h" : "");
-      Object.assign(box.style, { left: b.x + "px", top: b.y + "px", width: b.w + "px", height: b.h + "px", boxShadow: `inset 0 0 0 1.2px ${b.brilho}` });
-      const luz = document.createElement("i"); box.appendChild(luz); host.appendChild(box);
-      box.animate([{ opacity: 0 }, { opacity: 0.9 }], { duration: 700, delay: atraso, easing: "ease-out", fill: "both" });
-      const hv = b.horizontal ? b.w : b.h, fx = Math.max(10, hv * 0.5);
-      if (b.horizontal) luz.style.width = fx + "px"; else luz.style.height = fx + "px";
-      luz.animate(b.horizontal ? [{ transform: `translateX(${-fx}px)` }, { transform: `translateX(${b.w}px)` }] : [{ transform: `translateY(${b.h}px)` }, { transform: `translateY(${-fx}px)` }],
-        { duration: 2500, delay: atraso + 200, iterations: 2, easing: "cubic-bezier(.45,0,.25,1)", fill: "both" });
-      // partículas percorrendo o contorno real da barra
-      if (!nPts) return;
-      const { x, y, w, h } = b;
-      const cantos = b.horizontal ? [[x, y], [x + w, y], [x + w, y + h], [x, y + h]] : [[x, y + h], [x, y], [x + w, y], [x + w, y + h]];
-      const lados = b.horizontal ? [w, h, w, h] : [h, w, h, w];
-      const P = lados.reduce((s2, l) => s2 + l, 0);
-      let acc = 0; const offs = [0]; lados.forEach((l) => { acc += l; offs.push(acc / P); });
-      const quadros = cantos.concat([cantos[0]]).map(([px, py], q) => ({ transform: `translate(${(px - 2).toFixed(1)}px, ${(py - 2).toFixed(1)}px)`, offset: Math.min(1, offs[q]) }));
-      const dur = Math.max(1.8, Math.min(4.2, P / 70)) * 1350;
-      for (let j = 0; j < nPts; j++) {
-        const pt = document.createElement("span"); pt.className = "bv-cp" + (j % 2 ? " m" : ""); pt.style.background = b.ponto; host.appendChild(pt);
-        pt.animate(quadros, { duration: dur, iterations: Infinity, delay: -((j * dur) / nPts + b.i * 370), easing: "linear" });
-        pt.animate([{ opacity: 0 }, { opacity: j % 2 ? 0.7 : 0.95 }], { duration: 800, delay: atraso + 350, fill: "both" });
-      }
-    });
-  };
-  const aplica = () => {
-    const host = camada.current, w = wrap.current; if (!host || !w || !host.animate) return;
-    const f = fase.current;
-    w.classList.toggle("auto-on", f === "on"); w.classList.toggle("auto-sai", f === "sai");
-    if (f === "on" && hovRef.current == null) {
-      if (host.dataset.ativo === "1") return;
-      limpaCamada(); host.dataset.ativo = "1"; montaCamada(host);
-    } else if (f === "sai" && hovRef.current == null && host.dataset.ativo === "1") {
-      host.dataset.ativo = "saindo";
-      const a = host.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 700, easing: "ease", fill: "forwards" });
-      a.onfinish = () => limpaCamada();
-    } else if (host.dataset.ativo !== "saindo") limpaCamada();
-  };
-  const aplicaRef = useRef(aplica); aplicaRef.current = aplica;
-  useEffect(() => (reduz ? undefined : holo.registrar(wrap.current, (f) => { fase.current = f; aplicaRef.current(); })), []);
-  // interação, filtros ou seleção mudaram: refaz a camada sobre a geometria atual
-  useEffect(() => { if (camada.current && camada.current.dataset.ativo === "1") limpaCamada(); aplicaRef.current(); }, [hov, dados, sel]);
-  useEffect(() => limpaCamada, []);
-  const viva = (s, si) => ({ hov, sel, chave, uid, horizontal, si, geo: geo.current, serie: s.key, cor: s.cor, ponto: s.ponto || "#C9A961", brilho: s.brilho || "rgba(255,255,255,.95)", pts: reduz ? 0 : toque ? 4 : 12, luz: !toque && !reduz, rotulo: s.rotulo === false ? null : rotulo });
+  const tela = useRef(null), cur = useRef({ x: 0, y: 0, on: false });
+  useEffect(() => {
+    if (reduz || !tela.current || !wrap.current) return undefined;
+    const m = motorHolo(tela.current, () => ({ geo: geo.current, hov: hovRef.current, cur: cur.current }), Number(uid.slice(2)) * 7919 + 13);
+    if (!m) return undefined;
+    const sai = holo.registrar(wrap.current, m.desenha, m.info);
+    return () => { sai(); m.parar(); };
+  }, []);
+  const cursor = (e) => { const w = wrap.current; if (!w) return; const r = w.getBoundingClientRect(); const c = cur.current; c.x = e.clientX - r.left; c.y = e.clientY - r.top; c.on = true; };
+  const semCursor = () => { cur.current.on = false; };
+  const viva = (s, si) => ({ hov, sel, chave, uid, horizontal, si, geo: geo.current, serie: s.key, cor: s.cor, ponto: s.ponto || "#C9A961", brilho: s.brilho || "rgba(255,255,255,.95)", luz: !toque && !reduz, rotulo: s.rotulo === false ? null : rotulo });
   const eixos = horizontal
     ? [<XAxis key="x" type="number" tick={CH.tick} tickFormatter={eixoValor} tickLine={false} axisLine={false} allowDecimals={!contagem} />,
        <YAxis key="y" type="category" dataKey={xKey} width={yLargura || 100} tick={CH.tick} tickFormatter={eixoCat} tickLine={false} axisLine={false} interval={0} />]
     : [<XAxis key="x" dataKey={xKey} tick={CH.tick} interval={0} tickLine={false} axisLine={{ stroke: CH.grid }} tickFormatter={eixoCat} />,
        <YAxis key="y" tick={CH.tick} width={yLargura || 34} tickFormatter={eixoValor} allowDecimals={!contagem} tickLine={false} axisLine={false} />];
   return (
-    <div className={`bv-wrap${hov != null ? " em-foco" : ""}`} ref={wrap} onMouseEnter={medir} onMouseMove={luz} onMouseLeave={() => { caixa.current = null; foco(null); }}>
+    <div className={`bv-wrap${hov != null ? " em-foco" : ""}`} ref={wrap} onMouseEnter={medir} onMouseMove={luz} onMouseLeave={() => { caixa.current = null; semCursor(); foco(null); }}
+      onPointerMove={cursor} onPointerDown={cursor} onPointerLeave={semCursor} onPointerCancel={semCursor}>
       <ResponsiveContainer width="100%" height={altura}>
         <BarChart data={dados} layout={horizontal ? "vertical" : "horizontal"} margin={margem || (horizontal ? { left: 4, right: 52, top: 4, bottom: 4 } : { left: 0, right: 8, top: rotulosFixos || rotulo ? 22 : 8, bottom: 0 })} barGap={3} onMouseMove={mm} onMouseLeave={() => foco(null)} onClick={ck}>
           <defs>
@@ -2048,7 +2117,7 @@ function BarrasVivas({ dados, series, horizontal = false, altura, xKey = "name",
           ))}
         </BarChart>
       </ResponsiveContainer>
-      <div className="bv-camada" ref={camada} aria-hidden="true" />
+      {!reduz && <canvas className="bv-tela" ref={tela} aria-hidden="true" />}
     </div>
   );
 }
@@ -6265,15 +6334,10 @@ a{color:var(--em)}
 @keyframes bvRot{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
 @keyframes bvFeixe{from{opacity:0}to{opacity:1}}
 @media(hover:none),(pointer:coarse){.bv.ativo .bv-corpo{filter:none}.bv-pts{filter:none}.an-tip{padding:7px 10px;min-width:0;font-size:12px;box-shadow:0 6px 18px rgba(20,30,25,.14)}.an-tip-t{margin-bottom:3px}.an-tip-h{display:none}}
-/* ciclo holográfico automático (mesmo efeito do foco, mais leve, surgindo barra a barra) */
-.bv-camada{position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;z-index:1}
-.bv-cv{position:absolute;overflow:hidden;border-radius:4px 4px 0 0}
-.bv-cv.h{border-radius:0 4px 4px 0}
-.bv-cv i{position:absolute;left:0;top:0;width:100%;background:linear-gradient(180deg,rgba(255,255,255,.42),rgba(255,255,255,.06) 55%,rgba(255,255,255,0));will-change:transform}
-.bv-cv.h i{width:auto;height:100%;background:linear-gradient(270deg,rgba(255,255,255,.42),rgba(255,255,255,.06) 55%,rgba(255,255,255,0))}
-.bv-cp{position:absolute;left:0;top:0;width:4px;height:4px;border-radius:50%;opacity:0;will-change:transform,opacity;box-shadow:0 0 5px rgba(217,188,114,.85)}
-.bv-cp.m{width:3px;height:3px}
-@media(hover:none),(pointer:coarse){.bv-cp{box-shadow:none}}
+/* camada holográfica contínua (canvas sobre o gráfico, abaixo do tooltip) */
+.bv-tela{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:1;animation:bvTela 1.2s ease .3s both}
+@keyframes bvTela{from{opacity:0}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){.bv-tela{display:none}}
 /* indicadores financeiros clicáveis */
 
 .fh-clk{cursor:pointer;transition:transform .25s var(--ease),box-shadow .25s var(--ease)}
