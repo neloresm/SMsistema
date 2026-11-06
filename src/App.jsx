@@ -372,7 +372,7 @@ function toEmbed(url) {
 /* ------------------------------- opções -------------------------------- */
 const RACAS = ["Nelore", "Brahman", "Gir", "Guzerá", "Angus", "Senepol", "Tabapuã", "Girolando"];
 const STATUS_ANIMAL = ["Pista", "Doadora", "Aposentada"];
-const STATUS_PRENHEZ = ["Aguardando confirmação", "Confirmada", "Gestação em andamento", "Próxima do parto", "Parto previsto ultrapassado", "Nascimento informado", "Perda gestacional", "Parida", "Concluída", "Vendida"];
+const STATUS_PRENHEZ = ["Aguardando confirmação", "Confirmada", "Gestação em andamento", "Próxima do parto", "Parto previsto ultrapassado", "Nascimento informado", "Perda gestacional", "Não confirmada", "Parida", "Concluída", "Vendida"];
 const STATUS_ASP = ["Realizada", "Em laboratório", "Embriões produzidos", "Transferida", "Finalizada", "Cancelada"];
 
 /* --------------------------- esquemas de ficha ------------------------- */
@@ -429,6 +429,7 @@ const SCHEMAS = {
       ["receptora", "Receptora (identificação)", "text"],
       ["dataTE", "Data da transferência do embrião", "date"], ["dataConfirmacao", "Data de confirmação", "date"],
       ["previsaoParto", "Previsão de parto", "date"], ["dataParto", "Data real do parto", "date"],
+      ["sexagem", "Sexagem", "select", ["Fêmea", "Macho"]],
     ]},
     { g: "Genealogia", gen: true, f: [
       ["avoMaterno", "Avô materno", "link"], ["avoMaterna", "Avó materna", "link"],
@@ -476,7 +477,8 @@ function rotuloReprod(a) {
 }
 const qtdTotal = (a) => Math.max(1, Math.round(num(a && a.qtd) || 1));
 const qtdConvertidos = (a) => Math.max(0, Math.round(num(a && a.convertidos) || 0));
-const qtdRest = (a) => Math.max(0, qtdTotal(a) - qtdConvertidos(a));
+const qtdPerdas = (a) => Math.max(0, Math.round(num(a && a.perdas) || 0));   // perdas gestacionais registradas na ficha
+const qtdRest = (a) => Math.max(0, qtdTotal(a) - qtdConvertidos(a) - qtdPerdas(a));
 function qtdRestante(a) {
   const t = qtdTotal(a), c = qtdConvertidos(a), r = qtdRest(a);
   return `${r} de ${t}${c ? ` (${c} nascida${c > 1 ? "s" : ""})` : ""}`;
@@ -495,6 +497,8 @@ function prenhezAtiva(a) {
   if (!a || a.tipo !== "prenhez" || a.arquivada) return false;
   const s = lc(a.status);
   if (s.includes("perda") || s.includes("perdida") || s.includes("vendida") || s.includes("concluída") || s.includes("concluida") || s.includes("parida")) return false;
+  if (s.includes("não confirmada") || s.includes("nao confirmada") || a.diagnostico === "negativo") return false;   // diagnóstico negativo
+  if (qtdPerdas(a) > 0 && qtdRest(a) === 0) return false;
   return true;
 }
 // nível de alerta de parto: 'atrasado' | 'hoje' | '7' | '15' | '30' | null
@@ -514,6 +518,78 @@ function aspAtiva(a) {
   if (!a || a.tipo !== "aspiracao" || a.arquivada) return false;
   const s = lc(a.status);
   return !(s.includes("finalizada") || s.includes("cancelada") || s.includes("concluída") || s.includes("concluida"));
+}
+
+/* ---- Reprodução: Aspiração → Embriões → Prenhez → Animal, e Banco de Embriões ----
+   Tudo é calculado a partir dos registros (fichas vinculadas e movimentações do banco):
+   nenhum contador é digitado. Fichas antigas continuam valendo como estão. */
+const PARTO_DIAS = 285;   // previsão de parto sugerida: TE + 285 dias (editável na ficha)
+const DIAG_DIAS = 30;     // diagnóstico sugerido: TE + 30 dias
+function somaDias(iso, n) { if (!iso) return ""; const d = new Date(iso + "T12:00:00"); if (isNaN(d)) return ""; d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); }
+const origemDe = (p) => (p && (p.origemId || p.aspiracaoOrigemId)) || "";
+// fase de uma prenhez, derivada dos fatos registrados (status antigos continuam reconhecidos)
+function faseReprod(p) {
+  const s = lc(p && p.status);
+  const nasc = qtdConvertidos(p);
+  if (p.arquivada || (nasc > 0 && qtdRest(p) === 0)) return { k: "enc", txt: nasc > 1 ? `${nasc} nascidos` : nasc ? "Nascida" : "Encerrada", tone: "gold" };
+  if (s.includes("vendida")) return { k: "enc", txt: "Vendida", tone: "gold" };
+  if (s.includes("concluída") || s.includes("concluida") || s.includes("parida")) return { k: "enc", txt: p.status, tone: "gold" };
+  if (s.includes("perda") || s.includes("perdida") || (qtdPerdas(p) > 0 && qtdRest(p) === 0)) return { k: "enc", txt: "Perda gestacional", tone: "red" };
+  if (s.includes("não confirmada") || s.includes("nao confirmada") || p.diagnostico === "negativo") return { k: "enc", txt: "Não confirmada", tone: "red" };
+  if (s.includes("nascimento informado")) return { k: "parto", txt: "Nascimento a cadastrar", tone: "amber" };
+  const conf = p.diagnostico === "positivo" || !!p.dataConfirmacao || ["confirmada", "gesta", "próxima", "proxima", "ultrapassado"].some((x) => s.includes(x));
+  if (!conf) return { k: "diag", txt: "Aguardando diagnóstico", tone: "info" };
+  const d = diasAteParto(p);
+  if (d == null) return { k: "conf", txt: "Confirmada", tone: "green" };
+  if (d < 0) return { k: "parto", txt: `Parto atrasado ${-d} dia(s)`, tone: "red", d };
+  if (d <= 30) return { k: "parto", txt: d === 0 ? "Parto previsto hoje" : `Parto em ${d} dia(s)`, tone: "amber", d };
+  return { k: "conf", txt: "Confirmada", tone: "green", d };
+}
+const prenhezPositiva = (p) => { const f = faseReprod(p); return f.k === "conf" || f.k === "parto" || qtdConvertidos(p) > 0 || f.txt === "Perda gestacional"; };
+
+/* Banco de Embriões: cada lote reúne embriões iguais; o saldo é a soma das movimentações */
+const MOV_TIPOS = {
+  entrada: ["Entrada", "green", 1], uso: ["Usado em transferência", "info", -1], venda: ["Venda", "gold", -1],
+  terceiro: ["Destinado a terceiros", "gold", -1], descarte: ["Descarte", "red", -1], ajuste: ["Ajuste de inventário", "amber", 0], local: ["Mudança de local", "gold", 0],
+};
+const sinalMov = (m) => (m.tipo === "ajuste" ? (m.sinal < 0 ? -1 : 1) : (MOV_TIPOS[m.tipo] || [0, 0, 0])[2]);
+function resumoLote(l) {
+  const r = { entrada: 0, uso: 0, venda: 0, terceiro: 0, descarte: 0, ajuste: 0 };
+  ((l && l.movs) || []).filter(Boolean).forEach((m) => { const q = Math.max(0, Math.round(num(m.qtd))); if (m.tipo === "ajuste") r.ajuste += sinalMov(m) * q; else if (m.tipo in r) r[m.tipo] += q; });
+  r.saida = r.uso + r.venda + r.terceiro + r.descarte;
+  r.saldo = r.entrada + r.ajuste - r.saida;
+  return r;
+}
+const saldoLote = (l) => resumoLote(l).saldo;
+const ORIGEM_LOTE = { aspiracao: "Aspiração da SM", compra: "Adquiridos", existente: "Estoque existente" };
+const rotuloLote = (l) => `${l.doadora || "Doadora não informada"}${l.pai ? ` × ${l.pai}` : ""}`;
+
+// números da aspiração: das prenhezes e lotes vinculados (ou dos campos antigos, se ainda não houver vínculo)
+function dadosAsp(a, ativos, embrioes) {
+  const lotes = (embrioes || []).filter((l) => l && l.aspiracaoId === a.id);
+  const idsLote = new Set(lotes.map((l) => l.id));
+  const ps = (ativos || []).filter((x) => x && x.tipo === "prenhez" && x.origem !== "genealogia" && (origemDe(x) === a.id || (x.loteOrigemId && idsLote.has(x.loteOrigemId))));
+  const manual = ps.length === 0;
+  const E = a.embrioes === "" || a.embrioes == null ? null : Math.round(num(a.embrioes));
+  const oocitos = Math.round(num(a.oocitos)) || 0;
+  const unid = (l) => l.reduce((s, x) => s + qtdTotal(x), 0);
+  const frescas = manual ? Math.round(num(a.embrioesTransf)) : unid(ps.filter((x) => !x.loteOrigemId));
+  const transf = manual ? frescas : unid(ps);
+  const congelados = lotes.length ? lotes.reduce((s, l) => s + resumoLote(l).entrada, 0) : Math.round(num(a.embrioesArmaz));
+  const disp = E == null ? 0 : Math.max(0, E - frescas - congelados);
+  const conf = manual ? Math.round(num(a.prenhezesConf || a.prenhezes)) : unid(ps.filter(prenhezPositiva));
+  const diag = manual ? conf : unid(ps.filter((x) => faseReprod(x).k !== "diag"));
+  const nasc = ps.reduce((s, x) => s + qtdConvertidos(x), 0) + qtdConvertidos(a);
+  const saldoBanco = lotes.reduce((s, l) => s + saldoLote(l), 0);
+  const andamento = ps.filter((x) => faseReprod(x).k !== "enc").length;
+  const sa = lc(a.status);
+  let st, prox;
+  if (sa.includes("cancelada")) { st = ["Cancelada", "red"]; prox = ""; }
+  else if (E == null) { st = ["Aguardando laboratório", "amber"]; prox = "Próxima ação: lançar o resultado do laboratório (editar a ficha)"; }
+  else if (disp > 0) { st = [`${disp} embrião(ões) a transferir`, "gold"]; prox = "Próxima ação: registrar transferência"; }
+  else if (andamento) { st = ["Prenhezes em andamento", "green"]; prox = `Acompanhando ${andamento} prenhez(es)`; }
+  else { st = ["Concluída", "gold"]; prox = saldoBanco ? `${saldoBanco} embrião(ões) no Banco de Embriões` : "Sem pendências"; }
+  return { lotes, ps, manual, E, oocitos, frescas, transf, congelados, disp, conf, diag, nasc, saldoBanco, andamento, st, prox };
 }
 
 /* -------------------------------- seed --------------------------------- */
@@ -639,6 +715,7 @@ const ICONS = {
   zoomMais: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20.5 20.5 16 16M8 11h6M11 8v6",
   zoomMenos: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20.5 20.5 16 16M8 11h6",
   nascer: "M12 3c-3.5 0-6 4.5-6 9a6 6 0 0 0 12 0c0-4.5-2.5-9-6-9zM9 13l2 2 4-4",
+  embriao: "M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17zM9.3 8.6a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM14.7 11.4a2 2 0 1 0 0 4 2 2 0 0 0 0-4z",
 };
 function Ico({ n, size = 18, className = "" }) {
   const d = ICONS[n]; if (!d) return null;
@@ -1167,6 +1244,10 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
   }, [genIndex]);
   const f = finance(d);
   const pctSocios = (d.socios || []).filter(Boolean).reduce((s, x) => s + num(x.pct), 0);
+  // prenhez/aspiração: genealogia, compra e pagamento ficam recolhidos quando vazios (abrem com um toque)
+  const [secAberta, setSecAberta] = useState({});
+  const RECOLHE = tipo !== "animal" ? { Genealogia: "preenchida a partir da doadora e do pai", Compra: "só quando for adquirida", Pagamento: "só quando for adquirida" } : {};
+  const secTemDados = (sec) => sec.f.some(([k]) => k !== "comissaoPct" && d[k] != null && String(d[k]).trim() !== "");
 
   const addSocio = () => setD((p) => ({ ...p, socios: [...(p.socios || []), { id: uid(), nome: "", pct: 0 }] }));
   const setSocio = (id, k, v) => setD((p) => ({ ...p, socios: p.socios.map((s) => (s.id === id ? { ...s, [k]: v } : s)) }));
@@ -1227,8 +1308,13 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head"><h2>{ehPref ? "Conferir pré-cadastro" : initial && !initial.__fromOrigem ? "Editar" : "Novo cadastro"} — <span className="serif">{titulo}</span></h2><button className="x" onClick={onClose}>✕</button></div>
         <div className="modal-body">
-          {initial && initial.__fromOrigem && <div className="aviso" style={{ margin: "0 0 14px" }}>Nascimento de <b>{initial.origemLabel}</b> — genealogia e sociedade já preenchidas. Complete os dados do animal{initial.origemTipo === "prenhez" ? " (sexo já definido como Fêmea)" : " e escolha o sexo"}.</div>}
-          {SCHEMAS[tipo].map((sec) => (
+          {initial && initial.__fromOrigem && (tipo === "animal"
+            ? <div className="aviso" style={{ margin: "0 0 14px" }}>Nascimento de <b>{initial.origemLabel}</b> — genealogia e sociedade já preenchidas. Complete os dados do animal e confira o sexo.</div>
+            : <div className="aviso" style={{ margin: "0 0 14px" }}>Prenhez gerada a partir de <b>{initial.origemLabel}</b> — doadora, pai, genealogia e sociedade já preenchidos.</div>)}
+          {tipo === "prenhez" && !initial && <div className="aviso aviso-info" style={{ margin: "0 0 14px" }}>Prenhez de aspiração da SM? Use “Registrar transferência” na ficha da aspiração. Embrião congelado? Use “Usar em transferência” no Banco de Embriões. Este formulário é para prenhez adquirida ou cadastro direto.</div>}
+          {SCHEMAS[tipo].map((sec) => RECOLHE[sec.g] && !secAberta[sec.g] && !secTemDados(sec) ? (
+            <div className="fsec" key={sec.g}><button type="button" className="fsec-abrir" onClick={() => setSecAberta((x) => ({ ...x, [sec.g]: true }))}>+ {sec.g} <span>· opcional, {RECOLHE[sec.g]}</span></button></div>
+          ) : (
             <div className="fsec" key={sec.g}>
               <div className="fsec-h">{sec.g}{sec.gen && <span className="muted small hint">— digite para buscar animais já cadastrados</span>}</div>
               <div className="grid">{sec.f.map(renderField)}</div>
@@ -2597,7 +2683,581 @@ function useTravaFundo() {
   }, []);
 }
 
-function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onGerarPrenhez, onConfirm }) {
+/* ============== REPRODUÇÃO: seção da ficha, páginas, folhas de ação e Banco de Embriões ============== */
+const InfoR = ({ l, v }) => (v || v === 0 ? <div className="info"><span>{l}</span><b>{v}</b></div> : null);
+const origemPrenhez = (p) => (p.loteOrigemId ? "banco" : origemDe(p) ? "aspiracao" : "compra");
+const ORIGEM_PREN_TXT = { banco: "Banco de Embriões", aspiracao: "Aspiração da SM", compra: "Adquirida / direta" };
+
+// janela de ação (abre por cima da ficha); Esc fecha só ela
+function Folha({ eyebrow, titulo, sub, onClose, children, rodape }) {
+  useTravaFundo();
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } };
+    window.addEventListener("keydown", h, true);
+    return () => window.removeEventListener("keydown", h, true);
+  }, [onClose]);
+  return (
+    <div className="modal-bg folha-bg" onClick={onClose}>
+      <div className="modal folha" role="dialog" aria-modal="true" aria-label={titulo} onClick={(e) => e.stopPropagation()}>
+        <div className="folha-h">{eyebrow && <div className="folha-eb">{eyebrow}</div>}<h2>{titulo}</h2>{sub && <p>{sub}</p>}
+          <button className="x abs" onClick={onClose} aria-label="Fechar"><Ico n="fechar" size={18} /></button></div>
+        <div className="folha-b">{children}</div>
+        <div className="folha-f">{rodape}</div>
+      </div>
+    </div>
+  );
+}
+function Passo({ v, set, min = 1, max = 99, rotulo }) {
+  return (
+    <div className="rp-step" role="group" aria-label={rotulo}>
+      <button type="button" onClick={() => set(Math.max(min, v - 1))} disabled={v <= min} aria-label="Diminuir">−</button>
+      <b>{v}</b>
+      <button type="button" onClick={() => set(Math.min(max, v + 1))} disabled={v >= max} aria-label="Aumentar">+</button>
+    </div>
+  );
+}
+function CadeiaRepro({ itens }) {
+  return (
+    <div className="rp-cadeia">{itens.map((it, i) => (
+      <React.Fragment key={i}>
+        {i > 0 && <span className="rp-seta" aria-hidden="true">→</span>}
+        {it.onClick
+          ? <button type="button" className="rp-elo" onClick={it.onClick}><span>{it.rot} ↗</span><b>{it.nome}</b></button>
+          : <div className={`rp-elo ${it.atual ? "atual" : ""} ${it.vazio ? "vazio" : ""}`}><span>{it.rot}</span><b>{it.nome}</b></div>}
+      </React.Fragment>
+    ))}</div>
+  );
+}
+function BarraGestacao({ p }) {
+  const prev = p.previsaoParto || (p.dataTE ? somaDias(p.dataTE, PARTO_DIAS) : "");
+  const g = diasEntre(p.dataTE, today());
+  if (!p.dataTE || g == null || !prev) return null;
+  const tot = Math.max(1, diasEntre(p.dataTE, prev) || PARTO_DIAS);
+  const atras = diasEntre(prev, today()) > 0;
+  return (
+    <div className="rp-gest">
+      <div className="rp-gest-t"><span>{Math.max(0, Math.min(g, tot))} de ~{tot} dias</span><b>parto {dataBR(prev)}</b></div>
+      <div className="rp-gest-b"><i className={atras ? "late" : ""} style={{ width: `${Math.max(0, Math.min(100, (g / tot) * 100))}%` }} /></div>
+    </div>
+  );
+}
+
+/* seção "Reprodução" dentro da ficha da prenhez / aspiração */
+function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote }) {
+  if (a.tipo === "prenhez") {
+    const f = faseReprod(a);
+    const asp = origemDe(a) ? (ativos || []).find((x) => x && x.id === origemDe(a)) : null;
+    const lote = a.loteOrigemId ? (embrioes || []).find((l) => l && l.id === a.loteOrigemId) : null;
+    const filhos = (ativos || []).filter((x) => x && x.tipo === "animal" && x.origemId === a.id);
+    const itens = [];
+    if (asp) itens.push({ rot: "Aspiração", nome: `${(asp.dataAspiracao || asp.dataAsp) ? dataBR((asp.dataAspiracao || asp.dataAsp)) + " · " : ""}${asp.doadora || asp.nome}`, onClick: () => onAbrir(asp) });
+    else if (!lote) itens.push({ rot: "Origem", nome: a.leilao ? `Compra · ${a.leilao}` : (a.origemLabel || "Cadastro direto") });
+    if (lote) itens.push({ rot: "Banco", nome: `Lote ${lote.cod}`, onClick: () => onIrLote(lote.id) });
+    itens.push({ rot: "Esta prenhez", nome: a.receptora ? `Receptora ${a.receptora}` : "Receptora não informada", atual: true });
+    if (filhos.length) filhos.forEach((x) => itens.push({ rot: "Animal", nome: x.nome || "animal", onClick: () => onAbrir(x) }));
+    else itens.push({ rot: "Animal", nome: f.k === "enc" ? "não houve" : "após o nascimento", vazio: true });
+    const prevSug = !a.previsaoParto && a.dataTE ? somaDias(a.dataTE, PARTO_DIAS) : "";
+    const diagTxt = a.diagnostico === "positivo" || a.dataConfirmacao ? `positivo${a.dataConfirmacao ? " · " + dataBR(a.dataConfirmacao) : ""}`
+      : a.diagnostico === "negativo" ? `negativo${a.dataDiagnostico ? " · " + dataBR(a.dataDiagnostico) : ""}`
+      : a.dataTE ? `pendente · sugerido ${dataBR(somaDias(a.dataTE, DIAG_DIAS))}` : "pendente";
+    return (
+      <div className="fsec rp-sec" id="fx-repro"><div className="fsec-h">Reprodução</div>
+        <div className="rp-linha"><Badge tone={f.tone}>{f.txt}</Badge>{qtdTotal(a) > 1 && <Badge tone="gold">Ficha com {qtdTotal(a)} prenhezes · restam {qtdRest(a)}</Badge>}</div>
+        <CadeiaRepro itens={itens} />
+        <div className="info-grid">
+          <InfoR l="Receptora" v={a.receptora} />
+          <InfoR l="Data da TE" v={a.dataTE ? dataBR(a.dataTE) : ""} />
+          <InfoR l="Embrião" v={lote ? `Congelado · lote ${lote.cod}` : asp ? "Fresco" : ""} />
+          <InfoR l="Diagnóstico" v={diagTxt} />
+          <InfoR l="Sexagem" v={a.sexagem} />
+          <InfoR l="Previsão de parto" v={a.previsaoParto ? dataBR(a.previsaoParto) : prevSug ? `${dataBR(prevSug)} (sugerida)` : ""} />
+          <InfoR l="Data do parto" v={a.dataParto ? dataBR(a.dataParto) : ""} />
+          <InfoR l="Perda gestacional" v={a.perda ? `${dataBR(a.perda.data)} · ${a.perda.motivo}` : ""} />
+        </div>
+        {(f.k === "conf" || f.k === "parto") && <BarraGestacao p={a} />}
+      </div>
+    );
+  }
+  if (a.tipo !== "aspiracao") return null;
+  const D = dadosAsp(a, ativos, embrioes);
+  const fun = [["Oócitos", D.oocitos], ["Embriões produzidos", D.E || 0], ["Transferidos", D.transf], ["Prenhezes confirmadas", D.conf], ["Nascidos", D.nasc]];
+  const topo = Math.max(1, D.oocitos, D.E || 0);
+  return (
+    <div className="fsec rp-sec" id="fx-repro"><div className="fsec-h">Reprodução</div>
+      <div className="rp-linha"><Badge tone={D.st[1]}>{D.st[0]}</Badge>{D.prox && <span className="muted small">{D.prox}</span>}</div>
+      {D.E == null ? <div className="aviso">Resultado do laboratório ainda não lançado. Use “Editar” e informe oócitos coletados e embriões produzidos.</div> : (
+        <>
+          <div className="rp-funil">{fun.map(([l, v]) => (
+            <div className="rp-fl" key={l}><span>{l}</span><span className="rp-fl-b"><i style={{ width: `${(v / topo) * 100}%` }} /></span><b>{v}</b></div>
+          ))}</div>
+          <p className="muted small">Destino dos {D.E} embriões: {D.transf} transferido(s) · {D.congelados} congelado(s){D.lotes.length ? ` (saldo atual no banco: ${D.saldoBanco})` : ""} · {D.disp} a transferir.
+            {D.manual && (num(a.embrioesTransf) || num(a.prenhezesConf)) ? " Números informados manualmente na ficha (ainda não há prenhezes vinculadas)." : ""}</p>
+          <div className="rp-ind">
+            <div><span>Aproveitamento</span><b>{D.oocitos ? Math.round((D.E / D.oocitos) * 100) + "%" : "—"}</b><small>embriões ÷ oócitos</small></div>
+            <div><span>Taxa de prenhez</span><b>{D.diag ? Math.round((D.conf / D.diag) * 100) + "%" : "—"}</b><small>confirmadas ÷ diagnosticadas</small></div>
+          </div>
+        </>
+      )}
+      <div className="rp-sub">Prenhezes geradas ({D.ps.length})</div>
+      {D.ps.length ? D.ps.map((p) => { const f = faseReprod(p); return (
+        <button type="button" className="rp-prow" key={p.id} onClick={() => onAbrir(p)}>
+          <span><b>{p.receptora ? `Receptora ${p.receptora}` : p.nome}</b><small>{p.dataTE ? `TE ${dataBR(p.dataTE)}` : ""}{p.loteOrigemId ? " · embrião congelado" : ""}</small></span>
+          <Badge tone={f.tone}>{f.txt}</Badge>
+        </button>); }) : <p className="muted small">Nenhuma prenhez vinculada ainda. Use “Registrar transferência”.</p>}
+      {D.lotes.length > 0 && <>
+        <div className="rp-sub">No Banco de Embriões</div>
+        {D.lotes.map((l) => (
+          <button type="button" className="rp-prow" key={l.id} onClick={() => onIrLote(l.id)}>
+            <span><b>Lote {l.cod}</b><small>{l.local || "local não informado"}</small></span><Badge tone="green">saldo {saldoLote(l)}</Badge>
+          </button>
+        ))}
+      </>}
+    </div>
+  );
+}
+
+/* ---------------- página: Prenhezes ---------------- */
+function PaginaPrenhezes({ lista, onAbrir }) {
+  const [tab, setTab] = useState("ativas");
+  const [origem, setOrigem] = useState("");
+  const [cri, setCri] = useState("");
+  const [ordem, setOrdem] = useState("parto");
+  const base = (lista || []).filter((p) => p && p.tipo === "prenhez" && p.origem !== "genealogia").map((p) => ({ p, f: faseReprod(p) }));
+  const criatorios = [...new Set(base.map(({ p }) => p.ondeEsta).filter(Boolean))].sort();
+  const filt = base.filter(({ p }) => (!origem || origemPrenhez(p) === origem) && (!cri || p.ondeEsta === cri));
+  const grupos = { ativas: filt.filter((x) => x.f.k !== "enc"), diag: filt.filter((x) => x.f.k === "diag"), conf: filt.filter((x) => x.f.k === "conf"), parto: filt.filter((x) => x.f.k === "parto"), enc: filt.filter((x) => x.f.k === "enc") };
+  const prevDe = (p) => p.previsaoParto || (p.dataTE ? somaDias(p.dataTE, PARTO_DIAS) : "9999");
+  const ord = tab === "enc" ? (a, b) => (b.p.dataParto || b.p.dataTE || "").localeCompare(a.p.dataParto || a.p.dataTE || "")
+    : ordem === "te" ? (a, b) => (b.p.dataTE || "").localeCompare(a.p.dataTE || "") : (a, b) => prevDe(a.p).localeCompare(prevDe(b.p));
+  const lst = [...grupos[tab]].sort(ord);
+  const ativas = base.filter((x) => x.f.k !== "enc");
+  const TABS = [["ativas", "Ativas"], ["diag", "Aguardando diagnóstico"], ["conf", "Confirmadas"], ["parto", "Parto próximo"], ["enc", "Encerradas"]];
+  return (
+    <section className="wrap rp-pag">
+      <div className="rp-kpis">
+        <KPI label="Prenhezes ativas" value={ativas.length} sub={`${ativas.filter(({ p }) => p.loteOrigemId).length} de embrião congelado · ${ativas.filter(({ p }) => origemPrenhez(p) === "compra").length} adquirida(s)/direta(s)`} />
+        <KPI label="Aguardando diagnóstico" value={base.filter((x) => x.f.k === "diag").length} sub="sugerido 30 dias após a TE" />
+        <KPI label="Partos em até 30 dias" value={base.filter((x) => x.f.k === "parto" && x.f.d >= 0).length} sub="pela previsão de parto" />
+        <KPI label="Partos atrasados" value={base.filter((x) => x.f.d < 0).length} tone={base.some((x) => x.f.d < 0) ? "neg" : ""} sub="previsão já passou" />
+        <KPI label="Nascimentos registrados" value={base.reduce((s, { p }) => s + qtdConvertidos(p), 0)} sub="animais cadastrados a partir de prenhezes" />
+      </div>
+      <div className="rp-tabs" role="tablist" aria-label="Fases">{TABS.map(([k, l]) => (
+        <button key={k} type="button" role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{l}<b>{grupos[k].length}</b></button>
+      ))}</div>
+      <div className="rp-filtros">
+        <select value={origem} onChange={(e) => setOrigem(e.target.value)} aria-label="Origem"><option value="">Todas as origens</option><option value="aspiracao">Aspiração da SM</option><option value="banco">Banco de Embriões</option><option value="compra">Adquirida / direta</option></select>
+        <select value={cri} onChange={(e) => setCri(e.target.value)} aria-label="Criatório"><option value="">Todos os criatórios</option>{criatorios.map((c) => <option key={c} value={c}>{c}</option>)}</select>
+        {tab !== "enc" && <select value={ordem} onChange={(e) => setOrdem(e.target.value)} aria-label="Ordenar"><option value="parto">Ordenar por previsão de parto</option><option value="te">Ordenar pela TE mais recente</option></select>}
+      </div>
+      <div className="cards-grid rp-grid">
+        {lst.map(({ p, f }) => (
+          <button type="button" className="rp-card" key={p.id} onClick={() => onAbrir(p)}>
+            <div className="rp-card-h"><span className="rp-t">{p.doadora || "Doadora não informada"}{p.pai || p.touro ? ` × ${p.pai || p.touro}` : ""}</span><Badge tone={f.tone}>{f.txt}</Badge></div>
+            <span className="rp-meta">{[p.receptora ? `Receptora ${p.receptora}` : "Receptora não informada", p.ondeEsta].filter(Boolean).join(" · ")}</span>
+            <div className="rp-chips">
+              <span className={`rp-chip o-${origemPrenhez(p)}`}>{ORIGEM_PREN_TXT[origemPrenhez(p)]}</span>
+              {p.sexagem && <span className="rp-chip">{p.sexagem === "Fêmea" ? "♀" : "♂"} {p.sexagem}</span>}
+              {qtdTotal(p) > 1 && <span className="rp-chip">ficha com {qtdTotal(p)} · restam {qtdRest(p)}</span>}
+            </div>
+            {(f.k === "conf" || f.k === "parto") ? <BarraGestacao p={p} />
+              : f.k === "diag" ? <span className="rp-prox">{p.dataTE ? `Próxima ação: lançar diagnóstico (sugerido ${dataBR(somaDias(p.dataTE, DIAG_DIAS))})` : "Próxima ação: lançar diagnóstico"}</span>
+              : <span className="rp-meta">{p.dataParto ? `Parto em ${dataBR(p.dataParto)}` : p.perda ? `Perda em ${dataBR(p.perda.data)} · ${p.perda.motivo}` : p.dataTE ? `TE em ${dataBR(p.dataTE)}` : ""}</span>}
+          </button>
+        ))}
+        {lst.length === 0 && <div className="empty">Nenhuma prenhez nesta fase{origem || cri ? " com esses filtros" : ""}.</div>}
+      </div>
+    </section>
+  );
+}
+
+/* ---------------- página: Aspirações ---------------- */
+function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir }) {
+  const [tab, setTab] = useState("andamento");
+  const base = (lista || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia" && !a.arquivada).map((a) => ({ a, D: dadosAsp(a, ativos, embrioes) }));
+  const conc = ({ D }) => D.st[0] === "Concluída" || D.st[0] === "Cancelada";
+  const grupos = { andamento: base.filter((x) => !conc(x)), concluidas: base.filter(conc), todas: base };
+  const lst = [...grupos[tab]].sort((x, y) => (y.a.dataAspiracao || y.a.dataAsp || "").localeCompare(x.a.dataAspiracao || x.a.dataAsp || ""));
+  const soma = (k) => base.reduce((s, x) => s + (x.D[k] || 0), 0);
+  const ooComE = base.filter((x) => x.D.E != null).reduce((s, x) => s + x.D.oocitos, 0);
+  const TABS = [["andamento", "Em andamento"], ["concluidas", "Concluídas"], ["todas", "Todas"]];
+  return (
+    <section className="wrap rp-pag">
+      <div className="rp-kpis">
+        <KPI label="Aspirações em andamento" value={grupos.andamento.length} sub={`${base.length} no total`} />
+        <KPI label="Embriões produzidos" value={soma("E")} sub={ooComE ? `aproveitamento ${Math.round((soma("E") / ooComE) * 100)}%` : "embriões ÷ oócitos"} />
+        <KPI label="Embriões a transferir" value={soma("disp")} sub="frescos, aguardando TE" />
+        <KPI label="No Banco de Embriões" value={soma("saldoBanco")} sub="congelados destas aspirações" />
+        <KPI label="Taxa de prenhez" value={soma("diag") ? Math.round((soma("conf") / soma("diag")) * 100) + "%" : "—"} sub="confirmadas ÷ diagnosticadas" />
+      </div>
+      <div className="rp-tabs" role="tablist" aria-label="Situação">{TABS.map(([k, l]) => (
+        <button key={k} type="button" role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{l}<b>{grupos[k].length}</b></button>
+      ))}</div>
+      <div className="cards-grid rp-grid">
+        {lst.map(({ a, D }) => {
+          const w = (v) => `${D.E ? (v / D.E) * 100 : 0}%`;
+          return (
+            <button type="button" className="rp-card" key={a.id} onClick={() => onAbrir(a)}>
+              <div className="rp-card-h"><span className="rp-t">{a.doadora || a.nome}{a.pai || a.touro ? ` × ${a.pai || a.touro}` : ""}</span><Badge tone={D.st[1]}>{D.st[0]}</Badge></div>
+              <span className="rp-meta">{[a.dataAspiracao || a.dataAsp ? dataBR(a.dataAspiracao || a.dataAsp) : "data não informada", a.ondeEsta].filter(Boolean).join(" · ")}</span>
+              {D.E != null && <div className="rp-dest" aria-hidden="true"><i style={{ width: w(D.transf), background: "var(--em)" }} /><i style={{ width: w(D.congelados), background: "#C9AE74" }} /><i style={{ width: w(D.disp), background: "#9CC5AF" }} /></div>}
+              <span className="rp-meta tab-num">{D.E == null ? `${D.oocitos || "—"} oócitos · embriões aguardando laboratório` : `${D.oocitos} oócitos · ${D.E} embriões · ${D.transf} transferidos · ${D.conf} prenhez(es) · ${D.nasc} nascido(s)`}</span>
+              {D.prox && <span className="rp-prox">{D.prox}</span>}
+            </button>
+          );
+        })}
+        {lst.length === 0 && <div className="empty">Nenhuma aspiração {tab === "andamento" ? "em andamento" : tab === "concluidas" ? "concluída" : "cadastrada"}.</div>}
+      </div>
+      {base.some((x) => x.D.E != null) && <div className="rp-legenda"><span><i style={{ background: "var(--em)" }} />transferidos</span><span><i style={{ background: "#C9AE74" }} />congelados</span><span><i style={{ background: "#9CC5AF" }} />a transferir</span></div>}
+    </section>
+  );
+}
+
+/* ---------------- página: Banco de Embriões ---------------- */
+function PaginaBanco({ embrioes, ativos, busca, sel, setSel, onAcao, onAbrir }) {
+  const [filtro, setFiltro] = useState("saldo");
+  const q = norm(busca || "").trim();
+  const todos = (embrioes || []).filter(Boolean);
+  const casa = (l) => !q || norm([l.cod, l.doadora, l.pai, l.local, l.propriedade, ...(l.socios || []).map((s) => s && s.nome)].join(" ")).includes(q);
+  const lst = todos.filter(casa).filter((l) => (filtro === "arquivados" ? l.arquivado : !l.arquivado && (filtro === "todos" || saldoLote(l) > 0)))
+    .sort((a, b) => saldoLote(b) - saldoLote(a) || (a.doadora || "").localeCompare(b.doadora || ""));
+  const atual = todos.find((l) => l.id === sel) || lst[0] || null;
+  const vivos = todos.filter((l) => !l.arquivado);
+  const saldoT = vivos.reduce((s, l) => s + saldoLote(l), 0);
+  const ano = String(new Date().getFullYear());
+  const doAno = (t) => vivos.reduce((s, l) => s + (l.movs || []).filter((m) => m && m.tipo === t && (m.data || "").startsWith(ano)).reduce((x, m) => x + Math.round(num(m.qtd)), 0), 0);
+  const psBanco = (ativos || []).filter((p) => p && p.tipo === "prenhez" && p.loteOrigemId);
+  const conf = psBanco.filter(prenhezPositiva).length, diag = psBanco.filter((p) => faseReprod(p).k !== "diag").length;
+  const porDoadora = {}; vivos.forEach((l) => { const k = l.doadora || "Doadora não informada"; porDoadora[k] = (porDoadora[k] || 0) + saldoLote(l); });
+  const topo = Math.max(1, ...Object.values(porDoadora));
+  return (
+    <section className="wrap rp-pag">
+      <div className="rp-topo"><p className="muted">Estoque de embriões congelados por lote. O saldo é calculado pelas movimentações e nunca é digitado.</p>
+        <button className="btn btn-gold" onClick={() => onAcao("novoLote")}>+ Entrada de embriões</button></div>
+      <div className="rp-kpis">
+        <KPI label="Saldo disponível" value={saldoT} tone="pos" sub="embriões congelados" />
+        <KPI label="Lotes com saldo" value={vivos.filter((l) => saldoLote(l) > 0).length} sub={`${Object.keys(porDoadora).length} doadora(s)`} />
+        <KPI label={`Entradas em ${ano}`} value={doAno("entrada")} sub="congelados, comprados ou inventário" />
+        <KPI label={`Saídas em ${ano}`} value={doAno("uso") + doAno("venda") + doAno("terceiro") + doAno("descarte")} sub={`${doAno("uso")} usados · ${doAno("venda") + doAno("terceiro")} vendidos/terceiros · ${doAno("descarte")} descartados`} />
+        <KPI label="Taxa de prenhez dos congelados" value={diag ? Math.round((conf / diag) * 100) + "%" : "—"} sub={diag ? `${conf} de ${diag} transferências diagnosticadas` : "sem diagnósticos ainda"} />
+      </div>
+      {Object.keys(porDoadora).length > 0 && (
+        <div className="card rp-pordoa"><div className="rp-sub" style={{ marginTop: 0 }}>Saldo por doadora</div>
+          {Object.entries(porDoadora).sort((a, b) => b[1] - a[1]).map(([d, v]) => (
+            <div className="rp-fl" key={d}><span>{d}</span><span className="rp-fl-b"><i style={{ width: `${(v / topo) * 100}%` }} /></span><b>{v}</b></div>
+          ))}
+        </div>
+      )}
+      <div className="rp-filtros">
+        <div className="seg-group" role="group" aria-label="Mostrar">{[["saldo", "Com saldo"], ["todos", "Todos os lotes"], ["arquivados", "Arquivados"]].map(([k, l]) => (
+          <button key={k} type="button" className={`seg ${filtro === k ? "on" : ""}`} onClick={() => setFiltro(k)}>{l}</button>))}</div>
+        {q && <span className="muted small">Filtrando pela busca: “{busca}”</span>}
+      </div>
+      {todos.length === 0 ? (
+        <div className="card rp-vazio"><b>Nenhum embrião cadastrado ainda.</b><p className="muted">Use “+ Entrada de embriões” para registrar embriões congelados de uma aspiração, comprados ou que já estão no botijão.</p></div>
+      ) : (
+        <div className="rp-cols">
+          <div className="rp-lista">
+            {lst.map((l) => { const r = resumoLote(l), w = (v) => `${r.entrada + Math.max(0, r.ajuste) ? (v / (r.entrada + Math.max(0, r.ajuste))) * 100 : 0}%`; return (
+              <button type="button" key={l.id} className={`rp-card ${atual && atual.id === l.id ? "on" : ""}`} onClick={() => setSel(l.id)}>
+                <div className="rp-card-h"><span className="rp-t">{rotuloLote(l)}</span><span className="rp-saldo"><b className={r.saldo ? "" : "zero"}>{r.saldo}</b><small>de {r.entrada + Math.max(0, r.ajuste)}</small></span></div>
+                <div className="rp-chips"><span className={`rp-chip o-${l.origem}`}>{ORIGEM_LOTE[l.origem] || "Origem"}</span><span className="rp-chip">Lote {l.cod}</span>{l.sexado && <span className="rp-chip">sexado {lc(l.sexado)}</span>}</div>
+                <span className="rp-meta">{[l.local, l.propriedade].filter(Boolean).join(" · ") || "Local não informado"}</span>
+                <div className="rp-dest" aria-hidden="true"><i style={{ width: w(r.saldo), background: "var(--em)" }} /><i style={{ width: w(r.uso), background: "#7F9BBF" }} /><i style={{ width: w(r.venda + r.terceiro), background: "#C9AE74" }} /><i style={{ width: w(r.descarte), background: "#D99A8C" }} /></div>
+              </button>); })}
+            {lst.length === 0 && <div className="empty">Nenhum lote {filtro === "saldo" ? "com saldo" : filtro === "arquivados" ? "arquivado" : ""}.</div>}
+            <div className="rp-legenda"><span><i style={{ background: "var(--em)" }} />saldo</span><span><i style={{ background: "#7F9BBF" }} />usados em TE</span><span><i style={{ background: "#C9AE74" }} />vendidos / terceiros</span><span><i style={{ background: "#D99A8C" }} />descartados</span></div>
+          </div>
+          {atual && <DetalheLote l={atual} ativos={ativos} onAcao={onAcao} onAbrir={onAbrir} />}
+        </div>
+      )}
+    </section>
+  );
+}
+function DetalheLote({ l, ativos, onAcao, onAbrir }) {
+  const r = resumoLote(l);
+  const asp = l.aspiracaoId ? (ativos || []).find((x) => x && x.id === l.aspiracaoId) : null;
+  const ps = (ativos || []).filter((p) => p && p.tipo === "prenhez" && p.loteOrigemId === l.id);
+  const conf = ps.filter(prenhezPositiva).length, diag = ps.filter((p) => faseReprod(p).k !== "diag").length;
+  let corrente = 0;
+  const razao = [...(l.movs || [])].filter(Boolean).sort((x, y) => (x.data || "").localeCompare(y.data || "") || (x.criadoEm || "").localeCompare(y.criadoEm || ""))
+    .map((m) => { const s = sinalMov(m); corrente += s * Math.round(num(m.qtd)); return { ...m, s, saldo: corrente }; }).reverse();
+  const soc = (l.socios || []).filter((s) => s && s.nome);
+  return (
+    <div className="card rp-det">
+      <div className="rp-det-h">
+        <div>
+          <div className="eyebrow">Lote {l.cod}{l.dataCongelamento ? ` · congelado em ${dataBR(l.dataCongelamento)}` : ""}</div>
+          <h2 className="serif">{rotuloLote(l)}</h2>
+          <div className="chips"><Badge tone="gold">{ORIGEM_LOTE[l.origem] || "Origem"}</Badge>{l.metodo && <Badge tone="gold">{l.metodo}</Badge>}{l.sexado && <Badge tone="gold">sexado {lc(l.sexado)}</Badge>}{l.arquivado && <Badge tone="amber">arquivado</Badge>}</div>
+        </div>
+        <div className="rp-acoes">
+          <button className="btn btn-ghost" onClick={() => onAcao("editarLote", l)}>Editar</button>
+          <button className="btn btn-ghost" onClick={() => onAcao("mov", l, "entrada")}>+ Entrada</button>
+          <button className="btn btn-ghost" onClick={() => onAcao("mov", l, "venda")} disabled={r.saldo < 1}>Saída</button>
+          <button className="btn btn-gold" onClick={() => onAcao("usar", l)} disabled={r.saldo < 1 || l.arquivado}>Usar em transferência</button>
+        </div>
+      </div>
+      <div className="rp-sub">Saldo do lote</div>
+      <div className="rp-saldos">
+        <div><span>Recebidos</span><b>{r.entrada}</b></div>
+        <div><span>Usados em TE</span><b>− {r.uso}</b></div>
+        <div><span>Vendidos</span><b>− {r.venda}</b></div>
+        <div><span>Terceiros</span><b>− {r.terceiro}</b></div>
+        <div><span>Descartados</span><b>− {r.descarte}</b></div>
+        {r.ajuste !== 0 && <div><span>Ajustes</span><b>{r.ajuste > 0 ? "+" : "−"} {Math.abs(r.ajuste)}</b></div>}
+        <div className="final"><span>Saldo disponível</span><b>{r.saldo}</b></div>
+      </div>
+      <p className="muted small">Calculado a partir das {razao.length} movimentações abaixo. Nenhuma saída pode deixar o saldo negativo.</p>
+      <div className="info-grid">
+        <InfoR l="Local" v={l.local || "—"} />
+        <InfoR l="Propriedade" v={l.propriedade || "—"} />
+        <InfoR l="Participação da SM" v={l.partSM !== "" && l.partSM != null ? `${String(l.partSM).replace(".", ",")}%` : "—"} />
+        <InfoR l="Sócios" v={soc.length ? soc.map((s) => `${s.nome}${s.pct ? ` ${s.pct}%` : ""}`).join(" · ") : "—"} />
+        <InfoR l="Origem" v={asp ? ((asp.dataAspiracao || asp.dataAsp) ? `Aspiração de ${dataBR((asp.dataAspiracao || asp.dataAsp))}` : asp.nome) : l.origem === "compra" ? [l.compra && l.compra.leilao, l.compra && l.compra.valor ? fmt(num(l.compra.valor)) : ""].filter(Boolean).join(" · ") || "Compra" : "Já existia antes do sistema"} />
+        <InfoR l="Taxa de prenhez do lote" v={diag ? `${Math.round((conf / diag) * 100)}% (${conf} de ${diag})` : "sem diagnósticos"} />
+      </div>
+      {asp && <button type="button" className="rp-prow" onClick={() => onAbrir(asp)}><span><b>Abrir a aspiração de origem</b><small>{asp.nome}</small></span><span aria-hidden="true">↗</span></button>}
+      {l.obs && <p className="obs">{l.obs}</p>}
+      <div className="rp-sub">Prenhezes com embriões deste lote ({ps.length}) <small className="muted">a transferência baixa o embrião, mesmo se o diagnóstico der negativo</small></div>
+      {ps.length ? ps.map((p) => { const f = faseReprod(p); return (
+        <button type="button" className="rp-prow" key={p.id} onClick={() => onAbrir(p)}>
+          <span><b>{p.receptora ? `Receptora ${p.receptora}` : p.nome}</b><small>{p.dataTE ? `TE ${dataBR(p.dataTE)}` : ""}</small></span><Badge tone={f.tone}>{f.txt}</Badge>
+        </button>); }) : <p className="muted small">Nenhum embrião deste lote foi transferido ainda.</p>}
+      <div className="rp-sub">Movimentações</div>
+      <div className="tbl-wrap"><table className="tbl rp-tbl">
+        <thead><tr><th>Data</th><th>Movimento</th><th className="r">Qtd.</th><th className="r">Saldo</th><th>Referência</th></tr></thead>
+        <tbody>{razao.map((m) => (
+          <tr key={m.id}>
+            <td className="tab-num">{dataBR(m.data)}</td>
+            <td><Badge tone={(MOV_TIPOS[m.tipo] || ["", "gold"])[1]}>{m.tipo === "ajuste" ? `Ajuste (${m.s > 0 ? "+" : "−"})` : (MOV_TIPOS[m.tipo] || [m.tipo])[0]}</Badge></td>
+            <td className={`r tab-num ${m.s > 0 ? "pos" : m.s < 0 ? "neg" : ""}`}>{m.s > 0 ? "+" : m.s < 0 ? "−" : ""}{m.tipo === "local" ? "—" : Math.round(num(m.qtd))}</td>
+            <td className="r tab-num">{m.saldo}</td>
+            <td>{m.ref}{m.obs ? <><br /><span className="muted small">{m.obs}</span></> : null}{m.responsavel ? <><br /><span className="muted small">{m.responsavel}</span></> : null}</td>
+          </tr>
+        ))}</tbody>
+      </table></div>
+      <div className="rp-rodape"><button className="btn btn-ghost btn-mini" onClick={() => onAcao("arquivar", l)}>{l.arquivado ? "Desarquivar lote" : "Arquivar lote"}</button></div>
+    </div>
+  );
+}
+
+/* ---------------- folhas de ação ---------------- */
+function FolhaTransferencia({ asp, lote, ativos, embrioes, onConfirm, onClose, onFormCompleto }) {
+  const D = asp ? dadosAsp(asp, ativos, embrioes) : null;
+  const loteAsp = D ? D.lotes.find((l) => saldoLote(l) > 0 && !l.arquivado) : null;
+  const [fonte, setFonte] = useState(lote ? "l" : D && D.disp > 0 ? "f" : loteAsp ? "c" : "f");
+  const semLab = D && D.E == null;
+  const max = lote ? saldoLote(lote) : fonte === "c" ? (loteAsp ? saldoLote(loteAsp) : 0) : semLab ? 30 : D.disp;
+  const [n, setN] = useState(Math.max(1, Math.min(lote ? 1 : 3, max || 1)));
+  const [dataTE, setDataTE] = useState(today());
+  const [recs, setRecs] = useState(() => Array.from({ length: 30 }, () => ""));
+  const [cri, setCri] = useState((asp && asp.ondeEsta) || (lote && lote.propriedade) || "");
+  const q = Math.max(1, Math.min(n, Math.max(1, max)));
+  const usaLote = lote || (fonte === "c" ? loteAsp : null);
+  const src = lote || asp;
+  const pode = max >= 1 && q <= max;
+  return (
+    <Folha eyebrow={lote ? `Banco de Embriões · lote ${lote.cod}` : "Aspiração"} titulo={lote ? "Usar embriões em transferência" : "Registrar transferência de embriões"}
+      sub={`${src.doadora || src.nome || ""}${src.pai || src.touro ? ` × ${src.pai || src.touro}` : ""}. Cria uma prenhez para cada receptora${usaLote ? ` e baixa 1 embrião do lote ${usaLote.cod} por receptora` : ", já ligada a esta aspiração"}.`}
+      onClose={onClose}
+      rodape={<>{onFormCompleto && <button className="btn btn-ghost rp-esq" onClick={onFormCompleto}>Formulário completo</button>}<button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+        <button className="btn btn-gold" disabled={!pode} onClick={() => onConfirm({ asp, lote: usaLote, n: q, dataTE, receptoras: recs.slice(0, q).map((r) => r.trim()), criatorio: cri.trim() })}>Criar {q} prenhez{q > 1 ? "es" : ""}</button></>}>
+      {!lote && (
+        <div className="field wide"><span>Embriões usados</span>
+          <div className="segmented">
+            <button type="button" className={`seg ${fonte === "f" ? "on" : ""}`} onClick={() => setFonte("f")}>Frescos{semLab ? "" : ` (${D.disp} a transferir)`}</button>
+            <button type="button" className={`seg ${fonte === "c" ? "on" : ""}`} onClick={() => setFonte("c")} disabled={!loteAsp}>Congelados no banco ({loteAsp ? saldoLote(loteAsp) : 0})</button>
+          </div></div>
+      )}
+      {semLab && fonte === "f" && <div className="aviso">O resultado do laboratório desta aspiração não foi lançado, então o sistema não consegue conferir quantos embriões existem. Se possível, edite a aspiração e informe os embriões produzidos.</div>}
+      {max < 1 && <div className="aviso">{usaLote || lote || fonte === "c" ? "Este lote não tem saldo: nenhum embrião pode ser usado duas vezes." : "Não há embriões frescos a transferir nesta aspiração."}</div>}
+      <div className="grid">
+        <label className="field"><span>Quantidade de receptoras</span><Passo v={q} set={setN} max={Math.max(1, max)} rotulo="Quantidade de receptoras" /></label>
+        <label className="field"><span>Data da transferência (TE)</span><input type="date" value={dataTE} onChange={(e) => setDataTE(e.target.value)} /></label>
+        <label className="field wide"><span>Criatório onde estão as receptoras</span><input value={cri} onChange={(e) => setCri(e.target.value)} placeholder="ex.: Fazenda Santa Maria" /></label>
+      </div>
+      <div className="field wide"><span>Identificação das receptoras <em className="new-hint">· opcional, pode completar depois</em></span>
+        <div className="rp-recs">{Array.from({ length: q }, (_, i) => (
+          <input key={i} value={recs[i]} onChange={(e) => { const v = e.target.value; setRecs((r) => r.map((x, j) => (j === i ? v : x))); }} placeholder={`Receptora ${i + 1}`} aria-label={`Receptora ${i + 1}`} />
+        ))}</div></div>
+      <div className="rp-herda">
+        <b>Preenchido automaticamente em cada prenhez</b>
+        <span>Mãe doadora, pai, genealogia e sociedade {lote ? "do lote" : "da aspiração"}. Nenhum valor financeiro é copiado: o custo continua na origem.</span>
+        <span>Status inicial <b>Aguardando diagnóstico</b> · diagnóstico sugerido em <b>{dataBR(somaDias(dataTE, DIAG_DIAS))}</b> · previsão de parto <b>{dataBR(somaDias(dataTE, PARTO_DIAS))}</b> (TE + {PARTO_DIAS} dias, editável).</span>
+        {usaLote && <span>O embrião sai do saldo na transferência, mesmo que o diagnóstico dê negativo.</span>}
+      </div>
+    </Folha>
+  );
+}
+function FolhaDiagnostico({ p, onConfirm, onClose }) {
+  const [res, setRes] = useState("positivo");
+  const [data, setData] = useState(today());
+  const [sexagem, setSexagem] = useState(p.sexagem || "");
+  const [prev, setPrev] = useState(p.previsaoParto || (p.dataTE ? somaDias(p.dataTE, PARTO_DIAS) : ""));
+  return (
+    <Folha eyebrow={p.receptora ? `Receptora ${p.receptora}` : p.nome} titulo="Lançar diagnóstico" onClose={onClose}
+      rodape={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-gold" disabled={!data} onClick={() => onConfirm({ res, data, sexagem, prev })}>Salvar diagnóstico</button></>}>
+      <div className="field wide"><span>Resultado</span><div className="segmented">
+        <button type="button" className={`seg ${res === "positivo" ? "on" : ""}`} onClick={() => setRes("positivo")}>Positivo · prenhe</button>
+        <button type="button" className={`seg ${res === "negativo" ? "on" : ""}`} onClick={() => setRes("negativo")}>Negativo · vazia</button></div></div>
+      <div className="grid">
+        <label className="field"><span>Data do diagnóstico</span><input type="date" value={data} onChange={(e) => setData(e.target.value)} /></label>
+        {res === "positivo" && <label className="field"><span>Sexagem <em className="new-hint">· opcional</em></span><select value={sexagem} onChange={(e) => setSexagem(e.target.value)}><option value="">Não informada</option><option>Fêmea</option><option>Macho</option></select></label>}
+        {res === "positivo" && <label className="field"><span>Previsão de parto</span><input type="date" value={prev} onChange={(e) => setPrev(e.target.value)} /></label>}
+      </div>
+      <p className="muted small">{res === "positivo" ? "A prenhez passa para Confirmadas e entra no acompanhamento de parto." : "A ficha vai para Encerradas como “Não confirmada” e entra na taxa de prenhez da origem. Os valores financeiros não são alterados."}</p>
+    </Folha>
+  );
+}
+function FolhaPerda({ p, onConfirm, onClose }) {
+  const [data, setData] = useState(today());
+  const [motivo, setMotivo] = useState("Reabsorção");
+  const [obs, setObs] = useState("");
+  return (
+    <Folha eyebrow={p.receptora ? `Receptora ${p.receptora}` : p.nome} titulo="Registrar perda gestacional" onClose={onClose}
+      rodape={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-danger-solid" disabled={!data} onClick={() => onConfirm({ data, motivo, obs })}>Registrar perda</button></>}>
+      {qtdTotal(p) > 1 && <div className="aviso">Esta ficha representa {qtdTotal(p)} prenhezes. Será registrada a perda de 1 delas (restam {qtdRest(p)}).</div>}
+      <div className="grid">
+        <label className="field"><span>Data</span><input type="date" value={data} onChange={(e) => setData(e.target.value)} /></label>
+        <label className="field"><span>Motivo</span><select value={motivo} onChange={(e) => setMotivo(e.target.value)}>{["Reabsorção", "Aborto", "Morte da receptora", "Outro"].map((m) => <option key={m}>{m}</option>)}</select></label>
+        <label className="field wide"><span>Observação <em className="new-hint">· opcional</em></span><input value={obs} onChange={(e) => setObs(e.target.value)} /></label>
+      </div>
+      <p className="muted small">A ficha continua no histórico (aba Encerradas) e na taxa de prenhez da origem. Compra e parcelas não são alteradas.</p>
+    </Folha>
+  );
+}
+function FolhaNascimento({ p, animalNames, onConfirm, onFull, onClose }) {
+  const prev = p.previsaoParto || "";
+  const [nome, setNome] = useState("");
+  const [data, setData] = useState(p.dataParto || (prev && prev < today() ? prev : today()));
+  const [sexo, setSexo] = useState(p.sexagem || "");
+  const [registro, setRegistro] = useState("");
+  const dup = nome.trim() && (animalNames || []).some((x) => lc(x).trim() === lc(nome).trim());
+  const soc = (p.socios || []).filter((s) => s && s.nome);
+  return (
+    <Folha eyebrow="Substitui o antigo “Nasceu”" titulo="Registrar nascimento"
+      sub={`${p.doadora || ""}${p.pai || p.touro ? ` × ${p.pai || p.touro}` : ""}${p.receptora ? ` · receptora ${p.receptora}` : ""}. Cria a ficha do animal ligada a esta prenhez.`} onClose={onClose}
+      rodape={<><button className="btn btn-ghost rp-esq" onClick={onFull}>Formulário completo</button><button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+        <button className="btn btn-gold" disabled={!nome.trim() || !sexo || !data} onClick={() => onConfirm({ nome: nome.trim(), data, sexo, registro: registro.trim() })}>Cadastrar animal</button></>}>
+      <div className="grid">
+        <label className="field"><span>Nome do animal</span><input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="ex.: Aurora da SM" autoFocus /></label>
+        <label className="field"><span>Data de nascimento</span><input type="date" value={data} onChange={(e) => setData(e.target.value)} /></label>
+        <div className="field"><span>Sexo{p.sexagem ? <em className="new-hint"> · veio da sexagem, confira</em> : ""}</span><div className="segmented">
+          <button type="button" className={`seg ${sexo === "Fêmea" ? "on" : ""}`} onClick={() => setSexo("Fêmea")}>♀ Fêmea</button>
+          <button type="button" className={`seg ${sexo === "Macho" ? "on" : ""}`} onClick={() => setSexo("Macho")}>♂ Macho</button></div></div>
+        <label className="field"><span>Registro <em className="new-hint">· opcional</em></span><input value={registro} onChange={(e) => setRegistro(e.target.value)} placeholder="pode preencher depois" /></label>
+      </div>
+      {dup && <div className="aviso">Já existe um animal chamado “{nome.trim()}”. Confira se não é o mesmo nascimento antes de continuar.</div>}
+      <div className="rp-herda">
+        <b>Herdado automaticamente (pode ser revisado na ficha do animal)</b>
+        <span>Pai <b>{p.pai || p.touro || "—"}</b> · Mãe <b>{p.doadora || "—"}</b>{[p.avoPaterno, p.avoPaterna, p.avoMaterno, p.avoMaterna].some(Boolean) ? " · avós da prenhez" : ""}</span>
+        <span>Sociedade: {soc.length ? soc.map((s) => `${s.nome}${s.pct ? ` ${s.pct}%` : ""}`).join(" · ") : "não informada"} · criatório {p.ondeEsta || "—"}</span>
+        <span>A compra e as parcelas continuam na ficha da prenhez; nada é lançado duas vezes.</span>
+      </div>
+    </Folha>
+  );
+}
+function FolhaMovLote({ lote, tipoInicial, onConfirm, onClose }) {
+  const [tipo, setTipo] = useState(tipoInicial || "venda");
+  const [qtd, setQtd] = useState(1);
+  const [data, setData] = useState(today());
+  const [quem, setQuem] = useState("");
+  const [valor, setValor] = useState("");
+  const [motivo, setMotivo] = useState("Palheta danificada");
+  const [sinal, setSinal] = useState(-1);
+  const saldo = saldoLote(lote);
+  const ent = tipo === "entrada";
+  const saida = !ent && !(tipo === "ajuste" && sinal > 0);
+  const max = saida ? saldo : 999;
+  const q = Math.max(1, Math.min(qtd, Math.max(1, max)));
+  const ok = q >= 1 && (!saida || q <= saldo) && data;
+  const depois = saldo + (saida ? -q : q);
+  const ref = tipo === "venda" ? `Venda${quem ? ` para ${quem}` : ""}${valor ? ` · ${fmt(num(valor))}` : ""}` : tipo === "terceiro" ? `Destinado a ${quem || "terceiros"}` : tipo === "descarte" ? motivo
+    : tipo === "ajuste" ? `Ajuste de inventário (${sinal > 0 ? "+" : "−"})${quem ? ` · ${quem}` : ""}` : quem || "Entrada de embriões";
+  return (
+    <Folha eyebrow={`Lote ${lote.cod} · ${rotuloLote(lote)}`} titulo={ent ? "Registrar entrada no lote" : "Registrar saída ou ajuste"} onClose={onClose}
+      rodape={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-gold" disabled={!ok} onClick={() => onConfirm({ tipo, qtd: q, data, ref, sinal: tipo === "ajuste" ? sinal : undefined, valor: tipo === "venda" ? valor : undefined })}>Registrar</button></>}>
+      {!ent && (
+        <div className="field wide"><span>Tipo</span><div className="segmented rp-seg-wrap">
+          {[["venda", "Venda"], ["terceiro", "Destinado a terceiros"], ["descarte", "Descarte"], ["ajuste", "Ajuste de inventário"]].map(([k, l]) => (
+            <button key={k} type="button" className={`seg ${tipo === k ? "on" : ""}`} onClick={() => setTipo(k)}>{l}</button>))}
+        </div><em className="new-hint">O uso em transferência é registrado por “Usar em transferência”, que já cria as prenhezes.</em></div>
+      )}
+      {tipo === "ajuste" && <div className="field wide"><span>Ajuste</span><div className="segmented">
+        <button type="button" className={`seg ${sinal < 0 ? "on" : ""}`} onClick={() => setSinal(-1)}>Retirar do saldo</button>
+        <button type="button" className={`seg ${sinal > 0 ? "on" : ""}`} onClick={() => setSinal(1)}>Acrescentar ao saldo</button></div>
+        <em className="new-hint">Use para corrigir a contagem após conferir o botijão. O lançamento original não é apagado.</em></div>}
+      <div className="grid">
+        <label className="field"><span>Quantidade</span><Passo v={q} set={setQtd} max={Math.max(1, max)} rotulo="Quantidade" /></label>
+        <label className="field"><span>Data</span><input type="date" value={data} onChange={(e) => setData(e.target.value)} /></label>
+        {tipo === "venda" && <><label className="field"><span>Comprador</span><input value={quem} onChange={(e) => setQuem(e.target.value)} /></label>
+          <label className="field"><span>Valor total <em className="new-hint">· opcional</em></span><input type="number" step="any" value={valor} onChange={(e) => setValor(e.target.value)} placeholder="R$ 0" /></label></>}
+        {tipo === "terceiro" && <label className="field wide"><span>Destinatário</span><input value={quem} onChange={(e) => setQuem(e.target.value)} placeholder="ex.: sócio (cota dele)" /></label>}
+        {tipo === "descarte" && <label className="field"><span>Motivo</span><select value={motivo} onChange={(e) => setMotivo(e.target.value)}>{["Palheta danificada", "Falha no descongelamento", "Perda no botijão", "Outro"].map((m) => <option key={m}>{m}</option>)}</select></label>}
+        {(ent || tipo === "ajuste") && <label className="field wide"><span>{ent ? "Referência" : "Motivo do ajuste"}</span><input value={quem} onChange={(e) => setQuem(e.target.value)} placeholder={ent ? "ex.: congelamento de excedentes" : "ex.: conferência do botijão"} /></label>}
+      </div>
+      {saida && saldo < 1 && <div className="aviso">Este lote está sem saldo.</div>}
+      <div className="rp-herda"><span>Saldo do lote: <b>{saldo}</b> → <b>{depois}</b></span><span>A movimentação fica no histórico com data e responsável.</span></div>
+    </Folha>
+  );
+}
+function FolhaLote({ inicial, ativos, embrioes, animalNames, localNames, socioNames, onQuickSocio, onConfirm, onClose }) {
+  const editando = !!(inicial && inicial.id);
+  const asps = (ativos || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia" && !a.arquivada);
+  const [d, setD] = useState(() => inicial ? { ...inicial, socios: (inicial.socios || []).map((s) => ({ ...s })), compra: { ...(inicial.compra || {}) } }
+    : { origem: "existente", aspiracaoId: "", doadora: "", regDoadora: "", pai: "", dataCongelamento: "", local: "", propriedade: "", metodo: "", sexado: "", partSM: 100, socios: [], compra: {}, obs: "" });
+  const [qtd, setQtd] = useState(1);
+  const set = (k, v) => setD((p) => ({ ...p, [k]: v }));
+  const asp = d.origem === "aspiracao" ? asps.find((a) => a.id === d.aspiracaoId) : null;
+  const D = asp ? dadosAsp(asp, ativos, embrioes) : null;
+  const escolheAsp = (id) => { const a = asps.find((x) => x.id === id); setD((p) => ({ ...p, aspiracaoId: id, doadora: a ? a.doadora || "" : p.doadora, regDoadora: a ? a.regDoadora || "" : p.regDoadora, pai: a ? a.pai || a.touro || "" : p.pai,
+    propriedade: p.propriedade || (a && a.ondeEsta) || "", socios: a && !p.socios.length ? (a.socios || []).filter(Boolean).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct })) : p.socios })); };
+  const pctSoc = (d.socios || []).reduce((s, x) => s + num(x.pct), 0);
+  const ok = (d.doadora || "").trim() && (editando || qtd >= 1) && (d.origem !== "aspiracao" || d.aspiracaoId);
+  return (
+    <Folha eyebrow="Banco de Embriões" titulo={editando ? `Editar lote ${inicial.cod}` : "Entrada de embriões congelados"}
+      sub={editando ? "A quantidade é alterada por movimentações (entrada, saída ou ajuste), para manter o histórico." : "Cria um lote. Para acrescentar embriões a um lote que já existe, use “+ Entrada” no próprio lote."} onClose={onClose}
+      rodape={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-gold" disabled={!ok} onClick={() => onConfirm(d, qtd)}>{editando ? "Salvar lote" : "Criar lote"}</button></>}>
+      {!editando && <div className="field wide"><span>Origem dos embriões</span><div className="segmented rp-seg-wrap">
+        {[["aspiracao", "Aspiração da SM"], ["compra", "Adquiridos"], ["existente", "Já estão no botijão"]].map(([k, l]) => (
+          <button key={k} type="button" className={`seg ${d.origem === k ? "on" : ""}`} onClick={() => set("origem", k)}>{l}</button>))}</div></div>}
+      {d.origem === "existente" && !editando && <div className="aviso">Para embriões que a SM já possui sem aspiração cadastrada. Entram como inventário inicial, e o histórico do lote começa nesta data.</div>}
+      <div className="grid">
+        {d.origem === "aspiracao" && !editando && <label className="field wide"><span>Aspiração de origem</span>
+          <select value={d.aspiracaoId} onChange={(e) => escolheAsp(e.target.value)}><option value="">Escolha a aspiração…</option>
+            {asps.map((a) => { const x = dadosAsp(a, ativos, embrioes); return <option key={a.id} value={a.id}>{a.nome}{a.dataAspiracao ? ` · ${dataBR(a.dataAspiracao)}` : ""}{x.E != null ? ` · ${x.disp} a transferir` : ""}</option>; })}</select></label>}
+        <label className="field"><span>Mãe doadora</span><AutoField value={d.doadora || ""} onChange={(v) => set("doadora", v)} suggestions={animalNames} placeholder="buscar animal" /></label>
+        <label className="field"><span>Pai (touro)</span><AutoField value={d.pai || ""} onChange={(v) => set("pai", v)} suggestions={animalNames} placeholder="buscar animal" /></label>
+        {!editando && <label className="field"><span>Quantidade de embriões</span><Passo v={qtd} set={setQtd} max={999} rotulo="Quantidade de embriões" /></label>}
+        <label className="field"><span>Data do congelamento</span><input type="date" value={d.dataCongelamento || ""} onChange={(e) => set("dataCongelamento", e.target.value)} /></label>
+        <label className="field"><span>Local (botijão e caneca)</span><input value={d.local || ""} onChange={(e) => set("local", e.target.value)} placeholder="ex.: Botijão 2 · Caneca 4" /></label>
+        <label className="field"><span>Propriedade / central</span><AutoField value={d.propriedade || ""} onChange={(v) => set("propriedade", v)} suggestions={localNames} placeholder="onde está o botijão" /></label>
+        <label className="field"><span>Método <em className="new-hint">· opcional</em></span><select value={d.metodo || ""} onChange={(e) => set("metodo", e.target.value)}><option value="">—</option>{["Vitrificação", "Direct Transfer (DT)", "Congelamento lento"].map((m) => <option key={m}>{m}</option>)}</select></label>
+        <label className="field"><span>Sexado <em className="new-hint">· opcional</em></span><select value={d.sexado || ""} onChange={(e) => set("sexado", e.target.value)}><option value="">Não</option><option>Fêmea</option><option>Macho</option></select></label>
+        <label className="field"><span>Participação da SM (%)</span><input type="number" step="any" value={d.partSM ?? ""} onChange={(e) => set("partSM", e.target.value)} /></label>
+        {d.origem === "compra" && <>
+          <label className="field"><span>Leilão / vendedor</span><input value={d.compra.leilao || ""} onChange={(e) => setD((p) => ({ ...p, compra: { ...p.compra, leilao: e.target.value } }))} /></label>
+          <label className="field"><span>Data da compra</span><input type="date" value={d.compra.data || ""} onChange={(e) => setD((p) => ({ ...p, compra: { ...p.compra, data: e.target.value } }))} /></label>
+          <label className="field"><span>Valor da compra <em className="new-hint">· informativo</em></span><input type="number" step="any" value={d.compra.valor || ""} onChange={(e) => setD((p) => ({ ...p, compra: { ...p.compra, valor: e.target.value } }))} placeholder="R$ 0" /></label>
+        </>}
+        <label className="field wide"><span>Observações <em className="new-hint">· opcional</em></span><input value={d.obs || ""} onChange={(e) => set("obs", e.target.value)} /></label>
+      </div>
+      {D && D.E != null && !editando && qtd > D.disp && <div className="aviso">A aspiração tem {D.disp} embrião(ões) ainda sem destino. Confira a quantidade antes de criar o lote.</div>}
+      <div className="field wide"><span>Sócios do lote {d.socios.length > 0 && pctSoc !== 100 && <em className="warn"> · soma {pctSoc}% (deve fechar 100%)</em>}</span>
+        {(d.socios || []).map((s) => (
+          <div className="socio-row" key={s.id}>
+            <div className="socio-auto"><AutoField value={s.nome} onChange={(v) => setD((p) => ({ ...p, socios: p.socios.map((x) => (x.id === s.id ? { ...x, nome: v } : x)) }))} suggestions={socioNames} onCreate={onQuickSocio} placeholder="buscar ou cadastrar sócio" /></div>
+            <input type="number" step="any" placeholder="%" value={s.pct} onChange={(e) => { const v = e.target.value; setD((p) => ({ ...p, socios: p.socios.map((x) => (x.id === s.id ? { ...x, pct: v } : x)) })); }} style={{ maxWidth: 80 }} />
+            <button className="btn btn-mini" onClick={() => setD((p) => ({ ...p, socios: p.socios.filter((x) => x.id !== s.id) }))}>remover</button>
+          </div>
+        ))}
+        <button type="button" className="btn btn-ghost btn-mini" style={{ alignSelf: "flex-start" }} onClick={() => setD((p) => ({ ...p, socios: [...p.socios, { id: uid(), nome: "", pct: 0 }] }))}>+ Adicionar sócio</button>
+      </div>
+    </Folha>
+  );
+}
+
+function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, embrioes, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onGerarPrenhez, onConfirm, onRepro, onIrLote }) {
   useTravaFundo();
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
@@ -2710,28 +3370,41 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, canD
             <h2 className="serif">{a.nome}</h2>
             <div className="chips">
               {fase && <Badge tone="fase">{fase}</Badge>}
-              {a.status && a.tipo !== "animal" && <Badge tone={statusTone(a.status)}>{a.status}</Badge>}
+              {a.tipo === "prenhez" && a.origem !== "genealogia" ? (() => { const fz = faseReprod(a); return <Badge tone={fz.tone}>{fz.txt}</Badge>; })()
+                : a.tipo === "aspiracao" && a.origem !== "genealogia" ? (() => { const D = dadosAsp(a, ativos, embrioes); return <Badge tone={D.st[1]}>{D.st[0]}</Badge>; })()
+                : a.status && a.tipo !== "animal" && <Badge tone={statusTone(a.status)}>{a.status}</Badge>}
               {a.registro && <Badge tone="gold">Reg. {a.registro}</Badge>}
               {a.tipo === "animal" && a.nascimento && <Badge tone="gold">{idade(a.nascimento)}</Badge>}
               {a.ondeEsta && <Badge tone="gold"><Ico n="local" size={12} /> {a.ondeEsta}</Badge>}
-              {(a.tipo === "prenhez" || a.tipo === "aspiracao") && <Badge tone="gold">Restam {qtdRest(a)} de {qtdTotal(a)}</Badge>}
-              {alertaParto(a) === "atrasado" && <Badge tone="neg">Parto atrasado</Badge>}
-              {["hoje", "7", "15", "30"].includes(alertaParto(a)) && <Badge tone="gold">Parto em {diasAteParto(a)} dia(s)</Badge>}
+              {((a.tipo === "prenhez" && qtdTotal(a) > 1) || (a.tipo === "aspiracao" && qtdConvertidos(a) > 0)) && <Badge tone="gold">Restam {qtdRest(a)} de {qtdTotal(a)}</Badge>}
+              {a.tipo !== "prenhez" && alertaParto(a) === "atrasado" && <Badge tone="neg">Parto atrasado</Badge>}
+              {a.tipo !== "prenhez" && ["hoje", "7", "15", "30"].includes(alertaParto(a)) && <Badge tone="gold">Parto em {diasAteParto(a)} dia(s)</Badge>}
               {a.origemLabel && (() => { const org = a.origemId && (ativos || []).find((x) => x.id === a.origemId); return <span onClick={() => org && onAbrir && onAbrir(org)} style={{ cursor: org ? "pointer" : "default" }}><Badge tone="gold">Origem: {a.origemLabel}{org ? " ↗" : ""}</Badge></span>; })()}
             </div>
-            <div className="ficha-actions"><button className="btn btn-gold" onClick={onEdit}>Editar</button>
-              {a.tipo === "aspiracao" && a.origem !== "genealogia" && onGerarPrenhez && <button className="btn btn-ghost" onClick={() => onGerarPrenhez(a)}>+ Gerar prenhez</button>}
-              {(a.tipo === "prenhez" || a.tipo === "aspiracao") && a.origem !== "genealogia" && qtdRest(a) > 0 && onNascer && <button className="btn btn-gold" onClick={() => onNascer(a)}><Ico n="nascer" size={16} /> Nasceu</button>}
+            <div className="ficha-actions"><button className={`btn ${a.tipo === "animal" ? "btn-gold" : "btn-ghost"}`} onClick={onEdit}>Editar</button>
+              {a.tipo === "aspiracao" && a.origem !== "genealogia" && onRepro && <button className="btn btn-gold" onClick={() => onRepro("transf", a)}>Registrar transferência</button>}
+              {a.tipo === "prenhez" && a.origem !== "genealogia" && onRepro && (() => {
+                const fz = faseReprod(a);
+                const filhos = (ativos || []).filter((x) => x && x.tipo === "animal" && x.origemId === a.id);
+                const viva = (fz.k === "conf" || fz.k === "parto") && qtdRest(a) > 0;
+                return <>
+                  {fz.k === "diag" && <button className="btn btn-gold" onClick={() => onRepro("diag", a)}>Lançar diagnóstico</button>}
+                  {viva && <button className="btn btn-gold" onClick={() => onRepro("nasc", a)}><Ico n="nascer" size={16} /> Registrar nascimento</button>}
+                  {viva && <button className="btn btn-ghost" onClick={() => onRepro("perda", a)}>Registrar perda</button>}
+                  {filhos.length > 0 && <button className="btn btn-ghost" onClick={() => onAbrir(filhos[filhos.length - 1])}>Ver animal</button>}
+                </>;
+              })()}
               {canDelete && <button className="btn btn-ghost" onClick={onDelete}>Excluir</button>}<button className="x abs" onClick={onClose} aria-label="Fechar"><Ico n="fechar" size={18} /></button></div>
           </div>
         </div>
 
         <nav className="ficha-nav" aria-label="Seções da ficha">
-          {[["fx-fin", "Financeiro"], ["fx-gen", "Genealogia"], ["fx-dados", "Dados"], ["fx-parc", "Parcelas"], ["fx-soc", "Sociedade"], ["fx-pes", "Pesagens"], ["fx-vend", "Vendas"], ["fx-hist", "Histórico"]].filter(([id]) => { const proprio = a.tipo === "animal" && a.origem !== "genealogia"; if (id === "fx-pes" || id === "fx-vend") return proprio; if (id === "fx-soc") return proprio || (a.socios || []).length > 0; if (id === "fx-parc") return f.qtd > 0 || comprasAdic.length > 0; return true; }).map(([id, t]) => (
+          {[["fx-repro", "Reprodução"], ["fx-fin", "Financeiro"], ["fx-gen", "Genealogia"], ["fx-dados", "Dados"], ["fx-parc", "Parcelas"], ["fx-soc", "Sociedade"], ["fx-pes", "Pesagens"], ["fx-vend", "Vendas"], ["fx-hist", "Histórico"]].filter(([id]) => { if (id === "fx-repro") return a.tipo === "prenhez" || a.tipo === "aspiracao"; const proprio = a.tipo === "animal" && a.origem !== "genealogia"; if (id === "fx-pes" || id === "fx-vend") return proprio; if (id === "fx-soc") return proprio || (a.socios || []).length > 0; if (id === "fx-parc") return f.qtd > 0 || comprasAdic.length > 0; return true; }).map(([id, t]) => (
             <button key={id} type="button" onClick={() => { const el = document.getElementById(id); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }}>{t}</button>
           ))}
         </nav>
         <div className="modal-body">
+          {(a.tipo === "prenhez" || a.tipo === "aspiracao") && a.origem !== "genealogia" && <SecaoRepro a={a} ativos={ativos} embrioes={embrioes} onAbrir={onAbrir} onIrLote={onIrLote || (() => {})} />}
           <div className="fin-cards" id="fx-fin">
             <KPI label="Valor pago pela cota" value={fmt(f.cota)} sub={`${f.pct || 0}% comprado`} />
             <KPI label="Valor total estimado" value={fmt(f.totalEstimado)} tone="gold" />
@@ -2751,14 +3424,18 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, canD
             <KPI label="Outros custos" value={fmt(num(a.outros))} />
           </div>
 
-          {a.tipo === "aspiracao" && (
-            <div className="fin-cards">
-              <KPI label="Custo/embrião produzido" value={fmt(num(a.embrioes) ? f.finalEstimado / num(a.embrioes) : 0)} />
-              <KPI label="Custo/embrião viável" value={fmt(num(a.viaveis) ? f.finalEstimado / num(a.viaveis) : 0)} />
-              <KPI label="Custo/prenhez confirm." value={fmt(num(a.prenhezes) ? f.finalEstimado / num(a.prenhezes) : 0)} />
-              <KPI label="Aproveitamento" value={`${num(a.embrioes) && num(a.oocitos) ? Math.round((num(a.embrioes) / num(a.oocitos)) * 100) : 0}%`} sub="embriões/oócitos" />
-            </div>
-          )}
+          {a.tipo === "aspiracao" && (() => {
+            // indicadores corrigidos: usam os campos que o formulário realmente grava e as prenhezes vinculadas
+            const D = dadosAsp(a, ativos, embrioes);
+            return (
+              <div className="fin-cards">
+                <KPI label="Custo/embrião produzido" value={D.E ? fmt(f.finalEstimado / D.E) : "—"} />
+                <KPI label="Custo/embrião transferido" value={D.transf ? fmt(f.finalEstimado / D.transf) : "—"} />
+                <KPI label="Custo/prenhez confirm." value={D.conf ? fmt(f.finalEstimado / D.conf) : "—"} />
+                <KPI label="Aproveitamento" value={D.E && D.oocitos ? `${Math.round((D.E / D.oocitos) * 100)}%` : "—"} sub="embriões/oócitos" />
+              </div>
+            );
+          })()}
 
           <div className="fsec" id="fx-gen"><div className="fsec-h">Genealogia</div><Genealogia a={a} />{a.obsGen && <p className="obs">{a.obsGen}</p>}</div>
 
@@ -4390,16 +5067,18 @@ function aplicarNovoRegistro(p, d, profileNome, veioDeOrigem, origemId) {
   if (exists) list = list.map((a) => (a.id === d.id ? d : a));
   else {
     const histIni = [{ id: uid(), data: today(), tipo: "Cadastro criado", desc: "Ficha criada", responsavel: profileNome }];
-    if (veioDeOrigem && d.origemLabel) histIni.unshift({ id: uid(), data: today(), tipo: "Origem", desc: `Nascido de ${d.origemLabel}`, responsavel: profileNome });
+    if (veioDeOrigem && d.origemLabel) histIni.unshift({ id: uid(), data: today(), tipo: "Origem", desc: d.tipo === "animal" ? `Nascido de ${d.origemLabel}` : `Gerada a partir de ${d.origemLabel}`, responsavel: profileNome });
     list = [{ ...d, historico: [...histIni, ...(d.historico || [])] }, ...list];
   }
-  if (veioDeOrigem && origemId) {
+  // só o NASCIMENTO (ficha de animal) conta na origem; prenhez gerada de aspiração não é nascimento
+  if (veioDeOrigem && origemId && d.tipo === "animal") {
     list = list.map((a) => {
       if (a.id !== origemId) return a;
       const conv = qtdConvertidos(a) + 1;
-      const arquivada = conv >= qtdTotal(a);
-      const h = { id: uid(), data: today(), tipo: "Nascimento", desc: `Nasceu 1 (${d.nome || "animal"}). Restam ${Math.max(0, qtdTotal(a) - conv)} de ${qtdTotal(a)}.`, responsavel: profileNome };
-      return { ...a, convertidos: conv, arquivada, historico: [...(a.historico || []), h] };
+      const arquivada = conv + qtdPerdas(a) >= qtdTotal(a);
+      const h = { id: uid(), data: today(), tipo: "Nascimento", desc: `Nasceu 1 (${d.nome || "animal"}). Restam ${Math.max(0, qtdTotal(a) - conv - qtdPerdas(a))} de ${qtdTotal(a)}.`, responsavel: profileNome };
+      const extra = a.tipo === "prenhez" && !a.dataParto && d.nascimento ? { dataParto: d.nascimento } : {};
+      return { ...a, ...extra, convertidos: conv, arquivada, animaisIds: [...(a.animaisIds || []), d.id], historico: [...(a.historico || []), h] };
     });
   }
   let leiloes = [...(p.leiloes || [])]; if (d.leilao && !leiloes.some((l) => l && lc(l.nome) === lc(d.leilao))) leiloes = [...leiloes, { id: uid(), nome: d.leilao }];
@@ -4415,6 +5094,10 @@ export default function App() {
   const [busca, setBusca] = useState("");
   const [aberto, setAberto] = useState(null);
   const [analise, setAnalise] = useState(null);   // gráfico do Painel aberto em análise detalhada
+  const [repro, setRepro] = useState(null);       // janela de ação reprodutiva aberta (transferência, diagnóstico, nascimento…)
+  const [loteSel, setLoteSel] = useState(null);   // lote selecionado no Banco de Embriões
+  const [toast, setToast] = useState("");
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 4500); return () => clearTimeout(t); }, [toast]);
   const [form, setForm] = useState(null);
   const [novo, setNovo] = useState(false);
   const [navOpen, setNavOpen] = useState(false);
@@ -4473,6 +5156,7 @@ export default function App() {
       migracoes: Array.isArray(base.migracoes) ? base.migracoes.filter(Boolean) : [],
       criatorios: Array.isArray(base.criatorios) ? base.criatorios.filter(Boolean) : [],
       lixeira: Array.isArray(base.lixeira) ? base.lixeira.filter(Boolean) : [],
+      embrioes: Array.isArray(base.embrioes) ? base.embrioes.filter(Boolean) : [],   // Banco de Embriões (lotes e movimentações)
     };
   };
 
@@ -4669,7 +5353,7 @@ export default function App() {
   useEffect(() => {
     if (!dataReady || !session) return;
     const t = setInterval(async () => {
-      if (form || aberto || novo || conflito) return;
+      if (form || aberto || novo || conflito || repro) return;
       if (Date.now() - lastWrite.current < 3000) return;
       if (temPendencia() || saveStatus === "saving" || saveStatus === "error" || saveStatus === "offline") return; // nunca descarta alteração local não gravada
       try {
@@ -4684,7 +5368,7 @@ export default function App() {
       } catch (e) {}
     }, 5000);
     return () => clearInterval(t);
-  }, [dataReady, form, aberto, novo, session, saveStatus, conflito]);
+  }, [dataReady, form, aberto, novo, session, saveStatus, conflito, repro]);
 
   const logout = async () => { try { await supabase.auth.signOut(); } catch (e) {} };
 
@@ -4802,15 +5486,15 @@ export default function App() {
   const updateAtivo = (d) => { flushNext.current = true; if (d.tipo === "prenhez" || d.tipo === "aspiracao") d = { ...d, nome: rotuloReprod(d) }; setDb((p) => ({ ...p, ativos: p.ativos.map((a) => (a.id === d.id ? d : a)) })); setAberto(d); };
 
   /* botão "Nasceu": monta um novo animal já preenchido com genealogia + sociedade + origem */
-  const nascer = (src) => {
+  const montaNascimento = (src) => {
     const ehPren = src.tipo === "prenhez";
-    const novo = {
+    return {
       id: uid(), tipo: "animal", origem: "nascimento",
       origemTipo: src.tipo, origemId: src.id, origemLabel: rotuloReprod(src),
       __fromOrigem: true,
       nome: "", registro: "", raca: src.raca || "Nelore",
-      sexo: ehPren ? "Fêmea" : "",                 // prenhez sempre fêmea; aspiração o usuário escolhe
-      nascimento: "", status: "", ondeEsta: src.ondeEsta || "", criatorio: src.criatorio || "",
+      sexo: ehPren ? (src.sexagem || "") : "",       // vem da sexagem, quando informada
+      nascimento: ehPren ? (src.dataParto || "") : "", status: "", ondeEsta: src.ondeEsta || "", criatorio: src.criatorio || "",
       origemAnimal: src.tipo === "aspiracao" ? "Nascimento de aspiração" : "Nascimento de prenhez",
       // genealogia herdada
       pai: src.pai || src.touro || "", mae: src.doadora || "",
@@ -4823,15 +5507,14 @@ export default function App() {
       // sem financeiro duplicado: a compra continua na origem
       videos: [], historico: [], comissaoPct: 8, obs: src.obs || "",
     };
-    setAberto(null);
-    setForm({ tipo: "animal", initial: novo });
   };
+  const nascer = (src) => { setAberto(null); setForm({ tipo: "animal", initial: montaNascimento(src) }); };
 
   /* aspiração → gera uma PRENHEZ vinculada (a aspiração continua existindo) */
   const gerarPrenhez = (asp) => {
     const nova = {
       id: uid(), tipo: "prenhez", origem: "aspiracao",
-      aspiracaoOrigemId: asp.id, origemLabel: rotuloReprod(asp), __fromOrigem: true, origemTipo: "aspiracao",
+      origemId: asp.id, aspiracaoOrigemId: asp.id, origemLabel: rotuloReprod(asp), __fromOrigem: true, origemTipo: "aspiracao",
       doadora: asp.doadora || "", regDoadora: asp.regDoadora || "", pai: asp.pai || asp.touro || "",
       qtd: 1, status: "Aguardando confirmação", ondeEsta: asp.ondeEsta || "", criatorio: asp.criatorio || "",
       avoPaterno: asp.avoPaterno || "", avoPaterna: asp.avoPaterna || "", avoMaterno: asp.avoMaterno || "", avoMaterna: asp.avoMaterna || "",
@@ -4842,6 +5525,139 @@ export default function App() {
     setAberto(null);
     setForm({ tipo: "prenhez", initial: nova });
   };
+
+  /* ---- Reprodução: transferência, diagnóstico, perda, nascimento e Banco de Embriões ----
+     Cada ação grava na hora (flushNext), usa a mesma gravação do cadastro (aplicarNovoRegistro)
+     e nunca copia valores financeiros: compra e parcelas ficam na ficha de origem. */
+  const embrioes = db.embrioes || [];
+  const abertoAtual = aberto ? ((ativos || []).find((x) => x && x.id === aberto.id) || aberto) : null;   // ficha sempre com os dados mais recentes
+  const quemReg = () => (profile && profile.nome) || "";
+  const nomesAnimais = useMemo(() => (ativos || []).filter((x) => x && x.tipo === "animal" && x.nome).map((x) => x.nome), [ativos]);
+  const genCompleta = (np) => { const sug = new Set(); fillArvore(np, "pat", np.pai, "", genIndex, sug, false); fillArvore(np, "mat", np.doadora, np.regDoadora, genIndex, sug, false); return np; };
+  const proxCodLote = (lista) => "EMB-" + String((lista || []).reduce((m, l) => Math.max(m, parseInt(String((l && l.cod) || "").replace(/\D/g, ""), 10) || 0), 0) + 1).padStart(4, "0");
+
+  const registrarTransferencia = ({ asp, lote, n, dataTE, receptoras, criatorio }) => {
+    flushNext.current = true;
+    const quem = quemReg();
+    const criatorioTE = criatorio;
+    setDb((p) => {
+      const lotes = p.embrioes || [];
+      const L = lote ? lotes.find((x) => x && x.id === lote.id) : null;
+      if (L && saldoLote(L) < n) return p;   // nunca usa mais embriões do que existem no lote
+      const A = asp ? p.ativos.find((x) => x && x.id === asp.id) : (L && L.aspiracaoId ? p.ativos.find((x) => x && x.id === L.aspiracaoId) : null);
+      const src = L || A;
+      if (!src) return p;
+      let st = p; const ids = [];
+      for (let i = 0; i < n; i++) {
+        const rec = (receptoras[i] || "").trim();
+        let d = {
+          id: uid(), tipo: "prenhez", origem: L ? "banco" : "aspiracao", origemTipo: L ? "banco" : "aspiracao",
+          origemId: A ? A.id : "", aspiracaoOrigemId: A ? A.id : "", loteOrigemId: L ? L.id : "",
+          origemLabel: A ? rotuloReprod(A) : `Lote ${L.cod} (Banco de Embriões)`,
+          doadora: src.doadora || "", regDoadora: src.regDoadora || "", pai: src.pai || src.touro || "",
+          qtd: 1, status: "Aguardando confirmação", ondeEsta: criatorioTE || (A && A.ondeEsta) || (L && L.propriedade) || "", criatorio: (A && A.criatorio) || "",
+          receptora: rec, dataTE, previsaoParto: somaDias(dataTE, PARTO_DIAS), responsavel: (A && A.responsavel) || "",
+          avoPaterno: (A && A.avoPaterno) || "", avoPaterna: (A && A.avoPaterna) || "", avoMaterno: (A && A.avoMaterno) || "", avoMaterna: (A && A.avoMaterna) || "", obsGen: (A && A.obsGen) || "",
+          socios: (src.socios || []).filter((x) => x && x.nome).map((x) => ({ id: uid(), nome: x.nome, pct: x.pct, obs: x.obs || "" })),
+          videos: [], comissaoPct: 8, obs: "",
+          historico: [{ id: uid(), data: dataTE || today(), tipo: "Transferência de embrião", desc: `TE${rec ? ` na receptora ${rec}` : ""}${L ? ` · embrião congelado do lote ${L.cod}` : " · embrião fresco da aspiração"}`, responsavel: quem }],
+        };
+        d = genCompleta(d);
+        d = { ...d, nome: rotuloReprod(d) };
+        d = { ...d, parcelasList: ensureParcelas(d) };
+        st = aplicarNovoRegistro(st, d, quem, false, null);
+        ids.push(d.id);
+      }
+      let embr = st.embrioes || lotes;
+      if (L) {
+        const nomes = receptoras.slice(0, n).filter(Boolean);
+        embr = embr.map((x) => (x.id === L.id ? { ...x, movs: [...(x.movs || []), { id: uid(), data: dataTE || today(), tipo: "uso", qtd: n, ref: `TE em ${n} receptora(s)${nomes.length ? ": " + nomes.join(", ") : ""}`, prenhezIds: ids, responsavel: quem, criadoEm: new Date().toISOString() }] } : x));
+      }
+      if (A) st = { ...st, ativos: st.ativos.map((x) => (x.id === A.id ? { ...x, historico: [...(x.historico || []), { id: uid(), data: dataTE || today(), tipo: "Transferência", desc: `${n} prenhez(es) criada(s)${L ? ` com embriões do lote ${L.cod}` : ""}`, responsavel: quem }] } : x)) };
+      return { ...st, embrioes: embr };
+    });
+    setRepro(null);
+    setToast(`${n} prenhez(es) criada(s)${lote ? ` com embriões do lote ${lote.cod}` : ""}. Status: aguardando diagnóstico.`);
+  };
+  const registrarDiagnostico = (p, { res, data, sexagem, prev }) => {
+    const pos = res === "positivo";
+    const np = { ...p, diagnostico: res, dataDiagnostico: data, status: pos ? "Confirmada" : "Não confirmada",
+      dataConfirmacao: pos ? data : (p.dataConfirmacao || ""), sexagem: pos ? sexagem : (p.sexagem || ""),
+      previsaoParto: pos ? (prev || p.previsaoParto || "") : (p.previsaoParto || ""),
+      historico: [...(p.historico || []), { id: uid(), data, tipo: "Diagnóstico", desc: pos ? `Positivo${sexagem ? ` · sexagem: ${lc(sexagem)}` : ""}` : "Negativo (não confirmada)", responsavel: quemReg() }] };
+    setRepro(null); updateAtivo(np);
+    setToast(pos ? "Diagnóstico positivo registrado." : "Diagnóstico negativo registrado. A ficha foi para Encerradas.");
+  };
+  const registrarPerda = (p, { data, motivo, obs }) => {
+    const perdas = qtdPerdas(p) + 1;
+    const restam = Math.max(0, qtdTotal(p) - qtdConvertidos(p) - perdas);
+    const np = { ...p, perdas, perda: { data, motivo, obs },
+      status: restam === 0 && qtdConvertidos(p) === 0 ? "Perda gestacional" : p.status,
+      arquivada: p.arquivada || (restam === 0 && qtdConvertidos(p) > 0),
+      historico: [...(p.historico || []), { id: uid(), data, tipo: "Perda gestacional", desc: `${motivo}${obs ? ` · ${obs}` : ""}${qtdTotal(p) > 1 ? ` · restam ${restam} de ${qtdTotal(p)}` : ""}`, responsavel: quemReg() }] };
+    setRepro(null); updateAtivo(np);
+    setToast("Perda gestacional registrada.");
+  };
+  const registrarNascimento = (p, { nome, data, sexo, registro }) => {
+    if (qtdRest(p) < 1) return;   // a prenhez já teve todos os nascimentos registrados
+    const d = { ...montaNascimento(p), nome, nascimento: data, sexo, registro };
+    setRepro(null); setAberto(null);
+    salvar(d);   // mesma gravação do cadastro manual: genealogia, sociedade, origem e contador da prenhez
+    setToast(`Animal ${nome} cadastrado a partir da prenhez.`);
+  };
+  const salvarLote = (dados, qtd) => {
+    flushNext.current = true;
+    const quem = quemReg(), agora = new Date().toISOString();
+    const limpo = { ...dados, socios: (dados.socios || []).filter((x) => x && (x.nome || "").trim()), partSM: dados.partSM === "" || dados.partSM == null ? "" : num(dados.partSM) };
+    if (dados.id) {
+      setDb((p) => ({ ...p, embrioes: (p.embrioes || []).map((l) => {
+        if (l.id !== dados.id) return l;
+        const movs = [...(l.movs || [])];
+        if ((l.local || "") !== (limpo.local || "")) movs.push({ id: uid(), data: today(), tipo: "local", qtd: 0, ref: `${l.local || "sem local"} → ${limpo.local || "sem local"}`, responsavel: quem, criadoEm: agora });
+        return { ...l, ...limpo, movs };
+      }) }));
+      setToast(`Lote ${dados.cod} atualizado.`);
+    } else {
+      const novoId = uid();
+      setDb((p) => {
+        const cod = proxCodLote(p.embrioes);
+        const A = limpo.origem === "aspiracao" ? (p.ativos || []).find((x) => x && x.id === limpo.aspiracaoId) : null;
+        const ref = A ? `Congelamento da aspiração (${A.nome})` : limpo.origem === "compra" ? `Compra${limpo.compra && limpo.compra.leilao ? ` · ${limpo.compra.leilao}` : ""}` : "Estoque existente (sem aspiração no sistema) · inventário inicial";
+        const lote = { ...limpo, id: novoId, cod, aspiracaoId: A ? A.id : "", arquivado: false, criadoEm: agora, criadoPor: quem,
+          movs: [{ id: uid(), data: limpo.dataCongelamento || today(), tipo: "entrada", qtd, ref, responsavel: quem, criadoEm: agora }] };
+        const socios = [...(p.socios || [])];
+        lote.socios.forEach((x) => { if (!socios.some((y) => y && lc(y.nome) === lc(x.nome))) socios.push({ id: uid(), nome: x.nome, doc: "", tel: "", email: "", endereco: "", obs: "" }); });
+        const ativosN = A ? p.ativos.map((x) => (x.id === A.id ? { ...x, historico: [...(x.historico || []), { id: uid(), data: today(), tipo: "Banco de Embriões", desc: `${qtd} embrião(ões) congelado(s) · lote ${cod}`, responsavel: quem }] } : x)) : p.ativos;
+        return { ...p, ativos: ativosN, socios, embrioes: [...(p.embrioes || []), lote] };
+      });
+      setLoteSel(novoId); setView("embrioes");
+      setToast(`Lote criado com ${qtd} embrião(ões).`);
+    }
+    setRepro(null);
+  };
+  const movimentarLote = (lote, { tipo, qtd, data, ref, sinal }) => {
+    flushNext.current = true;
+    const quem = quemReg();
+    setDb((p) => ({ ...p, embrioes: (p.embrioes || []).map((l) => {
+      if (l.id !== lote.id) return l;
+      const saida = tipo !== "entrada" && !(tipo === "ajuste" && sinal > 0);
+      if (saida && qtd > saldoLote(l)) return l;   // nenhuma saída deixa o saldo negativo
+      const m = { id: uid(), data, tipo, qtd, ref, responsavel: quem, criadoEm: new Date().toISOString() };
+      if (tipo === "ajuste") m.sinal = sinal;
+      return { ...l, movs: [...(l.movs || []), m] };
+    }) }));
+    setRepro(null);
+    setToast(`${(MOV_TIPOS[tipo] || ["Movimentação"])[0]} registrada no lote ${lote.cod}.`);
+  };
+  const acaoBanco = (acao, lote, extra) => {
+    if (acao === "novoLote") setRepro({ tipo: "lote" });
+    else if (acao === "editarLote") setRepro({ tipo: "lote", lote });
+    else if (acao === "mov") setRepro({ tipo: "mov", lote, mov: extra });
+    else if (acao === "usar") setRepro({ tipo: "transf", lote });
+    else if (acao === "arquivar") { flushNext.current = true; setDb((p) => ({ ...p, embrioes: (p.embrioes || []).map((l) => (l.id === lote.id ? { ...l, arquivado: !l.arquivado } : l)) })); setToast(lote.arquivado ? "Lote desarquivado." : "Lote arquivado. Ele continua em “Arquivados”."); }
+  };
+  const irLote = (id) => { setAberto(null); setLoteSel(id); setView("embrioes"); };
+
   // excluir = mover para a LIXEIRA (exclusão lógica). O animal sai das listagens,
   // mas é guardado inteiro (genealogia, sociedade, participação, compras, vendas,
   // parcelas, históricos) para poder ser restaurado. Não apaga nada de outros animais.
@@ -5076,14 +5892,15 @@ export default function App() {
     };
   }, [qBusca, ativos, db.socios, db.leiloes]);
 
-  const nav = [["dashboard", "dashboard", "Painel"], ["animal", "animal", "Animais"], ["prenhez", "prenhez", "Prenhezes"], ["aspiracao", "aspiracao", "Aspirações"],
+  const nav = [["dashboard", "dashboard", "Painel"], ["animal", "animal", "Animais"], ["prenhez", "prenhez", "Prenhezes"], ["aspiracao", "aspiracao", "Aspirações"], ["embrioes", "embriao", "Banco de Embriões"],
     ["importar", "importar", "Importar"],
     ["pendencias", "pendencias", "Pendências"], ["criatorios", "criatorios", "Criatórios"], ["socios", "socios", "Sócios"], ["parcelas", "parcelas", "Parcelas"], ["leiloes", "leiloes", "Leilões"], ["relatorios", "relatorios", "Relatórios"], ["lixeira", "lixeira", "Lixeira"],
     ...(isAdmin ? [["usuarios", "usuarios", "Usuários"]] : [])];
   // agrupamento do menu (só apresentação — as mesmas telas de sempre)
-  const NAV_GRUPOS = [["", ["dashboard"]], ["Plantel", ["animal", "prenhez", "aspiracao", "criatorios"]], ["Patrimônio", ["parcelas", "socios", "leiloes"]],
+  const NAV_GRUPOS = [["", ["dashboard"]], ["Plantel", ["animal", "prenhez", "aspiracao", "embrioes", "criatorios"]], ["Patrimônio", ["parcelas", "socios", "leiloes"]],
     ["Operação", ["pendencias", "importar", "relatorios"]], ["Sistema", ["lixeira", "usuarios"]]];
   const nLixeira = (db.lixeira || []).length;
+  const saldoBancoTotal = embrioes.filter((l) => l && !l.arquivado).reduce((s, l) => s + saldoLote(l), 0);
   const nImport = (db.prefichas || []).filter((x) => x && x.estado !== "aprovado" && x.estado !== "rejeitado").length;
 
   if (!authReady) return <AuthShell><div className="auth-load"><span className="load-ring" />Carregando…</div></AuthShell>;
@@ -5128,7 +5945,7 @@ export default function App() {
               {g && <div className="nav-grp-t">{g}</div>}
               {itens.map(([k, ic, l]) => (
                 <button key={k} className={`nav-item ${view === k ? "on" : ""}`} onClick={() => { setView(k); setNavOpen(false); }}>
-                  <span className="nav-ic"><Ico n={ic} /></span>{l}{["animal", "prenhez", "aspiracao"].includes(k) && <span className="nav-count">{count(k)}</span>}{k === "lixeira" && nLixeira > 0 && <span className="nav-count">{nLixeira}</span>}{k === "importar" && nImport > 0 && <span className="nav-count">{nImport}</span>}</button>
+                  <span className="nav-ic"><Ico n={ic} /></span>{l}{["animal", "prenhez", "aspiracao"].includes(k) && <span className="nav-count">{count(k)}</span>}{k === "embrioes" && saldoBancoTotal > 0 && <span className="nav-count">{saldoBancoTotal}</span>}{k === "lixeira" && nLixeira > 0 && <span className="nav-count">{nLixeira}</span>}{k === "importar" && nImport > 0 && <span className="nav-count">{nImport}</span>}</button>
               ))}
             </div>
           );
@@ -5318,7 +6135,10 @@ export default function App() {
           </section>
         )}
 
-        {["animal", "prenhez", "aspiracao"].includes(view) && (() => {
+        {view === "prenhez" && <PaginaPrenhezes lista={visiveis} onAbrir={setAberto} />}
+        {view === "aspiracao" && <PaginaAspiracoes lista={visiveis} ativos={ativos} embrioes={embrioes} onAbrir={setAberto} />}
+        {view === "embrioes" && <PaginaBanco embrioes={embrioes} ativos={ativos} busca={busca} sel={loteSel} setSel={setLoteSel} onAcao={acaoBanco} onAbrir={setAberto} />}
+        {view === "animal" && (() => {
           // conta ativos/inativos (só animais com cadastro próprio)
           const baseAnim = view === "animal" ? visiveis.filter((a) => a.tipo === "animal" && !a.arquivada && (showAncestrais || a.origem !== "genealogia")) : [];
           const nAtivos = baseAnim.filter(ehAtivo).length;
@@ -5595,8 +6415,9 @@ export default function App() {
             <div className="chooser-grid">
               {[["animal", "animal", "Animal", "Ficha, genealogia inteligente, compra por cota e vídeos"],
                 ["prenhez", "prenhez", "Prenhez", "Doadora, receptora, touro e pagamento por cota"],
-                ["aspiracao", "aspiracao", "Aspiração", "Oócitos, embriões e custo por resultado"]].map(([t, ic, tit, dsc]) => (
-                <button className="choose" key={t} onClick={() => { setNovo(false); setForm({ tipo: t }); }}>
+                ["aspiracao", "aspiracao", "Aspiração", "Oócitos, embriões e custo por resultado"],
+                ["embrioes", "embriao", "Embriões congelados", "Entrada no Banco de Embriões"]].map(([t, ic, tit, dsc]) => (
+                <button className="choose" key={t} onClick={() => { setNovo(false); if (t === "embrioes") setRepro({ tipo: "lote" }); else setForm({ tipo: t }); }}>
                   <span className="choose-ic"><Ico n={ic} size={26} /></span><span className="serif choose-t">{tit}</span><span className="choose-d">{dsc}</span></button>
               ))}
             </div>
@@ -5611,8 +6432,24 @@ export default function App() {
         animalNames={animalNames} animalReg={animalReg} genIndex={genIndex} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
         onSave={salvar} onApprove={aprovarFicha} onClose={() => setForm(null)} />}
-      {aberto && <Detalhe a={aberto} ativos={ativos} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onGerarPrenhez={gerarPrenhez} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo}
-        onEdit={() => { setForm({ tipo: aberto.tipo, initial: aberto }); setAberto(null); }} onDelete={() => pedirExcluirAtivo(aberto)} />}
+      {abertoAtual && <Detalhe a={abertoAtual} ativos={ativos} embrioes={embrioes} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onGerarPrenhez={gerarPrenhez} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo}
+        onRepro={(tipo, a) => setRepro({ tipo, alvo: a })} onIrLote={irLote}
+        onEdit={() => { setForm({ tipo: abertoAtual.tipo, initial: abertoAtual }); setAberto(null); }} onDelete={() => pedirExcluirAtivo(abertoAtual)} />}
+      {repro && repro.tipo === "transf" && (() => {
+        const asp = repro.alvo ? ((ativos || []).find((x) => x && x.id === repro.alvo.id) || repro.alvo) : null;
+        const lote = repro.lote ? (embrioes.find((l) => l.id === repro.lote.id) || repro.lote) : null;
+        return <FolhaTransferencia asp={asp} lote={lote} ativos={ativos} embrioes={embrioes} onConfirm={registrarTransferencia} onClose={() => setRepro(null)}
+          onFormCompleto={asp ? () => { setRepro(null); gerarPrenhez(asp); } : null} />;
+      })()}
+      {repro && repro.tipo === "diag" && <FolhaDiagnostico p={repro.alvo} onConfirm={(v) => registrarDiagnostico(abertoAtual && abertoAtual.id === repro.alvo.id ? abertoAtual : repro.alvo, v)} onClose={() => setRepro(null)} />}
+      {repro && repro.tipo === "perda" && <FolhaPerda p={repro.alvo} onConfirm={(v) => registrarPerda(abertoAtual && abertoAtual.id === repro.alvo.id ? abertoAtual : repro.alvo, v)} onClose={() => setRepro(null)} />}
+      {repro && repro.tipo === "nasc" && <FolhaNascimento p={repro.alvo} animalNames={nomesAnimais} onConfirm={(v) => registrarNascimento(abertoAtual && abertoAtual.id === repro.alvo.id ? abertoAtual : repro.alvo, v)}
+        onFull={() => { const a = repro.alvo; setRepro(null); nascer(a); }} onClose={() => setRepro(null)} />}
+      {repro && repro.tipo === "mov" && <FolhaMovLote lote={embrioes.find((l) => l.id === repro.lote.id) || repro.lote} tipoInicial={repro.mov} onConfirm={(v) => movimentarLote(repro.lote, v)} onClose={() => setRepro(null)} />}
+      {repro && repro.tipo === "lote" && <FolhaLote inicial={repro.lote ? (embrioes.find((l) => l.id === repro.lote.id) || repro.lote) : null} ativos={ativos} embrioes={embrioes} animalNames={animalNames} localNames={localNames} socioNames={socioNames} onQuickSocio={quickSocio}
+        onConfirm={salvarLote} onClose={() => setRepro(null)} />}
+      {toast && <div className="rp-toast" role="status"><span>{toast}</span><button type="button" onClick={() => setToast("")}>Fechar</button></div>}
+
       {navOpen && <div className="scrim" onClick={() => setNavOpen(false)} />}
 
       {confirmar && (
@@ -6363,6 +7200,135 @@ a{color:var(--em)}
 .an-filtro-nota{font-size:12px;color:var(--muted2)}
 @media(max-width:560px){.an-modal.com-origem{animation:none}.an-filtro-nota{flex:1 1 100%}}
 
+/* ---------- reprodução: aspirações, prenhezes e banco de embriões ---------- */
+.badge-info{background:var(--info-l);color:var(--info)}
+.btn-danger-solid{background:var(--neg);color:#fff}
+.btn-danger-solid:hover{filter:brightness(.95)}
+.btn:disabled{opacity:.45;cursor:not-allowed;transform:none}
+.rp-pag{display:flex;flex-direction:column;gap:16px}
+.rp-topo{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.rp-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
+.rp-tabs{display:flex;gap:6px;flex-wrap:wrap}
+.rp-tabs button{font-family:inherit;border:1px solid var(--line2);background:var(--surf);border-radius:999px;padding:8px 14px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;min-height:40px;display:inline-flex;gap:8px;align-items:center;transition:background .15s,color .15s}
+.rp-tabs button b{font-size:11.5px;background:var(--bg2);border-radius:99px;padding:2px 8px;font-variant-numeric:tabular-nums;color:var(--txt)}
+.rp-tabs button.on{background:var(--forest);border-color:var(--forest);color:#fff}
+.rp-tabs button.on b{background:rgba(255,255,255,.18);color:#fff}
+.rp-filtros{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.rp-filtros select{font-family:inherit;font-size:13.5px;padding:8px 10px;border:1px solid var(--line2);border-radius:10px;background:var(--surf);color:var(--txt);min-height:40px;max-width:100%}
+.rp-grid{grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}
+.rp-card{font-family:inherit;text-align:left;width:100%;cursor:pointer;background:var(--surf);border:1px solid var(--line);border-radius:var(--r3);padding:16px 18px;display:flex;flex-direction:column;gap:9px;color:var(--txt);box-shadow:var(--sh1);transition:transform .2s var(--ease),box-shadow .2s,border-color .2s}
+@media(hover:hover){.rp-card:hover{transform:translateY(-2px);box-shadow:var(--sh2);border-color:rgba(23,107,70,.25)}}
+.rp-card.on{border-color:var(--em);box-shadow:0 0 0 3px rgba(23,107,70,.14)}
+.rp-card:focus-visible{outline:2px solid var(--em);outline-offset:2px}
+.rp-card-h{display:flex;gap:10px;align-items:flex-start;justify-content:space-between}
+.rp-t{font-size:15px;font-weight:650;letter-spacing:-.01em;color:var(--ink);min-width:0;overflow-wrap:anywhere}
+.rp-meta{font-size:12.5px;color:var(--muted)}
+.rp-prox{font-size:12.5px;font-weight:600;color:var(--em)}
+.rp-chips{display:flex;gap:6px;flex-wrap:wrap}
+.rp-chip{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:600;padding:3px 9px;border-radius:999px;background:var(--bg2);color:var(--muted)}
+.rp-chip.o-banco{background:var(--info-l);color:var(--info)}
+.rp-chip.o-compra{background:var(--champ-l);color:var(--champ-d)}
+.rp-chip.o-aspiracao{background:var(--em-l);color:var(--em)}
+.rp-chip.o-existente{background:var(--info-l);color:var(--info)}
+.rp-gest{display:flex;flex-direction:column;gap:5px}
+.rp-gest-t{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+.rp-gest-t b{color:var(--txt);font-weight:600}
+.rp-gest-b{height:6px;background:var(--bg2);border-radius:99px;overflow:hidden}
+.rp-gest-b i{display:block;height:100%;background:var(--em);border-radius:99px}
+.rp-gest-b i.late{background:var(--neg)}
+.rp-dest{display:flex;height:7px;border-radius:99px;overflow:hidden;background:var(--bg2);gap:2px}
+.rp-dest i{display:block;height:100%}
+.rp-legenda{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.rp-legenda span{display:inline-flex;gap:6px;align-items:center}
+.rp-legenda i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.rp-sec .rp-linha{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.rp-cadeia{display:flex;gap:8px;flex-wrap:wrap;align-items:stretch;margin-bottom:14px}
+.rp-elo{font-family:inherit;flex:1 1 150px;min-width:0;text-align:left;border:1px solid var(--line2);border-radius:var(--r2);padding:9px 12px;background:var(--surf);display:flex;flex-direction:column;gap:2px;color:var(--txt)}
+button.rp-elo{cursor:pointer;transition:background .15s,border-color .15s}
+button.rp-elo:hover{background:var(--surf2);border-color:rgba(23,107,70,.3)}
+.rp-elo.atual{border-color:var(--em);background:var(--em-l)}
+.rp-elo.vazio{border-style:dashed;color:var(--muted)}
+.rp-elo span{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+.rp-elo b{font-size:13.5px;font-weight:600;overflow-wrap:anywhere}
+.rp-seta{align-self:center;color:var(--champ);font-weight:700}
+.rp-funil{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+.rp-fl{display:grid;grid-template-columns:170px minmax(0,1fr) 44px;gap:12px;align-items:center;font-size:13px}
+.rp-fl-b{height:10px;background:var(--bg2);border-radius:99px;overflow:hidden}
+.rp-fl-b i{display:block;height:100%;background:var(--em);border-radius:99px}
+.rp-fl b{text-align:right;font-variant-numeric:tabular-nums}
+.rp-ind{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:12px 0}
+.rp-ind div{background:var(--surf);border:1px solid var(--line);border-radius:var(--r2);padding:11px 13px;display:flex;flex-direction:column;gap:2px}
+.rp-ind span,.rp-ind small{font-size:12px;color:var(--muted)}
+.rp-ind b{font-size:18px;font-variant-numeric:tabular-nums}
+.rp-sub{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:16px 0 8px;display:flex;gap:8px;flex-wrap:wrap;align-items:baseline}
+.rp-sub small{text-transform:none;letter-spacing:0;font-weight:500}
+.rp-prow{font-family:inherit;width:100%;text-align:left;display:flex;gap:12px;align-items:center;justify-content:space-between;padding:10px 13px;margin-bottom:6px;border:1px solid var(--line);border-radius:var(--r2);background:var(--surf);cursor:pointer;color:var(--txt);transition:background .15s,border-color .15s}
+.rp-prow:hover{background:var(--surf2);border-color:rgba(23,107,70,.25)}
+.rp-prow span:first-child{display:flex;flex-direction:column;gap:1px;min-width:0}
+.rp-prow small{font-size:12px;color:var(--muted)}
+.rp-pordoa{display:flex;flex-direction:column;gap:8px}
+.rp-cols{display:flex;flex-wrap:wrap;gap:18px;align-items:flex-start}
+.rp-lista{flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:10px}
+.rp-det{flex:999 1 520px;min-width:0;display:flex;flex-direction:column}
+.rp-det-h{display:flex;gap:14px;justify-content:space-between;align-items:flex-start;flex-wrap:wrap}
+.rp-det-h h2{margin:2px 0 8px;font-size:22px}
+.rp-acoes{display:flex;gap:8px;flex-wrap:wrap}
+.rp-saldo{display:flex;flex-direction:column;align-items:flex-end;line-height:1}
+.rp-saldo b{font-size:24px;color:var(--em);font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.rp-saldo b.zero{color:var(--muted2)}
+.rp-saldo small{font-size:11.5px;color:var(--muted);margin-top:3px}
+.rp-saldos{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin-bottom:6px}
+.rp-saldos div{background:var(--surf2);border:1px solid var(--line);border-radius:var(--r2);padding:10px 12px;display:flex;flex-direction:column;gap:2px}
+.rp-saldos span{font-size:11.5px;color:var(--muted)}
+.rp-saldos b{font-size:17px;font-variant-numeric:tabular-nums}
+.rp-saldos .final{background:var(--em-l);border-color:rgba(23,107,70,.25)}
+.rp-saldos .final b{color:var(--em)}
+.rp-det .info-grid{margin:10px 0}
+.rp-tbl .r{text-align:right}
+.rp-tbl .badge{white-space:nowrap}
+.rp-tbl td.pos{color:var(--pos);font-weight:600}.rp-tbl td.neg{color:var(--neg);font-weight:600}
+.tab-num{font-variant-numeric:tabular-nums}
+.rp-rodape{display:flex;justify-content:flex-end;margin-top:12px}
+.rp-vazio{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+/* janelas de ação */
+.folha{width:min(640px,100%);background:var(--surf)}
+.folha-h{position:relative;padding:20px 64px 14px 24px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:4px}
+.folha-h h2{margin:0;font-size:20px;letter-spacing:-.015em}
+.folha-h p{margin:0;font-size:13px;color:var(--muted);line-height:1.5}
+.folha-eb{font-size:11.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--champ-d)}
+.folha-b{padding:18px 24px;display:flex;flex-direction:column;gap:14px}
+.folha-b .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.folha-b .field input,.folha-b .field select{min-height:40px}
+.folha-f{padding:14px 24px 20px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap}
+.folha-f .rp-esq{margin-right:auto}
+.rp-step{display:inline-flex;align-items:center;border:1px solid var(--line2);border-radius:10px;overflow:hidden;align-self:flex-start;background:var(--surf)}
+.rp-step button{font-family:inherit;font-size:18px;width:42px;height:40px;border:0;background:var(--surf2);cursor:pointer;color:var(--txt)}
+.rp-step button:disabled{opacity:.35;cursor:not-allowed}
+.rp-step b{min-width:46px;text-align:center;font-size:16px;font-variant-numeric:tabular-nums;color:var(--txt)}
+.rp-recs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.rp-herda{background:var(--em-l);border:1px solid rgba(23,107,70,.2);border-radius:var(--r2);padding:12px 14px;display:flex;flex-direction:column;gap:5px;font-size:13px;color:#24412F;line-height:1.5}
+.rp-seg-wrap{flex-wrap:wrap;width:auto}
+.fsec-abrir{font-family:inherit;width:100%;text-align:left;border:1px dashed var(--line3);background:var(--surf2);border-radius:var(--r2);padding:12px 14px;font-size:14px;font-weight:650;color:var(--ink);cursor:pointer}
+.fsec-abrir span{font-weight:500;color:var(--muted);font-size:12.5px}
+.fsec-abrir:hover{border-color:rgba(23,107,70,.35);background:var(--em-l)}
+.aviso.aviso-info{background:var(--info-l);color:var(--info)}
+.rp-toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:140;display:flex;gap:14px;align-items:center;max-width:calc(100% - 32px);background:var(--forest);color:#fff;border-radius:14px;padding:12px 16px;font-size:14px;box-shadow:0 14px 40px rgba(10,20,15,.3);animation:rpToast .3s var(--ease)}
+@keyframes rpToast{from{opacity:0;transform:translate(-50%,10px)}to{opacity:1;transform:translate(-50%,0)}}
+.rp-toast button{font-family:inherit;background:transparent;border:0;color:#E6D9B8;font-weight:600;cursor:pointer;padding:4px}
+@media(max-width:1100px){.rp-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:760px){
+  .rp-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .rp-kpis > :last-child:nth-child(odd){grid-column:1/-1}
+  .rp-fl{grid-template-columns:110px minmax(0,1fr) 36px}
+  .rp-grid{grid-template-columns:minmax(0,1fr)}
+  .folha-b .grid,.rp-recs{grid-template-columns:minmax(0,1fr)}
+  .modal.folha{min-height:0;border-radius:18px 18px 0 0;margin-top:auto}
+  .folha-bg{align-content:end}
+  .folha-f{padding-bottom:calc(16px + env(safe-area-inset-bottom,0px))}
+  .folha-f .btn{flex:1 1 auto}
+  .folha-f .rp-esq{flex-basis:100%;margin-right:0;order:3}
+  .rp-acoes .btn{flex:1 1 auto}
+}
 /* ---------- microanimações ---------- */
 @keyframes entra{from{opacity:.001;transform:translateY(6px)}to{opacity:1;transform:none}}
 @keyframes sobe{from{opacity:.001;transform:translateY(14px) scale(.99)}to{opacity:1;transform:none}}
