@@ -743,7 +743,7 @@ const midiaDoAnimal = (a) => {
 /* Reprodução automática controlada: só os cartões mais visíveis tocam
    (até 3 no computador, 1 no celular); fora da tela o player é removido. */
 const autoplay = (() => {
-  const itens = new Map(); let io = null;
+  const itens = new Map(); let io = null; let suspensos = 0;
   const bloqueado = () => {
     try {
       if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return true;
@@ -754,7 +754,7 @@ const autoplay = (() => {
   const limite = () => (window.matchMedia && window.matchMedia("(max-width: 860px)").matches ? 1 : 3);
   const recalcula = () => {
     const vis = [...itens.entries()].filter(([, s]) => s.ratio >= 0.6).sort((x, y) => y[1].ratio - x[1].ratio);
-    const max = bloqueado() ? 0 : limite();
+    const max = bloqueado() || suspensos > 0 ? 0 : limite();
     const tocam = new Set(vis.slice(0, max).map(([el]) => el));
     itens.forEach((s, el) => { const p = tocam.has(el); if (s.playing !== p) { s.playing = p; s.set(p); } });
   };
@@ -767,6 +767,8 @@ const autoplay = (() => {
   return {
     add(el, set) { itens.set(el, { ratio: 0, playing: false, set }); const o = obs(); if (o) o.observe(el); },
     del(el) { const o = obs(); if (o) o.unobserve(el); itens.delete(el); recalcula(); },
+    // janela aberta por cima (ficha): para todos os vídeos e libera o player
+    suspender(sim) { suspensos = Math.max(0, suspensos + (sim ? 1 : -1)); recalcula(); },
   };
 })();
 function useAutoplay(ref, ativo) {
@@ -914,84 +916,130 @@ function Genealogia({ a }) {
   const vb = `${-maxX} ${-maxY} ${natW} ${natH}`;
   const sym = (s) => (s === "M" ? "♂" : s === "F" ? "♀" : "");
   // ---- navegação da árvore (mesmo componente no notebook e no celular) ----
-  const viewRef = useRef(null), svgRef = useRef(null);
-  const [esc, setEsc] = useState(null);            // escala atual (null = ainda medindo)
+  // Auto Fit: ao abrir (ou ao pedir "Ajustar") calcula a maior escala em que a árvore
+  // inteira cabe na área disponível. Durante a pinça o zoom é aplicado só como
+  // transformação visual (GPU) e confirmado uma única vez ao soltar os dedos.
+  const viewRef = useRef(null), svgRef = useRef(null), canvasRef = useRef(null);
+  const [esc, setEsc] = useState(null);            // escala confirmada (null = ainda medindo)
   const [altura, setAltura] = useState(null);      // altura da janela da árvore
-  const mexeu = useRef(false);                     // o usuário já ajustou o zoom?
   const foco = useRef(null);                       // ponto a manter fixo após mudar o zoom
-  const toque = useRef(null);
-  const MIN = 0.2, MAX = 2.2;
+  const MIN = 0.12, MAX = 2.4, MARGEM = 12;
   const limita = (v) => Math.max(MIN, Math.min(MAX, v));
-  const medidas = () => {
+  const escRef = useRef(esc); escRef.current = esc;
+  // área máxima que a árvore pode ocupar na ficha (orientação e tamanho atuais)
+  const alturaMax = () => {
+    const vh = window.innerHeight || 800;
+    return Math.round(Math.max(220, Math.min(vh * (vh < 560 ? 0.78 : 0.62), 640)));
+  };
+  // maior escala em que toda a árvore cabe, com margem de segurança
+  const calculaAjuste = () => {
     const v = viewRef.current; if (!v) return null;
-    const w = v.clientWidth - 16, hMax = Math.max(260, Math.min(window.innerHeight * 0.62, 620));
-    const ajuste = Math.min(w / natW, (hMax - 16) / natH);
-    return { w, hMax, ajuste };
+    const w = Math.max(120, v.clientWidth - MARGEM * 2), hMax = alturaMax();
+    const sL = w / natW, sA = (hMax - MARGEM * 2) / natH;
+    const s1 = limita(Math.min(sL, sA));
+    return { s: s1, h: Math.round(Math.min(hMax, natH * s1 + MARGEM * 2)) };
+  };
+  const autoFit = () => {
+    const r = calculaAjuste(); if (!r) return;
+    setAltura(r.h); foco.current = { centro: true }; setEsc(r.s);
   };
   // posição do desenho dentro da janela rolável (SVG não tem offsetLeft)
   const origem = () => { const v = viewRef.current, svg = svgRef.current; const a = v.getBoundingClientRect(), b = svg.getBoundingClientRect(); return { x: b.left - a.left + v.scrollLeft, y: b.top - a.top + v.scrollTop }; };
-  const centraliza = (s) => {          // centraliza no animal principal
-    const v = viewRef.current, svg = svgRef.current; if (!v || !svg) return;
-    const o = origem();
-    v.scrollLeft = o.x + (natW / 2) * s - v.clientWidth / 2;
-    v.scrollTop = o.y + (natH / 2) * s - v.clientHeight / 2;
-  };
-  // Zoom padrão por dispositivo: celular 25%, computador/notebook 67%.
-  // Celular = tela estreita (mesmo ponto de quebra do layout mobile) ou toque com tela pequena;
-  // não depende do sistema operacional.
-  const zoomPadrao = () => {
-    try {
-      const estreita = window.matchMedia("(max-width: 860px)").matches;
-      const toqueTelaPequena = window.matchMedia("(pointer: coarse)").matches && Math.min(window.screen.width, window.screen.height) < 768;
-      return estreita || toqueTelaPequena ? 0.25 : 0.67;
-    } catch (e) { return 0.67; }
-  };
-  const inicial = () => {
-    const m = medidas(); if (!m) return;
-    const s = zoomPadrao();
-    // a janela da árvore é definida uma única vez ao abrir; depois não há reajuste automático
-    setAltura(Math.round(Math.min(m.hMax, Math.max(natH * s + 16, 300))));
-    foco.current = { centro: true };
-    setEsc(limita(s));
-  };
-  // ao abrir a ficha (ou trocar de animal) volta ao zoom padrão; girar a tela ou redimensionar a janela não mexe no zoom
-  useEffect(() => { mexeu.current = false; inicial(); }, [a && a.id, natW, natH]);
-  // depois de mudar a escala, ajusta a rolagem para manter o ponto de foco no lugar
+  // abre com Auto Fit; reabrir a ficha ou trocar de animal enquadra de novo
+  useEffect(() => { autoFit(); }, [a && a.id, natW, natH]);
+  // mudança real de orientação/largura: reenquadra uma vez, depois que a tela estabiliza
+  useEffect(() => {
+    let w0 = window.innerWidth, h0 = window.innerHeight, t = null;
+    const onResize = () => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        const w = window.innerWidth, h = window.innerHeight;
+        const girou = (w > h) !== (w0 > h0);
+        if (girou || Math.abs(w - w0) > 60) { w0 = w; h0 = h; autoFit(); }
+      }, 320);
+    };
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
+    return () => { clearTimeout(t); window.removeEventListener("resize", onResize); window.removeEventListener("orientationchange", onResize); };
+  }, [natW, natH]);
+  // depois de confirmar uma escala, posiciona a rolagem (uma medição só)
   React.useLayoutEffect(() => {
     const f = foco.current; foco.current = null;
-    const v = viewRef.current, svg = svgRef.current; if (!f || !v || !svg || esc == null) return;
-    if (f.centro) { centraliza(esc); return; }
+    const v = viewRef.current; if (!f || !v || !svgRef.current || esc == null) return;
     const o = origem();
+    if (f.centro) {
+      v.scrollLeft = o.x + (natW / 2) * esc - v.clientWidth / 2;
+      v.scrollTop = o.y + (natH / 2) * esc - v.clientHeight / 2;
+      return;
+    }
     v.scrollLeft = o.x + f.cx * esc - f.fx;
     v.scrollTop = o.y + f.cy * esc - f.fy;
   }, [esc]);
-  const zoomEm = (novo, fx, fy) => {   // fx, fy: ponto na janela da árvore
-    const v = viewRef.current, svg = svgRef.current; if (!v || !svg || esc == null) return;
-    const s1 = limita(novo); if (Math.abs(s1 - esc) < 0.001) return;
-    const px = fx == null ? v.clientWidth / 2 : fx, py = fy == null ? v.clientHeight / 2 : fy;
-    const o = origem();
-    foco.current = { fx: px, fy: py, cx: (v.scrollLeft + px - o.x) / esc, cy: (v.scrollTop + py - o.y) / esc };
-    mexeu.current = true; setEsc(s1);
+  // ponto do desenho (em coordenadas da árvore) sob um ponto da janela
+  const pontoEm = (fx, fy) => {
+    const v = viewRef.current, s0 = escRef.current; const o = origem();
+    return { fx, fy, cx: (v.scrollLeft + fx - o.x) / s0, cy: (v.scrollTop + fy - o.y) / s0 };
   };
-  const ajustarTudo = () => { const m = medidas(); if (!m) return; mexeu.current = true; foco.current = { centro: true }; setEsc(limita(m.ajuste)); };
-  const restaurar = () => { mexeu.current = true; foco.current = { centro: true }; setEsc(limita(zoomPadrao())); };
-  // gestos: pinça (2 dedos) e trackpad/Ctrl+roda; 1 dedo e roda comum rolam normalmente
+  const confirma = (novo, f) => {
+    const s1 = limita(novo);
+    if (esc != null && Math.abs(s1 - esc) < 0.001) return;
+    foco.current = f; setEsc(s1);
+  };
+  const zoomEm = (novo, fx, fy) => {   // botões + e −: zoom em torno do centro da janela
+    const v = viewRef.current; if (!v || esc == null) return;
+    confirma(novo, pontoEm(fx == null ? v.clientWidth / 2 : fx, fy == null ? v.clientHeight / 2 : fy));
+  };
+  const zoomRef = useRef(zoomEm); zoomRef.current = zoomEm;
+  const confirmaRef = useRef(confirma); confirmaRef.current = confirma;
+  // gestos: pinça e Ctrl+roda (trackpad) aplicam só transform durante o movimento
   useEffect(() => {
-    const v = viewRef.current; if (!v) return;
-    const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
-    const meio = (t) => { const r = v.getBoundingClientRect(); return { x: (t[0].clientX + t[1].clientX) / 2 - r.left, y: (t[0].clientY + t[1].clientY) / 2 - r.top }; };
-    const ts = (e) => { if (e.touches.length === 2) { toque.current = { d0: dist(e.touches), s0: escRef.current }; e.preventDefault(); } };
-    const tm = (e) => {
-      if (e.touches.length === 2 && toque.current) {
-        e.preventDefault();
-        const m = meio(e.touches); zoomRef.current(toque.current.s0 * dist(e.touches) / toque.current.d0, m.x, m.y);
-      }
+    const v = viewRef.current, cv = canvasRef.current; if (!v || !cv) return;
+    let g = null, raf = 0, fimRoda = 0;
+    const desenha = () => {
+      raf = 0; if (!g) return;
+      const k = g.s / g.s0;
+      cv.style.transformOrigin = `${g.ox}px ${g.oy}px`;
+      cv.style.transform = `translate3d(${g.dx}px, ${g.dy}px, 0) scale(${k})`;
     };
-    const te = (e) => { if (e.touches.length < 2) toque.current = null; };
+    const agenda = () => { if (!raf) raf = requestAnimationFrame(desenha); };
+    const inicia = (fx, fy) => {
+      const s0 = escRef.current; if (s0 == null) return null;
+      const p0 = pontoEm(fx, fy);
+      cv.style.willChange = "transform";
+      // origem da transformação no sistema do canvas (que começa no canto da área rolável)
+      return { s0, s: s0, fx0: fx, fy0: fy, dx: 0, dy: 0, ox: v.scrollLeft + fx, oy: v.scrollTop + fy, p0 };
+    };
+    const termina = () => {
+      if (!g) return;
+      const fim = g; g = null;
+      if (raf) { cancelAnimationFrame(raf); raf = 0; }
+      cv.style.transform = ""; cv.style.transformOrigin = ""; cv.style.willChange = "";
+      const fx = fim.fx0 + fim.dx, fy = fim.fy0 + fim.dy;
+      confirmaRef.current(fim.s, { fx, fy, cx: fim.p0.cx, cy: fim.p0.cy });
+    };
+    const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    const meio = (t, r) => ({ x: (t[0].clientX + t[1].clientX) / 2 - r.left, y: (t[0].clientY + t[1].clientY) / 2 - r.top });
+    let rect = null, d0 = 0;
+    const ts = (e) => {
+      if (e.touches.length !== 2) return;
+      e.preventDefault();
+      rect = v.getBoundingClientRect(); d0 = dist(e.touches) || 1;
+      const m = meio(e.touches, rect); g = inicia(m.x, m.y);
+    };
+    const tm = (e) => {
+      if (!g || e.touches.length !== 2) return;
+      e.preventDefault();
+      const m = meio(e.touches, rect);
+      g.s = limita(g.s0 * dist(e.touches) / d0); g.dx = m.x - g.fx0; g.dy = m.y - g.fy0;
+      agenda();
+    };
+    const te = (e) => { if (g && e.touches.length < 2) termina(); };
     const wh = (e) => {
       if (!e.ctrlKey) return;            // pinça no trackpad chega como Ctrl+roda
       e.preventDefault();
-      const r = v.getBoundingClientRect(); zoomRef.current(escRef.current * Math.exp(-e.deltaY / 200), e.clientX - r.left, e.clientY - r.top);
+      if (!g) { const r = v.getBoundingClientRect(); g = inicia(e.clientX - r.left, e.clientY - r.top); if (!g) return; }
+      g.s = limita(g.s * Math.exp(-e.deltaY / 200)); agenda();
+      clearTimeout(fimRoda); fimRoda = setTimeout(termina, 160);
     };
     const gs = (e) => e.preventDefault(); // Safari: impede o zoom da página inteira dentro da árvore
     v.addEventListener("touchstart", ts, { passive: false });
@@ -1000,14 +1048,13 @@ function Genealogia({ a }) {
     v.addEventListener("wheel", wh, { passive: false });
     v.addEventListener("gesturestart", gs); v.addEventListener("gesturechange", gs);
     return () => {
+      clearTimeout(fimRoda); if (raf) cancelAnimationFrame(raf);
       v.removeEventListener("touchstart", ts); v.removeEventListener("touchmove", tm);
       v.removeEventListener("touchend", te); v.removeEventListener("touchcancel", te);
       v.removeEventListener("wheel", wh); v.removeEventListener("gesturestart", gs); v.removeEventListener("gesturechange", gs);
     };
-  }, []);
-  const escRef = useRef(esc); escRef.current = esc;
-  const zoomRef = useRef(zoomEm); zoomRef.current = zoomEm;
-  // arrastar com o mouse (no notebook)
+  }, [esc == null]);
+  // arrastar com o mouse (no notebook); no celular o arraste é a rolagem nativa
   const arrasto = useRef(null);
   const pd = (e) => { if (e.pointerType !== "mouse" || e.button !== 0) return; const v = viewRef.current; arrasto.current = { x: e.clientX, y: e.clientY, l: v.scrollLeft, t: v.scrollTop }; v.classList.add("arrastando"); };
   const pm = (e) => { const a = arrasto.current; if (!a) return; const v = viewRef.current; v.scrollLeft = a.l - (e.clientX - a.x); v.scrollTop = a.t - (e.clientY - a.y); };
@@ -1023,15 +1070,15 @@ function Genealogia({ a }) {
           <span><i className="sw sw-p" /> Família paterna</span>
         </div>
         <div className="ped-zoom" role="group" aria-label="Zoom da genealogia">
-          <button type="button" onClick={ajustarTudo} title="Mostrar a árvore inteira">Ajustar</button>
+          <button type="button" onClick={autoFit} title="Enquadrar a árvore inteira">Ajustar</button>
           <button type="button" onClick={() => zoomEm(s / 1.25)} aria-label="Diminuir"><Ico n="zoomMenos" size={15} /></button>
-          <button type="button" className="ped-zv" onClick={restaurar} title="Restaurar o zoom padrão">{pct}%</button>
+          <span className="ped-zv" aria-live="polite">{pct}%</span>
           <button type="button" onClick={() => zoomEm(s * 1.25)} aria-label="Aumentar"><Ico n="zoomMais" size={15} /></button>
         </div>
       </div>
       <div className="ped-view" ref={viewRef} style={altura ? { height: altura } : undefined}
         onPointerDown={pd} onPointerMove={pm} onPointerUp={pu} onPointerLeave={pu} onPointerCancel={pu}>
-        <div className="ped-canvas">
+        <div className="ped-canvas" ref={canvasRef}>
           <svg ref={svgRef} className="ped-svg" viewBox={vb} width={Math.round(natW * s)} height={Math.round(natH * s)} style={{ visibility: esc == null ? "hidden" : "visible" }}>
             <text x={-maxX + 4} y={-maxY + 16} className="ph-m" fontSize="12" fontWeight="600">FAMÍLIA MATERNA</text>
             <text x={maxX - 4} y={-maxY + 16} textAnchor="end" className="ph-p" fontSize="12" fontWeight="600">FAMÍLIA PATERNA</text>
@@ -1051,7 +1098,7 @@ function Genealogia({ a }) {
           </svg>
         </div>
       </div>
-      <div className="ped-dica">Arraste para navegar · pinça ou botões para zoom · "Ajustar" mostra a árvore inteira</div>
+      <div className="ped-dica">Pinça ou botões para aproximar · arraste para navegar · "Ajustar" enquadra a árvore inteira</div>
     </div>
   );
 }
@@ -1728,7 +1775,9 @@ function useTravaFundo() {
       travaY = window.scrollY || window.pageYOffset || 0;
       b.style.position = "fixed"; b.style.top = `-${travaY}px`; b.style.left = "0"; b.style.right = "0"; b.style.width = "100%";
     }
+    autoplay.suspender(true);
     return () => {
+      autoplay.suspender(false);
       if (--travasFundo === 0) {
         b.style.position = ""; b.style.top = ""; b.style.left = ""; b.style.right = ""; b.style.width = "";
         window.scrollTo(0, travaY);
@@ -5089,7 +5138,7 @@ a{color:var(--em)}
 .ped-zoom button:hover{background:rgba(28,40,33,.06)}
 .ped-zoom button.on{background:var(--surf);box-shadow:var(--sh1);font-weight:600}
 .ped-zoom .ped-zv{font-size:12px;color:var(--muted);min-width:48px;justify-content:center;font-variant-numeric:tabular-nums}
-.ped-view{position:relative;overflow:auto;background:linear-gradient(180deg,#FCFBF8,#F7F5F0);touch-action:pan-x pan-y;-webkit-overflow-scrolling:touch;cursor:grab;user-select:none;-webkit-user-select:none}
+.ped-view{position:relative;overflow:auto;background:linear-gradient(180deg,#FCFBF8,#F7F5F0);touch-action:pan-x pan-y;contain:layout paint;cursor:grab;user-select:none;-webkit-user-select:none}
 .ped-view.arrastando{cursor:grabbing}
 .ped-canvas{display:flex;align-items:center;justify-content:center;min-width:100%;min-height:100%;width:max-content;padding:8px;box-sizing:border-box}
 .ped-canvas svg{flex:none;max-width:none}
@@ -5390,6 +5439,8 @@ a{color:var(--em)}
   .eye-btn span{display:none}.eye-btn{padding:8px}
   .dash-filtros .df-hint{margin-left:0}
 }
+@media(max-width:860px){.modal-bg,.modal-head,.ficha-nav,.modal-foot{-webkit-backdrop-filter:none;backdrop-filter:none}.modal-bg{background:rgba(20,28,24,.45)}.ficha-nav{background:#F3F1EC}.modal-head,.modal-foot{background:#FBFAF7}}
+.ped-canvas{transform-origin:0 0}
 @keyframes folha{from{transform:translateY(40px);opacity:.001}to{transform:none;opacity:1}}
 @media print{.side,.topbar,.head-tools,.rep-tools,.btn,.ficha-nav,.ped-zoom{display:none!important}.main{padding:0}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
