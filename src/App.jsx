@@ -820,7 +820,7 @@ function AutoField({ value, onChange, suggestions, onCreate, placeholder, regMap
   const [q, setQ] = useState(value || "");
   const [hi, setHi] = useState(-1);
   useEffect(() => setQ(value || ""), [value]);
-  const nrm = (s) => lc(s).normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const nrm = (s) => chaveNome(s);
   const ql = nrm(q);
   const sugs = (suggestions || []).filter((s) => typeof s === "string" && s);
   const matches = sugs.filter((s) => nrm(s).includes(ql)).slice(0, 6);
@@ -3300,23 +3300,27 @@ function FolhaMovLote({ lote, embrioes, tipoInicial, onConfirm, onClose }) {
     </Folha>
   );
 }
+// mesma chave para comparar nomes em todo o sistema: ignora maiúsculas, acentos e espaços repetidos
+function chaveNome(s) { return norm(s || "").replace(/\s+/g, " ").trim(); }
+// devolve o nome já cadastrado com a mesma chave (mantém a grafia original da base) ou o texto limpo
+function nomeCanonico(lista, v) { const t = String(v || "").replace(/\s+/g, " ").trim(); if (!t) return ""; const k = chaveNome(t); return (lista || []).find((x) => chaveNome(x) === k) || t; }
 // busca um animal cadastrado por nome ou RGD; escolher da lista liga o registro à ficha do animal
 const rgdChave = (s) => norm(s || "").replace(/[^a-z0-9]/g, "").replace(/^rgd?/, "");
 function achaAnimal(lista, nome, reg) {
   const r = rgdChave(reg);
   if (r) { const m = (lista || []).filter((x) => x.registro && rgdChave(x.registro) === r); if (m.length === 1) return m[0]; }
-  const n = norm(nome || "").trim();
+  const n = chaveNome(nome);
   if (!n) return null;
-  const m = (lista || []).filter((x) => norm(x.nome || "").trim() === n);
+  const m = (lista || []).filter((x) => chaveNome(x.nome) === n);
   return m.length === 1 ? m[0] : null;
 }
 function BuscaAnimal({ rotulo, animais, nome, id, onTexto, onEscolher, onDesvincular, placeholder }) {
   const [open, setOpen] = useState(false);
   const [hi, setHi] = useState(-1);
-  const q = norm(nome || "").trim();
+  const q = chaveNome(nome);
   const qr = rgdChave(nome);
   const vinc = id ? (animais || []).find((x) => x.id === id) : null;
-  const ms = !q || vinc ? [] : (animais || []).filter((x) => norm(x.nome || "").includes(q) || (qr.length >= 2 && rgdChave(x.registro).includes(qr))).slice(0, 7);
+  const ms = !q || vinc ? [] : (animais || []).filter((x) => chaveNome(x.nome).includes(q) || (qr.length >= 2 && rgdChave(x.registro).includes(qr))).slice(0, 7);
   const escolher = (x) => { onEscolher(x); setOpen(false); setHi(-1); };
   const onKey = (e) => {
     if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setHi((h) => Math.min(ms.length - 1, h + 1)); }
@@ -3332,72 +3336,131 @@ function BuscaAnimal({ rotulo, animais, nome, id, onTexto, onEscolher, onDesvinc
           onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 160)} />
         {open && ms.length > 0 && <div className="auto-menu">{ms.map((x, i) => (
           <button type="button" key={x.id} className={`auto-item ${hi === i ? "hi" : ""}`} onMouseDown={(e) => { e.preventDefault(); escolher(x); }} onClick={() => escolher(x)} onMouseEnter={() => setHi(i)}>
-            {x.nome}{x.registro ? <span className="auto-rg">{rgdTxt(x.registro)}</span> : null}</button>))}</div>}
+            {x.nome}{x.registro ? <span className="auto-rg">{rgdTxt(x.registro)}</span> : <span className="auto-rg">sem RGD</span>}</button>))}</div>}
       </div>
       {vinc ? <span className="rp-vinc"><i aria-hidden="true">✓</i> Ligado à ficha de {vinc.nome}<button type="button" onClick={onDesvincular}>desfazer</button></span>
-        : q ? <em className="new-hint">Sem vínculo com ficha. Escolha da lista para ligar a um animal cadastrado.</em> : null}
+        : q ? <em className="new-hint">{ms.length ? "Escolha na lista ou continue: se não existir, será cadastrado ao salvar." : "Novo: será cadastrado na base de animais ao salvar."}</em> : null}
     </div>
   );
 }
 
-function FolhaLote({ inicial, ativos, embrioes, animalReg, localNames, onQuickLocal, socioNames, onQuickSocio, onConfirm, onExcluir, onAbrirAnimal, onClose }) {
+function FolhaLote({ inicial, ativos, embrioes, animalReg, localNames, onQuickLocal, leilaoNames, onQuickLeilao, vendedorNames, onQuickVendedor, socioNames, onQuickSocio, onConfirm, onExcluir, onAbrirAnimal, onClose }) {
   const editando = !!(inicial && inicial.id);
   const asps = (ativos || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia" && (!a.arquivada || (inicial && a.id === inicial.aspiracaoId)));
   const animais = (ativos || []).filter((a) => a && a.tipo === "animal" && a.nome);
   const ehF = (a) => (lc(a.sexo || "").startsWith("f") ? 1 : 0);
-  const plantel = animais.filter((a) => a.origem !== "genealogia").sort((x, y) => ehF(y) - ehF(x) || x.nome.localeCompare(y.nome));
+  // a mesma base de animais do sistema (plantel e cadastros de referência da genealogia)
+  const doadoras = [...animais].sort((x, y) => (x.origem === "genealogia") - (y.origem === "genealogia") || ehF(y) - ehF(x) || x.nome.localeCompare(y.nome));
   const touros = [...animais].sort((x, y) => ehF(x) - ehF(y) || (x.origem === "genealogia") - (y.origem === "genealogia") || x.nome.localeCompare(y.nome));
   const [d, setD] = useState(() => inicial ? { regDoadora: "", regPai: "", doadoraId: "", touroId: "", parceiro: "", origemDesc: "", criatorioOrigem: "", ...inicial, socios: (inicial.socios || []).map((s) => ({ ...s })), compra: { ...(inicial.compra || {}) } }
     : { origem: "aspiracao", aspiracaoId: "", doadora: "", regDoadora: "", doadoraId: "", pai: "", regPai: "", touroId: "", parceiro: "", origemDesc: "", criatorioOrigem: "", dataCongelamento: "", local: "", propriedade: "", metodo: "", sexado: "", partSM: 100, socios: [], compra: {}, obs: "" });
   const [qtd, setQtd] = useState(1);
   const [confExc, setConfExc] = useState(false);
   const [todos, setTodos] = useState(false);
-  const set = (k, v) => setD((p) => ({ ...p, [k]: v }));
+  const [conflitos, setConflitos] = useState([]);
+  const [decisao, setDecisao] = useState({});   // escolhas do usuário nos conflitos de RGD
+  const [reenviar, setReenviar] = useState(false);
+  const set = (k, v) => { setD((p) => ({ ...p, [k]: v })); setConflitos([]); };
   const regDe = (nome) => (animalReg || {})[lc((nome || "").trim())] || "";
   const porId = (id) => (id ? animais.find((x) => x.id === id) : null);
-  // nome digitado: liga sozinho quando é exatamente um animal cadastrado (nome único); RGD vem da ficha dele
-  const textoAnimal = (k, rk, idk, lista) => (v) => setD((p) => {
+  const textoAnimal = (k, rk, idk, lista) => (v) => { setConflitos([]); setDecisao((x) => ({ ...x, [idk]: null })); setD((p) => {
     const m = achaAnimal(lista, v, "");
     if (m) return { ...p, [k]: v, [idk]: m.id, [rk]: m.registro || "" };
     return { ...p, [k]: v, [idk]: "", [rk]: p[idk] ? "" : p[rk] || regDe(v) };
-  });
-  const escolheAnimal = (k, rk, idk) => (x) => setD((p) => ({ ...p, [k]: x.nome, [rk]: x.registro || "", [idk]: x.id }));
+  }); };
+  const escolheAnimal = (k, rk, idk) => (x) => { setConflitos([]); setD((p) => ({ ...p, [k]: x.nome, [rk]: x.registro || "", [idk]: x.id })); };
   const asp = d.origem === "aspiracao" ? asps.find((a) => a.id === d.aspiracaoId) : null;
   const D = asp ? dadosAsp(asp, ativos, embrioes) : null;
   const escolheAsp = (id) => {
     const a = asps.find((x) => x.id === id);
     if (!a) { set("aspiracaoId", ""); return; }
     const doa = a.doadora || "", pai = a.pai || a.touro || "";
-    const md = achaAnimal(plantel, doa, a.regDoadora), mt = achaAnimal(touros, pai, a.regPai);
+    const md = achaAnimal(doadoras, doa, a.regDoadora), mt = achaAnimal(touros, pai, a.regPai);
     setD((p) => ({ ...p, aspiracaoId: id,
-      doadora: md ? md.nome : doa, regDoadora: md ? md.registro || "" : a.regDoadora || regDe(doa), doadoraId: md ? md.id : "",
-      pai: mt ? mt.nome : pai, regPai: mt ? mt.registro || "" : a.regPai || regDe(pai), touroId: mt ? mt.id : "",
+      doadora: md ? md.nome : doa, regDoadora: md ? md.registro || a.regDoadora || "" : a.regDoadora || regDe(doa), doadoraId: md ? md.id : "",
+      pai: mt ? mt.nome : pai, regPai: mt ? mt.registro || a.regPai || "" : a.regPai || regDe(pai), touroId: mt ? mt.id : "",
       criatorioOrigem: p.criatorioOrigem || a.criatorio || a.ondeEsta || "",
       propriedade: p.propriedade || a.ondeEsta || "", socios: !p.socios.length ? (a.socios || []).filter(Boolean).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct })) : p.socios }));
   };
-  const nd = norm(d.doadora || "").trim();
-  const aspsOrd = [...asps].sort((x, y) => (nd && norm(y.doadora || "").trim() === nd) - (nd && norm(x.doadora || "").trim() === nd) || (y.dataAspiracao || "").localeCompare(x.dataAspiracao || ""));
-  // RGD: com animal ligado, vem sempre da ficha dele (nunca é digitado nem inventado aqui)
+  const nd = chaveNome(d.doadora);
+  const aspsOrd = [...asps].sort((x, y) => (nd && chaveNome(y.doadora) === nd) - (nd && chaveNome(x.doadora) === nd) || (y.dataAspiracao || "").localeCompare(x.dataAspiracao || ""));
+  // RGD: ficha com RGD → só leitura; ficha sem RGD → pode informar aqui e ele é gravado na ficha ao salvar
   const campoReg = (rk, idk, rot) => {
     const an = porId(d[idk]);
-    if (an) return (
-      <div className="field"><span>{rot} <em className="new-hint">· da ficha do animal</em></span>
-        {an.registro ? <input value={an.registro} readOnly className="rp-ro" aria-label={rot} />
-          : <div className="rp-semrgd">Não consta na ficha de {an.nome}.{onAbrirAnimal && <button type="button" onClick={() => onAbrirAnimal(an)}>Corrigir na ficha</button>}</div>}
-      </div>);
+    if (an && an.registro) return (
+      <div className="field"><span>{rot} <em className="new-hint">· da ficha do animal</em></span><input value={an.registro} readOnly className="rp-ro" aria-label={rot} /></div>);
     return (
-      <label className="field"><span>{rot} <em className="new-hint">· {d[rk] && regDe(d[idk === "doadoraId" ? "doadora" : "pai"]) === d[rk] ? "de registros anteriores" : "opcional"}</em></span>
-        <input value={d[rk] || ""} onChange={(e) => set(rk, e.target.value)} placeholder="animal sem cadastro: informe se souber" /></label>);
+      <label className="field"><span>{rot} {an ? <em className="warn">· a ficha de {an.nome} está sem RGD</em> : <em className="new-hint">· {d[rk] && regDe(d[idk === "doadoraId" ? "doadora" : "pai"]) === d[rk] ? "de registros anteriores" : "opcional"}</em>}</span>
+        <input value={d[rk] || ""} onChange={(e) => set(rk, e.target.value)} placeholder={an ? "informe: será gravado na ficha do animal" : "RGD, se souber"} />
+        {an && onAbrirAnimal && <button type="button" className="rp-link" onClick={() => onAbrirAnimal(an)}>ou corrigir direto na ficha</button>}
+      </label>);
   };
+
+  /* Resolve doadora e touro antes de salvar: reaproveita fichas existentes (RGD primeiro, depois nome),
+     cadastra o que não existe e nunca sobrescreve um RGD diferente sem perguntar. */
+  const resolver = () => {
+    const plano = { criar: [], atualizar: [] }, confs = [], nd2 = { ...d };
+    [["doadora", "regDoadora", "doadoraId", "doadora", "Fêmea", "Doadora"], ["pai", "regPai", "touroId", "touro", "Macho", "Reprodutor"]].forEach(([k, rk, idk, papel, sexo, categoria]) => {
+      const nome = String(d[k] || "").replace(/\s+/g, " ").trim(), reg = String(d[rk] || "").trim(), dec = decisao[idk];
+      const usar = (X, novoReg) => { nd2[k] = X.nome; nd2[idk] = X.id; nd2[rk] = novoReg || X.registro || ""; if (novoReg && novoReg !== X.registro) plano.atualizar.push({ id: X.id, registro: novoReg, antes: X.registro || "", papel }); };
+      const outroComReg = (exc) => (reg ? animais.filter((x) => x.id !== exc && x.registro && rgdChave(x.registro) === rgdChave(reg)) : []);
+      if (!nome && !reg) { nd2[idk] = ""; return; }
+      if (dec && dec.tipo === "usar") { const X = porId(dec.id); if (X) { usar(X, dec.gravar ? reg : ""); return; } }
+      if (d[idk]) {
+        const A = porId(d[idk]);
+        if (!A) return;
+        if (reg && !A.registro) {
+          const o = outroComReg(A.id);
+          if (o.length) { confs.push({ papel, msg: `O RGD ${reg} já está na ficha de ${o[0].nome}.`, opcoes: [[`Usar ${o[0].nome}`, { tipo: "usar", id: o[0].id }], ["Corrigir o RGD", { tipo: "limpar" }]] }); return; }
+          usar(A, reg); return;
+        }
+        usar(A, ""); return;
+      }
+      if (dec && dec.tipo === "novo") { const id = uid(); plano.criar.push({ id, nome, registro: reg, sexo, categoria, papel }); nd2[idk] = id; nd2[k] = nome; return; }
+      const porReg = outroComReg(null);
+      if (porReg.length === 1) {
+        const X = porReg[0];
+        if (!nome || chaveNome(X.nome) === chaveNome(nome)) { usar(X, ""); return; }
+        confs.push({ papel, msg: `O RGD ${reg} pertence a ${X.nome}, mas o nome informado é “${nome}”.`, opcoes: [[`Usar ${X.nome}`, { tipo: "usar", id: X.id }], ["Corrigir o RGD", { tipo: "limpar" }]] }); return;
+      }
+      if (porReg.length > 1) { confs.push({ papel, msg: `O RGD ${reg} aparece em ${porReg.length} fichas.`, opcoes: porReg.map((X) => [`Usar ${X.nome}`, { tipo: "usar", id: X.id }]) }); return; }
+      const porNome = nome ? animais.filter((x) => chaveNome(x.nome) === chaveNome(nome)) : [];
+      if (porNome.length === 1) {
+        const X = porNome[0];
+        if (!reg || !X.registro) { usar(X, reg && !X.registro ? reg : ""); return; }
+        confs.push({ papel, msg: `A ficha de ${X.nome} tem o RGD ${X.registro}, e aqui foi informado ${reg}.`, opcoes: [[`Usar a ficha (RGD ${X.registro})`, { tipo: "usar", id: X.id }], [`Trocar para ${reg} na ficha`, { tipo: "usar", id: X.id, gravar: true }], ["É outro animal: cadastrar", { tipo: "novo" }]] }); return;
+      }
+      if (porNome.length > 1) { confs.push({ papel, msg: `Há ${porNome.length} fichas com o nome “${nome}”.`, opcoes: porNome.map((X) => [`Usar ${X.nome}${X.registro ? ` (${rgdTxt(X.registro)})` : " (sem RGD)"}`, { tipo: "usar", id: X.id }]) }); return; }
+      if (!nome) return;   // só RGD, sem nome: fica no embrião, sem criar ficha
+      const id = uid(); plano.criar.push({ id, nome, registro: reg, sexo, categoria, papel }); nd2[idk] = id; nd2[k] = nome;
+    });
+    return { plano, confs, nd2 };
+  };
+  const decidir = (papel, op) => {
+    const idk = papel === "doadora" ? "doadoraId" : "touroId", rk = papel === "doadora" ? "regDoadora" : "regPai";
+    if (op.tipo === "limpar") { setD((p) => ({ ...p, [rk]: "" })); setConflitos([]); return; }
+    setDecisao((x) => ({ ...x, [idk]: op })); setConflitos([]); setReenviar(true);
+  };
+  useEffect(() => { if (reenviar) { setReenviar(false); salvar(); } });   // continua o cadastro depois da escolha no conflito
+
   const pctSoc = (d.socios || []).reduce((s, x) => s + num(x.pct), 0);
   const ok = (d.doadora || "").trim() && (editando || qtd >= 1);
   const usadoEmTE = editando && ((inicial.movs || []).some((m) => m && m.tipo === "uso") || (ativos || []).some((p) => p && p.embriaoId === inicial.id));
   const nJuntos = editando ? doGrupo(embrioes, grupoDe(inicial)).length : 0;
-  const salvar = () => onConfirm({ ...d, aspiracaoId: d.origem === "aspiracao" ? d.aspiracaoId || "" : "" }, qtd, { todos });
+  const salvar = () => {
+    const { plano, confs, nd2 } = resolver();
+    if (confs.length) { setConflitos(confs); return; }
+    const comp = { ...(nd2.compra || {}) };
+    if (nd2.origem === "compra") { comp.leilao = nomeCanonico(leilaoNames, comp.leilao); comp.vendedor = nomeCanonico(vendedorNames, comp.vendedor); }
+    onConfirm({ ...nd2, compra: comp, aspiracaoId: nd2.origem === "aspiracao" ? nd2.aspiracaoId || "" : "",
+      criatorioOrigem: nomeCanonico(localNames, nd2.criatorioOrigem), propriedade: nomeCanonico(localNames, nd2.propriedade),
+      parceiro: nd2.origem === "parceiro" ? nomeCanonico(socioNames, nd2.parceiro) : nd2.parceiro || "",
+      socios: (nd2.socios || []).map((s) => ({ ...s, nome: nomeCanonico(socioNames, s.nome) })) }, qtd, { todos, plano });
+  };
   const ORIGENS = [["aspiracao", "Produção própria — Aspiração"], ["compra", "Compra de embriões"], ["parceiro", "Recebimento de sócio ou parceiro"], ["outra", "Outra origem"], ...(d.origem === "existente" ? [["existente", "Estoque existente"]] : [])];
   return (
     <Folha eyebrow="Banco de Embriões" titulo={editando ? `Editar embrião ${inicial.cod}` : "Cadastrar embriões"}
-      sub={editando ? "Altera só este embrião, a menos que você marque para aplicar aos que foram cadastrados junto. Entradas e saídas são feitas por movimentação, para manter o histórico." : "Preencha uma vez: o sistema cria um registro individual, com código e histórico próprios, para cada embrião."} onClose={onClose}
+      sub={editando ? "Altera só este embrião, a menos que você marque para aplicar aos que foram cadastrados junto. Entradas e saídas são feitas por movimentação, para manter o histórico." : "Preencha uma vez: o sistema cria um registro individual para cada embrião e cadastra na base o que ainda não existir (doadora, touro, leilão, criatório)."} onClose={onClose}
       rodape={<>
         {editando && onExcluir && <button className="btn btn-ghost rp-exc" disabled={usadoEmTE} title={usadoEmTE ? "Este embrião já foi usado em transferência e não pode ser excluído. Use “Arquivar”." : ""}
           onClick={() => (confExc ? onExcluir(inicial) : setConfExc(true))}>{confExc ? "Confirmar exclusão" : "Excluir embrião"}</button>}
@@ -3406,14 +3469,19 @@ function FolhaLote({ inicial, ativos, embrioes, animalReg, localNames, onQuickLo
       <div className="field wide"><span>Origem dos embriões</span><div className="segmented rp-seg-wrap">
         {ORIGENS.map(([k, l]) => (
           <button key={k} type="button" className={`seg ${d.origem === k ? "on" : ""}`} onClick={() => set("origem", k)}>{l}</button>))}</div></div>
-      {d.origem === "aspiracao" && !editando && <div className="aviso aviso-info">Escolha a doadora na lista: o embrião fica ligado à ficha dela e o RGD vem do cadastro. Se a aspiração já está cadastrada, vincule-a abaixo; os embriões não são contados duas vezes.</div>}
       {d.origem === "existente" && <div className="aviso">Embrião que a SM já possuía antes do sistema, sem aspiração cadastrada.</div>}
       {confExc && <div className="aviso">O embrião {inicial.cod} e o histórico dele serão excluídos. Os outros embriões não são afetados. Clique em “Confirmar exclusão” para continuar.</div>}
       {editando && nJuntos > 1 && <label className="rp-todos"><input type="checkbox" checked={todos} onChange={(e) => setTodos(e.target.checked)} /> Aplicar estas alterações aos {nJuntos} embriões cadastrados junto com este</label>}
+      {conflitos.length > 0 && <div className="rp-conflito" role="alert">
+        <b>Confira antes de salvar</b>
+        {conflitos.map((c, i) => (
+          <div key={i} className="rp-conf-i"><span><em>{c.papel === "doadora" ? "Doadora" : "Touro"}:</em> {c.msg}</span>
+            <div>{c.opcoes.map(([rot, op]) => <button type="button" key={rot} className="btn btn-ghost btn-mini" onClick={() => decidir(c.papel, op)}>{rot}</button>)}</div></div>))}
+      </div>}
       <div className="rp-bloco">Doadora e touro</div>
       <div className="grid">
-        <BuscaAnimal rotulo={d.origem === "aspiracao" ? "Doadora do plantel" : "Doadora"} animais={plantel} nome={d.doadora} id={d.doadoraId} placeholder="buscar por nome ou RGD"
-          onTexto={textoAnimal("doadora", "regDoadora", "doadoraId", plantel)} onEscolher={escolheAnimal("doadora", "regDoadora", "doadoraId")} onDesvincular={() => setD((p) => ({ ...p, doadoraId: "", regDoadora: "" }))} />
+        <BuscaAnimal rotulo="Doadora" animais={doadoras} nome={d.doadora} id={d.doadoraId} placeholder="buscar por nome ou RGD"
+          onTexto={textoAnimal("doadora", "regDoadora", "doadoraId", doadoras)} onEscolher={escolheAnimal("doadora", "regDoadora", "doadoraId")} onDesvincular={() => setD((p) => ({ ...p, doadoraId: "", regDoadora: "" }))} />
         {campoReg("regDoadora", "doadoraId", "RGD da doadora")}
         <BuscaAnimal rotulo="Touro" animais={touros} nome={d.pai} id={d.touroId} placeholder="buscar por nome ou RGD"
           onTexto={textoAnimal("pai", "regPai", "touroId", touros)} onEscolher={escolheAnimal("pai", "regPai", "touroId")} onDesvincular={() => setD((p) => ({ ...p, touroId: "", regPai: "" }))} />
@@ -3429,7 +3497,8 @@ function FolhaLote({ inicial, ativos, embrioes, animalReg, localNames, onQuickLo
         {d.origem === "parceiro" && <label className="field"><span>Recebido de <em className="new-hint">· sócio ou parceiro</em></span><AutoField value={d.parceiro || ""} onChange={(v) => set("parceiro", v)} suggestions={socioNames} onCreate={onQuickSocio} placeholder="buscar ou cadastrar" /></label>}
         {d.origem === "outra" && <label className="field"><span>Descreva a origem</span><input value={d.origemDesc || ""} onChange={(e) => set("origemDesc", e.target.value)} placeholder="ex.: doação, permuta" /></label>}
         {d.origem === "compra" && <>
-          <label className="field"><span>Leilão / vendedor</span><input value={d.compra.leilao || ""} onChange={(e) => setD((p) => ({ ...p, compra: { ...p.compra, leilao: e.target.value } }))} /></label>
+          <label className="field"><span>Leilão</span><AutoField value={d.compra.leilao || ""} onChange={(v) => setD((p) => ({ ...p, compra: { ...p.compra, leilao: v } }))} suggestions={leilaoNames} onCreate={onQuickLeilao} placeholder="buscar ou cadastrar leilão" /></label>
+          <label className="field"><span>Vendedor <em className="new-hint">· opcional</em></span><AutoField value={d.compra.vendedor || ""} onChange={(v) => setD((p) => ({ ...p, compra: { ...p.compra, vendedor: v } }))} suggestions={vendedorNames} onCreate={onQuickVendedor} placeholder="buscar ou cadastrar vendedor" /></label>
           <label className="field"><span>Data da compra</span><input type="date" value={d.compra.data || ""} onChange={(e) => setD((p) => ({ ...p, compra: { ...p.compra, data: e.target.value } }))} /></label>
           <label className="field"><span>Valor da compra <em className="new-hint">· informativo</em></span><input type="number" step="any" value={d.compra.valor || ""} onChange={(e) => setD((p) => ({ ...p, compra: { ...p.compra, valor: e.target.value } }))} placeholder="R$ 0" /></label>
         </>}
@@ -3474,7 +3543,7 @@ function origemLoteTxt(l, ativos) {
   const asp = l.aspiracaoId ? (ativos || []).find((x) => x && x.id === l.aspiracaoId) : null;
   if (asp) return (asp.dataAspiracao || asp.dataAsp) ? `Aspiração de ${dataBR(asp.dataAspiracao || asp.dataAsp)}` : asp.nome;
   if (l.origem === "aspiracao") return "Aspiração própria (não cadastrada no sistema)";
-  if (l.origem === "compra") return [l.compra && l.compra.leilao, l.compra && l.compra.valor ? fmt(num(l.compra.valor)) : ""].filter(Boolean).join(" · ") || "Compra";
+  if (l.origem === "compra") return [l.compra && l.compra.leilao, l.compra && l.compra.vendedor, l.compra && l.compra.valor ? fmt(num(l.compra.valor)) : ""].filter(Boolean).join(" · ") || "Compra";
   if (l.origem === "parceiro") return `Recebido de ${l.parceiro || "sócio ou parceiro"}`;
   if (l.origem === "outra") return l.origemDesc || "Outra origem";
   return "Já existia antes do sistema";
@@ -5957,7 +6026,32 @@ export default function App() {
   };
   // campos que pertencem ao embrião individual e não são copiados entre embriões do mesmo lote
   const CAMPOS_PROPRIOS = ["id", "cod", "seq", "loteId", "loteCod", "movs", "arquivado", "criadoEm", "criadoPor", "migradoDe"];
+  // grava no mesmo banco tudo o que o cadastro de embriões trouxe de novo (mesmas listas usadas por Animais, Compras e Leilões)
+  const aplicaCadastros = (p, dados, plano, quem) => {
+    let ativos = p.ativos || [];
+    ((plano && plano.criar) || []).forEach((c) => {
+      if (ativos.some((a) => a && a.id === c.id)) return;
+      const st = stubAnimal(c.nome, quem);
+      ativos = [...ativos, { ...st, id: c.id, registro: c.registro || "", sexo: c.sexo, categoria: c.categoria,
+        historico: [{ id: uid(), data: today(), tipo: "Cadastro criado", desc: `Cadastrado pelo Banco de Embriões (${c.papel})`, responsavel: quem || "Sistema" }] }];
+    });
+    ((plano && plano.atualizar) || []).forEach((u) => {
+      ativos = ativos.map((a) => (a && a.id === u.id ? { ...a, registro: u.registro, historico: [...(a.historico || []), { id: uid(), data: today(), tipo: "Registro atualizado",
+        desc: u.antes ? `RGD alterado de ${u.antes} para ${u.registro} pelo Banco de Embriões` : `${rgdTxt(u.registro)} informado pelo Banco de Embriões`, responsavel: quem }] } : a));
+    });
+    const k = chaveNome;
+    const jaLocal = (nm) => (p.locais || []).some((x) => k(x) === k(nm)) || (p.criatorios || []).some((c) => c && k(c.nome) === k(nm)) || ativos.some((a) => a && (k(a.ondeEsta) === k(nm) || k(a.criatorio) === k(nm)));
+    let locais = p.locais || [];
+    [dados.criatorioOrigem, dados.propriedade].forEach((nm) => { if (nm && !jaLocal(nm) && !locais.some((x) => k(x) === k(nm))) locais = [...locais, nm]; });
+    let leiloes = p.leiloes || [], vendedores = p.vendedores || [], socios = p.socios || [];
+    const lei = dados.origem === "compra" && dados.compra ? dados.compra.leilao : "", ven = dados.origem === "compra" && dados.compra ? dados.compra.vendedor : "";
+    if (lei && !leiloes.some((l) => l && k(l.nome) === k(lei))) leiloes = [...leiloes, { id: uid(), nome: lei }];
+    if (ven && !vendedores.some((v) => v && k(v.nome) === k(ven))) vendedores = [...vendedores, { id: uid(), nome: ven, tipo: "Outro", doc: "", tel: "", email: "", obs: "" }];
+    if (dados.origem === "parceiro" && dados.parceiro && !socios.some((x) => x && k(x.nome) === k(dados.parceiro))) socios = [...socios, { id: uid(), nome: dados.parceiro, doc: "", tel: "", email: "", endereco: "", obs: "" }];
+    return { ...p, ativos, locais, leiloes, vendedores, socios };
+  };
   const salvarLote = (dados, qtd, opc) => {
+    const plano = opc && opc.plano;
     flushNext.current = true;
     const quem = quemReg(), agora = new Date().toISOString();
     const limpo = { ...dados, socios: (dados.socios || []).filter((x) => x && (x.nome || "").trim()), partSM: dados.partSM === "" || dados.partSM == null ? "" : num(dados.partSM) };
@@ -5966,18 +6060,19 @@ export default function App() {
       const campos = { ...limpo }; CAMPOS_PROPRIOS.forEach((k) => delete campos[k]);
       const gid = grupoDe(dados), gMov = uid();
       let n = 0;
-      setDb((p) => ({ ...p, embrioes: (p.embrioes || []).map((l) => {
+      setDb((p0) => { const p = aplicaCadastros(p0, limpo, plano, quem); return { ...p, embrioes: (p.embrioes || []).map((l) => {
         if (!(l.id === dados.id || (todosDoLote && grupoDe(l) === gid))) return l;
         n += 1;
         const movs = [...(l.movs || [])];
         if ((l.local || "") !== (campos.local || "")) movs.push({ id: uid(), grupo: gMov, data: today(), tipo: "local", qtd: 0, ref: `${l.local || "sem local"} → ${campos.local || "sem local"}`, responsavel: quem, criadoEm: agora });
         return { ...l, ...campos, socios: (campos.socios || []).map((s) => ({ ...s })), movs };
-      }) }));
+      }) }; });
       setToast(todosDoLote ? "Embriões cadastrados juntos atualizados." : `Embrião ${dados.cod} atualizado.`);
     } else {
       const gid = uid(), gEnt = uid(), ids = [];
       for (let i = 0; i < qtd; i++) ids.push(uid());
-      setDb((p) => {
+      setDb((p0) => {
+        const p = aplicaCadastros(p0, limpo, plano, quem);
         const cod = proxCodLote(p.embrioes);
         const A = limpo.origem === "aspiracao" ? (p.ativos || []).find((x) => x && x.id === limpo.aspiracaoId) : null;
         const ref = A ? `Congelamento da aspiração (${A.nome})` : limpo.origem === "aspiracao" ? "Produção própria · aspiração" : limpo.origem === "compra" ? `Compra${limpo.compra && limpo.compra.leilao ? ` · ${limpo.compra.leilao}` : ""}`
@@ -6127,11 +6222,11 @@ export default function App() {
     usos: [],
     botoes: [{ label: "Excluir", tone: "danger", onClick: () => { excluir(a.id); setConfirmar(null); } }],
   });
-  const quickAnimal = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => (p.ativos.some((a) => a && a.tipo === "animal" && lc(a.nome) === lc(nm)) ? p : { ...p, ativos: [...p.ativos, stubAnimal(nm, profile && profile.nome)] })); };
-  const quickLeilao = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => ((p.leiloes || []).some((l) => l && lc(l.nome) === lc(nm)) ? p : { ...p, leiloes: [...(p.leiloes || []), { id: uid(), nome: nm }] })); };
-  const quickLocal = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => ((p.locais || []).some((l) => lc(l) === lc(nm)) ? p : { ...p, locais: [...(p.locais || []), nm] })); };
-  const quickVendedor = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => ((p.vendedores || []).some((v) => v && lc(v.nome) === lc(nm)) ? p : { ...p, vendedores: [...(p.vendedores || []), { id: uid(), nome: nm, tipo: "Outro", doc: "", tel: "", email: "", obs: "" }] })); };
-  const quickSocio = (nm) => { nm = (nm ?? "").toString().trim(); if (!nm) return; setDb((p) => ((p.socios || []).some((s) => s && lc(s.nome) === lc(nm)) ? p : { ...p, socios: [...(p.socios || []), { id: uid(), nome: nm, doc: "", tel: "", email: "", endereco: "", obs: "" }] })); };
+  const quickAnimal = (nm) => { nm = (nm ?? "").toString().replace(/\s+/g, " ").trim(); if (!nm) return; setDb((p) => (p.ativos.some((a) => a && a.tipo === "animal" && chaveNome(a.nome) === chaveNome(nm)) ? p : { ...p, ativos: [...p.ativos, stubAnimal(nm, profile && profile.nome)] })); };
+  const quickLeilao = (nm) => { nm = (nm ?? "").toString().replace(/\s+/g, " ").trim(); if (!nm) return; setDb((p) => ((p.leiloes || []).some((l) => l && chaveNome(l.nome) === chaveNome(nm)) ? p : { ...p, leiloes: [...(p.leiloes || []), { id: uid(), nome: nm }] })); };
+  const quickLocal = (nm) => { nm = (nm ?? "").toString().replace(/\s+/g, " ").trim(); if (!nm) return; setDb((p) => ((p.locais || []).some((l) => chaveNome(l) === chaveNome(nm)) ? p : { ...p, locais: [...(p.locais || []), nm] })); };
+  const quickVendedor = (nm) => { nm = (nm ?? "").toString().replace(/\s+/g, " ").trim(); if (!nm) return; setDb((p) => ((p.vendedores || []).some((v) => v && chaveNome(v.nome) === chaveNome(nm)) ? p : { ...p, vendedores: [...(p.vendedores || []), { id: uid(), nome: nm, tipo: "Outro", doc: "", tel: "", email: "", obs: "" }] })); };
+  const quickSocio = (nm) => { nm = (nm ?? "").toString().replace(/\s+/g, " ").trim(); if (!nm) return; setDb((p) => ((p.socios || []).some((s) => s && chaveNome(s.nome) === chaveNome(nm)) ? p : { ...p, socios: [...(p.socios || []), { id: uid(), nome: nm, doc: "", tel: "", email: "", endereco: "", obs: "" }] })); };
 
   // Criatórios parceiros
   const salvarCriatorio = (c) => setDb((p) => {
@@ -6845,7 +6940,7 @@ export default function App() {
       {repro && repro.tipo === "nasc" && <FolhaNascimento p={repro.alvo} animalNames={nomesAnimais} onConfirm={(v) => registrarNascimento(abertoAtual && abertoAtual.id === repro.alvo.id ? abertoAtual : repro.alvo, v)}
         onFull={() => { const a = repro.alvo; setRepro(null); nascer(a); }} onClose={() => setRepro(null)} />}
       {repro && repro.tipo === "mov" && <FolhaMovLote lote={embrioes.find((l) => l.id === repro.lote.id) || repro.lote} embrioes={embrioes} tipoInicial={repro.mov} onConfirm={(v) => movimentarLote(repro.lote, v)} onClose={() => setRepro(null)} />}
-      {repro && repro.tipo === "lote" && <FolhaLote inicial={repro.lote ? (embrioes.find((l) => l.id === repro.lote.id) || repro.lote) : null} ativos={ativos} embrioes={embrioes} animalNames={animalNames} animalReg={animalReg} localNames={localNames} onQuickLocal={quickLocal} onAbrirAnimal={(an) => { setRepro(null); setAberto(an); }} socioNames={socioNames} onQuickSocio={quickSocio}
+      {repro && repro.tipo === "lote" && <FolhaLote inicial={repro.lote ? (embrioes.find((l) => l.id === repro.lote.id) || repro.lote) : null} ativos={ativos} embrioes={embrioes} animalNames={animalNames} animalReg={animalReg} localNames={localNames} onQuickLocal={quickLocal} leilaoNames={leilaoNames} onQuickLeilao={quickLeilao} vendedorNames={vendedorNames} onQuickVendedor={quickVendedor} onAbrirAnimal={(an) => { setRepro(null); setAberto(an); }} socioNames={socioNames} onQuickSocio={quickSocio}
         onConfirm={salvarLote} onExcluir={isAdmin ? excluirLote : null} onClose={() => setRepro(null)} />}
       {novaVersao && <div className="rp-versao" role="status"><span>Há uma versão nova do sistema publicada.</span>
         <button type="button" onClick={() => { if (temPendencia()) { flushNext.current = true; doSave().finally(() => window.location.reload()); } else window.location.reload(); }}>Atualizar agora</button></div>}
@@ -7680,6 +7775,12 @@ a{color:var(--em)}
 .rp-diag{margin-top:6px}
 .rp-versao{position:fixed;left:50%;top:14px;transform:translateX(-50%);z-index:300;display:flex;align-items:center;gap:12px;padding:10px 14px 10px 16px;border-radius:14px;background:#13241C;color:#fff;font-size:13.5px;box-shadow:0 10px 30px rgba(0,0,0,.25);max-width:calc(100vw - 32px)}
 .rp-versao button{border:0;background:var(--champ,#B89A5E);color:#13241C;font:inherit;font-weight:700;padding:6px 12px;border-radius:9px;cursor:pointer;white-space:nowrap}
+.rp-conflito{display:flex;flex-direction:column;gap:8px;padding:12px 14px;margin:4px 0 10px;border-radius:var(--r2);background:var(--warn-l);color:var(--warn);font-size:13px}
+.rp-conflito>b{font-size:13.5px}
+.rp-conf-i{display:flex;flex-direction:column;gap:6px;color:var(--txt)}
+.rp-conf-i em{font-style:normal;font-weight:700;color:var(--warn)}
+.rp-conf-i>div{display:flex;flex-wrap:wrap;gap:6px}
+.rp-link{align-self:flex-start;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;text-decoration:underline;cursor:pointer;padding:4px 0 0}
 .rp-todos{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--txt);margin:2px 0 4px}
 .rp-aviso-mig{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;margin-bottom:14px}
 .rp-aviso-mig ul{margin:6px 0 0;padding-left:18px;font-weight:500}
