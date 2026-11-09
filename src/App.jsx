@@ -561,7 +561,8 @@ function resumoLote(l) {
   return r;
 }
 const saldoLote = (l) => resumoLote(l).saldo;
-const ORIGEM_LOTE = { aspiracao: "Aspiração da SM", compra: "Adquiridos", existente: "Estoque existente" };
+const ORIGEM_LOTE = { aspiracao: "Produção própria — Aspiração", compra: "Compra de embriões", parceiro: "Recebimento de sócio ou parceiro", outra: "Outra origem", existente: "Estoque existente" };
+const ORIGEM_CURTA = { aspiracao: "Produção própria", compra: "Compra", parceiro: "Sócio / parceiro", outra: "Outra origem", existente: "Estoque existente" };
 const rgdTxt = (v) => { const t = String(v || "").trim(); return !t ? "" : t.toLowerCase().startsWith("rg") ? t : `RGD ${t}`; };
 const rotuloLote = (l) => `${l.doadora || "Doadora não informada"}${l.pai ? ` × ${l.pai}` : ""}`;
 
@@ -2751,6 +2752,8 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote }) {
     const lote = a.loteOrigemId ? (embrioes || []).find((l) => l && l.id === a.loteOrigemId) : null;
     const filhos = (ativos || []).filter((x) => x && x.tipo === "animal" && x.origemId === a.id);
     const itens = [];
+    const doaL = lote && lote.doadoraId ? (ativos || []).find((x) => x && x.id === lote.doadoraId) : null;
+    if (doaL) itens.push({ rot: "Doadora", nome: doaL.nome, onClick: () => onAbrir(doaL) });
     if (asp) itens.push({ rot: "Aspiração", nome: `${(asp.dataAspiracao || asp.dataAsp) ? dataBR((asp.dataAspiracao || asp.dataAsp)) + " · " : ""}${asp.doadora || asp.nome}`, onClick: () => onAbrir(asp) });
     else if (!lote) itens.push({ rot: "Origem", nome: a.leilao ? `Compra · ${a.leilao}` : (a.origemLabel || "Cadastro direto") });
     if (lote) itens.push({ rot: "Banco", nome: `Lote ${lote.cod}`, onClick: () => onIrLote(lote.id) });
@@ -2914,12 +2917,12 @@ function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir }) {
 }
 
 /* ---------------- página: Banco de Embriões ---------------- */
-function PaginaBanco({ embrioes, ativos, busca, sel, setSel, onAcao, onAbrir }) {
+function PaginaBanco({ embrioes, ativos, busca, sel, setSel, onAcao, onAbrir, filtroDoadora, onLimparDoadora }) {
   const [filtro, setFiltro] = useState("saldo");
   const q = norm(busca || "").trim();
   const todos = (embrioes || []).filter(Boolean);
   const casa = (l) => !q || norm([l.cod, l.doadora, l.regDoadora, l.pai, l.regPai, l.local, l.propriedade, ...(l.socios || []).map((s) => s && s.nome)].join(" ")).includes(q);
-  const lst = todos.filter(casa).filter((l) => (filtro === "arquivados" ? l.arquivado : !l.arquivado && (filtro === "todos" || saldoLote(l) > 0)))
+  const lst = todos.filter(casa).filter((l) => !filtroDoadora || l.doadoraId === filtroDoadora.id).filter((l) => (filtro === "arquivados" ? l.arquivado : !l.arquivado && (filtro === "todos" || saldoLote(l) > 0)))
     .sort((a, b) => saldoLote(b) - saldoLote(a) || (a.doadora || "").localeCompare(b.doadora || ""));
   const atual = todos.find((l) => l.id === sel) || lst[0] || null;
   const vivos = todos.filter((l) => !l.arquivado);
@@ -2951,6 +2954,7 @@ function PaginaBanco({ embrioes, ativos, busca, sel, setSel, onAcao, onAbrir }) 
       <div className="rp-filtros">
         <div className="seg-group" role="group" aria-label="Mostrar">{[["saldo", "Com saldo"], ["todos", "Todos os lotes"], ["arquivados", "Arquivados"]].map(([k, l]) => (
           <button key={k} type="button" className={`seg ${filtro === k ? "on" : ""}`} onClick={() => setFiltro(k)}>{l}</button>))}</div>
+        {filtroDoadora && <span className="rp-chip o-aspiracao">Doadora: {filtroDoadora.nome}<button type="button" className="rp-chip-x" onClick={onLimparDoadora} aria-label="Mostrar todos os lotes">×</button></span>}
         {q && <span className="muted small">Filtrando pela busca: “{busca}”</span>}
       </div>
       {todos.length === 0 ? (
@@ -2961,7 +2965,7 @@ function PaginaBanco({ embrioes, ativos, busca, sel, setSel, onAcao, onAbrir }) 
             {lst.map((l) => { const r = resumoLote(l), w = (v) => `${r.entrada + Math.max(0, r.ajuste) ? (v / (r.entrada + Math.max(0, r.ajuste))) * 100 : 0}%`; return (
               <button type="button" key={l.id} className={`rp-card ${atual && atual.id === l.id ? "on" : ""}`} onClick={() => setSel(l.id)}>
                 <div className="rp-card-h"><span className="rp-t">{rotuloLote(l)}</span><span className="rp-saldo"><b className={r.saldo ? "" : "zero"}>{r.saldo}</b><small>de {r.entrada + Math.max(0, r.ajuste)}</small></span></div>
-                <div className="rp-chips"><span className={`rp-chip o-${l.origem}`}>{ORIGEM_LOTE[l.origem] || "Origem"}</span><span className="rp-chip">Lote {l.cod}</span>{l.sexado && <span className="rp-chip">sexado {lc(l.sexado)}</span>}</div>
+                <div className="rp-chips"><span className={`rp-chip o-${l.origem}`}>{ORIGEM_CURTA[l.origem] || "Origem"}</span><span className="rp-chip">Lote {l.cod}</span>{l.sexado && <span className="rp-chip">sexado {lc(l.sexado)}</span>}</div>
                 <span className="rp-meta">{[l.regDoadora && rgdTxt(l.regDoadora), l.regPai && `× ${rgdTxt(l.regPai)}`].filter(Boolean).join(" ")}{(l.regDoadora || l.regPai) ? " · " : ""}{[l.local, l.propriedade].filter(Boolean).join(" · ") || "Local não informado"}</span>
                 <div className="rp-dest" aria-hidden="true"><i style={{ width: w(r.saldo), background: "var(--em)" }} /><i style={{ width: w(r.uso), background: "#7F9BBF" }} /><i style={{ width: w(r.venda + r.terceiro), background: "#C9AE74" }} /><i style={{ width: w(r.descarte), background: "#D99A8C" }} /></div>
               </button>); })}
@@ -2977,6 +2981,7 @@ function PaginaBanco({ embrioes, ativos, busca, sel, setSel, onAcao, onAbrir }) 
 function DetalheLote({ l, ativos, onAcao, onAbrir }) {
   const r = resumoLote(l);
   const asp = l.aspiracaoId ? (ativos || []).find((x) => x && x.id === l.aspiracaoId) : null;
+  const doa = l.doadoraId ? (ativos || []).find((x) => x && x.id === l.doadoraId) : null;
   const ps = (ativos || []).filter((p) => p && p.tipo === "prenhez" && p.loteOrigemId === l.id);
   const conf = ps.filter(prenhezPositiva).length, diag = ps.filter((p) => faseReprod(p).k !== "diag").length;
   let corrente = 0;
@@ -2990,7 +2995,7 @@ function DetalheLote({ l, ativos, onAcao, onAbrir }) {
           <div className="eyebrow">Lote {l.cod}{l.dataCongelamento ? ` · congelado em ${dataBR(l.dataCongelamento)}` : ""}</div>
           <h2 className="serif">{rotuloLote(l)}</h2>
           {(l.regDoadora || l.regPai) && <div className="muted small">{[l.regDoadora && `Doadora ${rgdTxt(l.regDoadora)}`, l.regPai && `Touro ${rgdTxt(l.regPai)}`].filter(Boolean).join(" · ")}</div>}
-          <div className="chips"><Badge tone="gold">{ORIGEM_LOTE[l.origem] || "Origem"}</Badge>{l.metodo && <Badge tone="gold">{l.metodo}</Badge>}{l.sexado && <Badge tone="gold">sexado {lc(l.sexado)}</Badge>}{l.arquivado && <Badge tone="amber">arquivado</Badge>}</div>
+          <div className="chips"><Badge tone="gold">{ORIGEM_CURTA[l.origem] || "Origem"}</Badge>{l.metodo && <Badge tone="gold">{l.metodo}</Badge>}{l.sexado && <Badge tone="gold">sexado {lc(l.sexado)}</Badge>}{l.arquivado && <Badge tone="amber">arquivado</Badge>}</div>
         </div>
         <div className="rp-acoes">
           <button className="btn btn-ghost" onClick={() => onAcao("editarLote", l)}>Editar</button>
@@ -3019,9 +3024,10 @@ function DetalheLote({ l, ativos, onAcao, onAbrir }) {
         <InfoR l="Propriedade" v={l.propriedade || "—"} />
         <InfoR l="Participação da SM" v={l.partSM !== "" && l.partSM != null ? `${String(l.partSM).replace(".", ",")}%` : "—"} />
         <InfoR l="Sócios" v={soc.length ? soc.map((s) => `${s.nome}${s.pct ? ` ${s.pct}%` : ""}`).join(" · ") : "—"} />
-        <InfoR l="Origem" v={asp ? ((asp.dataAspiracao || asp.dataAsp) ? `Aspiração de ${dataBR((asp.dataAspiracao || asp.dataAsp))}` : asp.nome) : l.origem === "compra" ? [l.compra && l.compra.leilao, l.compra && l.compra.valor ? fmt(num(l.compra.valor)) : ""].filter(Boolean).join(" · ") || "Compra" : "Já existia antes do sistema"} />
+        <InfoR l="Origem" v={origemLoteTxt(l, ativos)} />
         <InfoR l="Taxa de prenhez do lote" v={diag ? `${Math.round((conf / diag) * 100)}% (${conf} de ${diag})` : "sem diagnósticos"} />
       </div>
+      {doa && <button type="button" className="rp-prow" onClick={() => onAbrir(doa)}><span><b>Abrir a ficha da doadora</b><small>{doa.nome}{doa.registro ? ` · ${rgdTxt(doa.registro)}` : ""}</small></span><span aria-hidden="true">↗</span></button>}
       {asp && <button type="button" className="rp-prow" onClick={() => onAbrir(asp)}><span><b>Abrir a aspiração de origem</b><small>{asp.nome}</small></span><span aria-hidden="true">↗</span></button>}
       {l.obs && <p className="obs">{l.obs}</p>}
       <div className="rp-sub">Prenhezes com embriões deste lote ({ps.length}) <small className="muted">a transferência baixa o embrião, mesmo se o diagnóstico der negativo</small></div>
@@ -3207,47 +3213,119 @@ function FolhaMovLote({ lote, tipoInicial, onConfirm, onClose }) {
     </Folha>
   );
 }
-function FolhaLote({ inicial, ativos, embrioes, animalNames, animalReg, localNames, socioNames, onQuickSocio, onConfirm, onClose }) {
+// busca um animal cadastrado por nome ou RGD; escolher da lista liga o registro à ficha do animal
+const rgdChave = (s) => norm(s || "").replace(/[^a-z0-9]/g, "").replace(/^rgd?/, "");
+function achaAnimal(lista, nome, reg) {
+  const r = rgdChave(reg);
+  if (r) { const m = (lista || []).filter((x) => x.registro && rgdChave(x.registro) === r); if (m.length === 1) return m[0]; }
+  const n = norm(nome || "").trim();
+  if (!n) return null;
+  const m = (lista || []).filter((x) => norm(x.nome || "").trim() === n);
+  return m.length === 1 ? m[0] : null;
+}
+function BuscaAnimal({ rotulo, animais, nome, id, onTexto, onEscolher, onDesvincular, placeholder }) {
+  const [open, setOpen] = useState(false);
+  const [hi, setHi] = useState(-1);
+  const q = norm(nome || "").trim();
+  const qr = rgdChave(nome);
+  const vinc = id ? (animais || []).find((x) => x.id === id) : null;
+  const ms = !q || vinc ? [] : (animais || []).filter((x) => norm(x.nome || "").includes(q) || (qr.length >= 2 && rgdChave(x.registro).includes(qr))).slice(0, 7);
+  const escolher = (x) => { onEscolher(x); setOpen(false); setHi(-1); };
+  const onKey = (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setHi((h) => Math.min(ms.length - 1, h + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setHi((h) => Math.max(0, h - 1)); }
+    else if (e.key === "Enter") { if (open && hi >= 0 && ms[hi]) { e.preventDefault(); escolher(ms[hi]); } }
+    else if (e.key === "Escape" && open) { e.stopPropagation(); setOpen(false); }
+  };
+  return (
+    <div className="field"><span>{rotulo}</span>
+      <div className="auto">
+        <input value={nome || ""} placeholder={placeholder} aria-label={rotulo}
+          onChange={(e) => { onTexto(e.target.value); setOpen(true); setHi(-1); }} onKeyDown={onKey}
+          onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 160)} />
+        {open && ms.length > 0 && <div className="auto-menu">{ms.map((x, i) => (
+          <button type="button" key={x.id} className={`auto-item ${hi === i ? "hi" : ""}`} onMouseDown={(e) => { e.preventDefault(); escolher(x); }} onClick={() => escolher(x)} onMouseEnter={() => setHi(i)}>
+            {x.nome}{x.registro ? <span className="auto-rg">{rgdTxt(x.registro)}</span> : null}</button>))}</div>}
+      </div>
+      {vinc ? <span className="rp-vinc"><i aria-hidden="true">✓</i> Ligado à ficha de {vinc.nome}<button type="button" onClick={onDesvincular}>desfazer</button></span>
+        : q ? <em className="new-hint">Sem vínculo com ficha. Escolha da lista para ligar a um animal cadastrado.</em> : null}
+    </div>
+  );
+}
+
+function FolhaLote({ inicial, ativos, embrioes, animalReg, localNames, socioNames, onQuickSocio, onConfirm, onExcluir, onClose }) {
   const editando = !!(inicial && inicial.id);
-  const asps = (ativos || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia" && !a.arquivada);
-  const [d, setD] = useState(() => inicial ? { regDoadora: "", regPai: "", ...inicial, socios: (inicial.socios || []).map((s) => ({ ...s })), compra: { ...(inicial.compra || {}) } }
-    : { origem: "existente", aspiracaoId: "", doadora: "", regDoadora: "", pai: "", regPai: "", dataCongelamento: "", local: "", propriedade: "", metodo: "", sexado: "", partSM: 100, socios: [], compra: {}, obs: "" });
+  const asps = (ativos || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia" && (!a.arquivada || (inicial && a.id === inicial.aspiracaoId)));
+  const animais = (ativos || []).filter((a) => a && a.tipo === "animal" && a.nome);
+  const ehF = (a) => (lc(a.sexo || "").startsWith("f") ? 1 : 0);
+  const plantel = animais.filter((a) => a.origem !== "genealogia").sort((x, y) => ehF(y) - ehF(x) || x.nome.localeCompare(y.nome));
+  const touros = [...animais].sort((x, y) => ehF(x) - ehF(y) || (x.origem === "genealogia") - (y.origem === "genealogia") || x.nome.localeCompare(y.nome));
+  const [d, setD] = useState(() => inicial ? { regDoadora: "", regPai: "", doadoraId: "", touroId: "", parceiro: "", origemDesc: "", ...inicial, socios: (inicial.socios || []).map((s) => ({ ...s })), compra: { ...(inicial.compra || {}) } }
+    : { origem: "aspiracao", aspiracaoId: "", doadora: "", regDoadora: "", doadoraId: "", pai: "", regPai: "", touroId: "", parceiro: "", origemDesc: "", dataCongelamento: "", local: "", propriedade: "", metodo: "", sexado: "", partSM: 100, socios: [], compra: {}, obs: "" });
   const [qtd, setQtd] = useState(1);
-  const [auto, setAuto] = useState({});   // RGD preenchido pelo sistema (some se o nome mudar)
+  const [auto, setAuto] = useState({});   // RGD preenchido pelo sistema
+  const [confExc, setConfExc] = useState(false);
   const set = (k, v) => setD((p) => ({ ...p, [k]: v }));
   const regDe = (nome) => (animalReg || {})[lc((nome || "").trim())] || "";
-  // ao escolher o nome, traz o RGD já cadastrado; não sobrescreve um RGD digitado à mão
-  const setNome = (k, rk, v) => setD((p) => { const r = regDe(v); const np = { ...p, [k]: v };
-    if (r && (!p[rk] || auto[rk])) { np[rk] = r; setAuto((x) => ({ ...x, [rk]: true })); } else if (!r && auto[rk]) { np[rk] = ""; setAuto((x) => ({ ...x, [rk]: false })); }
-    return np; });
+  const textoAnimal = (k, rk, idk, lista) => (v) => setD((p) => {
+    const np = { ...p, [k]: v, [idk]: "" };
+    const m = achaAnimal(lista, v, "");
+    if (m) { np[idk] = m.id; np[rk] = m.registro || regDe(v) || p[rk] || ""; setAuto((a) => ({ ...a, [rk]: !!(m.registro || regDe(v)) })); return np; }
+    const r = regDe(v);
+    if (r && (!p[rk] || auto[rk])) { np[rk] = r; setAuto((a) => ({ ...a, [rk]: true })); }
+    else if (!r && (auto[rk] || p[idk])) { np[rk] = ""; setAuto((a) => ({ ...a, [rk]: false })); }
+    return np;
+  });
+  const escolheAnimal = (k, rk, idk) => (x) => { setD((p) => ({ ...p, [k]: x.nome, [rk]: x.registro || regDe(x.nome) || p[rk] || "", [idk]: x.id })); setAuto((a) => ({ ...a, [rk]: !!(x.registro || regDe(x.nome)) })); };
   const setReg = (rk, v) => { set(rk, v); setAuto((x) => ({ ...x, [rk]: false })); };
   const asp = d.origem === "aspiracao" ? asps.find((a) => a.id === d.aspiracaoId) : null;
   const D = asp ? dadosAsp(asp, ativos, embrioes) : null;
-  const escolheAsp = (id) => { const a = asps.find((x) => x.id === id); setD((p) => { if (!a) return { ...p, aspiracaoId: id };
+  const escolheAsp = (id) => {
+    const a = asps.find((x) => x.id === id);
+    if (!a) { set("aspiracaoId", ""); return; }
     const doa = a.doadora || "", pai = a.pai || a.touro || "";
-    return { ...p, aspiracaoId: id, doadora: doa, regDoadora: a.regDoadora || regDe(doa), pai, regPai: a.regPai || regDe(pai),
-      propriedade: p.propriedade || a.ondeEsta || "", socios: !p.socios.length ? (a.socios || []).filter(Boolean).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct })) : p.socios }; }); };
+    const md = achaAnimal(plantel, doa, a.regDoadora), mt = achaAnimal(touros, pai, a.regPai);
+    setD((p) => ({ ...p, aspiracaoId: id,
+      doadora: md ? md.nome : doa, regDoadora: a.regDoadora || (md && md.registro) || regDe(doa), doadoraId: md ? md.id : "",
+      pai: mt ? mt.nome : pai, regPai: a.regPai || (mt && mt.registro) || regDe(pai), touroId: mt ? mt.id : "",
+      propriedade: p.propriedade || a.ondeEsta || "", socios: !p.socios.length ? (a.socios || []).filter(Boolean).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct })) : p.socios }));
+    setAuto({ regDoadora: true, regPai: true });
+  };
+  const nd = norm(d.doadora || "").trim();
+  const aspsOrd = [...asps].sort((x, y) => (nd && norm(y.doadora || "").trim() === nd) - (nd && norm(x.doadora || "").trim() === nd) || (y.dataAspiracao || "").localeCompare(x.dataAspiracao || ""));
   const campoReg = (rk, rot) => (
-    <label className="field"><span>{rot} {auto[rk] && d[rk] ? <em className="new-hint">· do cadastro do animal</em> : <em className="new-hint">· opcional</em>}</span>
+    <label className="field"><span>{rot} {auto[rk] && d[rk] ? <em className="new-hint">· do cadastro</em> : <em className="new-hint">· opcional</em>}</span>
       <input value={d[rk] || ""} onChange={(e) => setReg(rk, e.target.value)} placeholder="preenche sozinho se o animal já está cadastrado" /></label>);
   const pctSoc = (d.socios || []).reduce((s, x) => s + num(x.pct), 0);
-  const ok = (d.doadora || "").trim() && (editando || qtd >= 1) && (d.origem !== "aspiracao" || d.aspiracaoId);
+  const ok = (d.doadora || "").trim() && (editando || qtd >= 1);
+  const usadoEmTE = editando && (ativos || []).some((p) => p && p.loteOrigemId === inicial.id);
+  const salvar = () => onConfirm({ ...d, aspiracaoId: d.origem === "aspiracao" ? d.aspiracaoId || "" : "" }, qtd);
+  const ORIGENS = [["aspiracao", "Produção própria — Aspiração"], ["compra", "Compra de embriões"], ["parceiro", "Recebimento de sócio ou parceiro"], ["outra", "Outra origem"], ...(d.origem === "existente" ? [["existente", "Estoque existente"]] : [])];
   return (
     <Folha eyebrow="Banco de Embriões" titulo={editando ? `Editar lote ${inicial.cod}` : "Entrada de embriões congelados"}
       sub={editando ? "A quantidade é alterada por movimentações (entrada, saída ou ajuste), para manter o histórico." : "Cria um lote. Para acrescentar embriões a um lote que já existe, use “+ Entrada” no próprio lote."} onClose={onClose}
-      rodape={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-gold" disabled={!ok} onClick={() => onConfirm(d, qtd)}>{editando ? "Salvar lote" : "Criar lote"}</button></>}>
-      {!editando && <div className="field wide"><span>Origem dos embriões</span><div className="segmented rp-seg-wrap">
-        {[["aspiracao", "Aspiração da SM"], ["compra", "Adquiridos"], ["existente", "Já estão no botijão"]].map(([k, l]) => (
-          <button key={k} type="button" className={`seg ${d.origem === k ? "on" : ""}`} onClick={() => set("origem", k)}>{l}</button>))}</div></div>}
-      {d.origem === "existente" && !editando && <div className="aviso">Para embriões que a SM já possui sem aspiração cadastrada. Entram como inventário inicial, e o histórico do lote começa nesta data.</div>}
+      rodape={<>
+        {editando && onExcluir && <button className="btn btn-ghost rp-exc" disabled={usadoEmTE} title={usadoEmTE ? "Este lote já foi usado em transferências e não pode ser excluído. Use “Arquivar”." : ""}
+          onClick={() => (confExc ? onExcluir(inicial) : setConfExc(true))}>{confExc ? "Confirmar exclusão" : "Excluir lote"}</button>}
+        <button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-gold" disabled={!ok} onClick={salvar}>{editando ? "Salvar lote" : "Criar lote"}</button></>}>
+      <div className="field wide"><span>Origem dos embriões</span><div className="segmented rp-seg-wrap">
+        {ORIGENS.map(([k, l]) => (
+          <button key={k} type="button" className={`seg ${d.origem === k ? "on" : ""}`} onClick={() => set("origem", k)}>{l}</button>))}</div></div>
+      {d.origem === "aspiracao" && !editando && <div className="aviso aviso-info">Doadora aspirada do plantel da SM. Escolha a doadora da lista para o lote aparecer na ficha dela. Se a aspiração já está cadastrada, vincule-a abaixo: os embriões não são contados duas vezes.</div>}
+      {d.origem === "existente" && <div className="aviso">Lote de embriões que a SM já possuía antes do sistema, sem aspiração cadastrada.</div>}
+      {confExc && <div className="aviso">O lote {inicial.cod} e todo o histórico de movimentações dele serão excluídos. Clique em “Confirmar exclusão” para continuar.</div>}
       <div className="grid">
-        {d.origem === "aspiracao" && !editando && <label className="field wide"><span>Aspiração de origem</span>
-          <select value={d.aspiracaoId} onChange={(e) => escolheAsp(e.target.value)}><option value="">Escolha a aspiração…</option>
-            {asps.map((a) => { const x = dadosAsp(a, ativos, embrioes); return <option key={a.id} value={a.id}>{a.nome}{a.dataAspiracao ? ` · ${dataBR(a.dataAspiracao)}` : ""}{x.E != null ? ` · ${x.disp} a transferir` : ""}</option>; })}</select></label>}
-        <label className="field"><span>Nome da doadora</span><AutoField value={d.doadora || ""} onChange={(v) => setNome("doadora", "regDoadora", v)} suggestions={animalNames} regMap={animalReg} placeholder="buscar animal" /></label>
+        <BuscaAnimal rotulo={d.origem === "aspiracao" ? "Doadora do plantel" : "Doadora"} animais={plantel} nome={d.doadora} id={d.doadoraId} placeholder="buscar por nome ou RGD"
+          onTexto={textoAnimal("doadora", "regDoadora", "doadoraId", plantel)} onEscolher={escolheAnimal("doadora", "regDoadora", "doadoraId")} onDesvincular={() => set("doadoraId", "")} />
         {campoReg("regDoadora", "RGD da doadora")}
-        <label className="field"><span>Nome do touro</span><AutoField value={d.pai || ""} onChange={(v) => setNome("pai", "regPai", v)} suggestions={animalNames} regMap={animalReg} placeholder="buscar animal" /></label>
+        <BuscaAnimal rotulo="Touro" animais={touros} nome={d.pai} id={d.touroId} placeholder="buscar por nome ou RGD"
+          onTexto={textoAnimal("pai", "regPai", "touroId", touros)} onEscolher={escolheAnimal("pai", "regPai", "touroId")} onDesvincular={() => set("touroId", "")} />
         {campoReg("regPai", "RGD do touro")}
+        {d.origem === "aspiracao" && <label className="field wide"><span>Aspiração cadastrada <em className="new-hint">· opcional</em></span>
+          <select value={d.aspiracaoId || ""} onChange={(e) => escolheAsp(e.target.value)}><option value="">Nenhuma (aspiração não cadastrada no sistema)</option>
+            {aspsOrd.map((a) => { const x = dadosAsp(a, ativos, embrioes); return <option key={a.id} value={a.id}>{a.nome}{a.dataAspiracao ? ` · ${dataBR(a.dataAspiracao)}` : ""}{x.E != null ? ` · ${x.disp} a transferir` : ""}</option>; })}</select></label>}
+        {d.origem === "parceiro" && <label className="field wide"><span>Recebido de</span><AutoField value={d.parceiro || ""} onChange={(v) => set("parceiro", v)} suggestions={socioNames} placeholder="sócio ou parceiro" /></label>}
+        {d.origem === "outra" && <label className="field wide"><span>Descreva a origem</span><input value={d.origemDesc || ""} onChange={(e) => set("origemDesc", e.target.value)} placeholder="ex.: doação, permuta" /></label>}
         {!editando && <label className="field"><span>Quantidade de embriões <em className="new-hint">· {qtd > 1 ? `1 lote com ${qtd} embriões` : "1 lote"}</em></span><Passo v={qtd} set={setQtd} max={999} rotulo="Quantidade de embriões" /></label>}
         <label className="field"><span>Data do congelamento</span><input type="date" value={d.dataCongelamento || ""} onChange={(e) => set("dataCongelamento", e.target.value)} /></label>
         <label className="field"><span>Local (botijão e caneca)</span><input value={d.local || ""} onChange={(e) => set("local", e.target.value)} placeholder="ex.: Botijão 2 · Caneca 4" /></label>
@@ -3274,6 +3352,80 @@ function FolhaLote({ inicial, ativos, embrioes, animalNames, animalReg, localNam
         <button type="button" className="btn btn-ghost btn-mini" style={{ alignSelf: "flex-start" }} onClick={() => setD((p) => ({ ...p, socios: [...p.socios, { id: uid(), nome: "", pct: 0 }] }))}>+ Adicionar sócio</button>
       </div>
     </Folha>
+  );
+}
+
+/* ficha da doadora: produção de embriões calculada só pelos lotes ligados a ela (doadoraId) */
+const lotesDaDoadora = (embrioes, id) => (id ? (embrioes || []).filter((l) => l && l.doadoraId === id) : []);
+function producaoDoadora(lotes) {
+  const t = { entrada: 0, uso: 0, venda: 0, terceiro: 0, descarte: 0, ajuste: 0, saldo: 0 };
+  (lotes || []).forEach((l) => { const r = resumoLote(l); ["entrada", "uso", "venda", "terceiro", "descarte", "ajuste"].forEach((k) => { t[k] += r[k]; }); if (!l.arquivado) t.saldo += r.saldo; });
+  return t;
+}
+function origemLoteTxt(l, ativos) {
+  const asp = l.aspiracaoId ? (ativos || []).find((x) => x && x.id === l.aspiracaoId) : null;
+  if (asp) return (asp.dataAspiracao || asp.dataAsp) ? `Aspiração de ${dataBR(asp.dataAspiracao || asp.dataAsp)}` : asp.nome;
+  if (l.origem === "aspiracao") return "Aspiração própria (não cadastrada no sistema)";
+  if (l.origem === "compra") return [l.compra && l.compra.leilao, l.compra && l.compra.valor ? fmt(num(l.compra.valor)) : ""].filter(Boolean).join(" · ") || "Compra";
+  if (l.origem === "parceiro") return `Recebido de ${l.parceiro || "sócio ou parceiro"}`;
+  if (l.origem === "outra") return l.origemDesc || "Outra origem";
+  return "Já existia antes do sistema";
+}
+function SecaoEmbrioesDoadora({ a, embrioes, ativos, onIrLote }) {
+  const lotes = lotesDaDoadora(embrioes, a.id);
+  if (!lotes.length) return null;
+  const P = producaoDoadora(lotes);
+  const cruz = {};
+  lotes.forEach((l) => {
+    const k = l.touroId || norm(l.pai || "").trim() || "—";
+    const c = cruz[k] || (cruz[k] = { touro: l.pai || "Touro não informado", reg: l.regPai || "", lotes: 0, emb: 0, saldo: 0 });
+    const r = resumoLote(l); c.lotes++; c.emb += r.entrada; if (!l.arquivado) c.saldo += r.saldo; if (!c.reg && l.regPai) c.reg = l.regPai;
+  });
+  const ev = [];
+  lotes.forEach((l) => {
+    let primeira = true;
+    [...(l.movs || [])].filter(Boolean).sort((x, y) => (x.data || "").localeCompare(y.data || "") || (x.criadoEm || "").localeCompare(y.criadoEm || "")).forEach((m) => {
+      ev.push({ l, m, primeira: primeira && m.tipo === "entrada" }); if (m.tipo === "entrada") primeira = false;
+    });
+  });
+  ev.sort((x, y) => (y.m.data || "").localeCompare(x.m.data || "") || (y.m.criadoEm || "").localeCompare(x.m.criadoEm || ""));
+  const vend = P.venda + P.terceiro;
+  return (
+    <div className="fsec rp-sec" id="fx-emb"><div className="fsec-h">Produção de Embriões</div>
+      <div className="rp-saldos rp-doa">
+        <div><span>Produzidos</span><b>{P.entrada}</b></div>
+        <div className="final"><span>Congelados disponíveis</span><b>{P.saldo}</b></div>
+        <div><span>Utilizados em TE</span><b>{P.uso}</b></div>
+        <div><span>Vendidos / terceiros</span><b>{vend}</b></div>
+        {P.descarte > 0 && <div><span>Descartados</span><b>{P.descarte}</b></div>}
+        {P.ajuste !== 0 && <div><span>Ajustes</span><b>{P.ajuste > 0 ? "+" : "−"} {Math.abs(P.ajuste)}</b></div>}
+      </div>
+      <p className="muted small">Calculado pelos {lotes.length} lote(s) do Banco de Embriões ligados a esta doadora.</p>
+      <div className="rp-sub">Lotes ({lotes.length})</div>
+      {lotes.map((l) => { const r = resumoLote(l); return (
+        <button type="button" className="rp-prow" key={l.id} onClick={() => onIrLote(l.id)}>
+          <span><b>Lote {l.cod}{l.pai ? ` · × ${l.pai}` : ""}</b><small>{[ORIGEM_CURTA[l.origem] || "Origem", l.dataCongelamento && `congelado em ${dataBR(l.dataCongelamento)}`, l.local, l.arquivado && "arquivado"].filter(Boolean).join(" · ")}</small></span>
+          <span className="rp-saldo"><b className={r.saldo ? "" : "zero"}>{r.saldo}</b><small>de {r.entrada + Math.max(0, r.ajuste)}</small></span>
+        </button>); })}
+      <div className="rp-sub">Cruzamentos</div>
+      <div className="rp-cruz">{Object.values(cruz).sort((x, y) => y.emb - x.emb).map((c) => (
+        <div key={c.touro + c.reg}><b>× {c.touro}</b>{c.reg && <small>{rgdTxt(c.reg)}</small>}<span>{c.lotes} lote(s) · {c.emb} embrião(ões) · {c.saldo} disponível(is)</span></div>))}</div>
+      <div className="rp-sub">Histórico de produção e movimentações</div>
+      <ol className="rp-tl">{ev.map(({ l, m, primeira }) => {
+        const q = Math.round(num(m.qtd)), s = sinalMov(m);
+        return (
+          <li key={l.id + m.id} className={primeira ? "prod" : s < 0 ? "saida" : ""}>
+            <div className="rp-tl-h"><b>{dataBR(m.data) || "Sem data"}</b> — {primeira ? (ORIGEM_CURTA[l.origem] || "Entrada") : m.tipo === "ajuste" ? `Ajuste de inventário (${s > 0 ? "+" : "−"})` : (MOV_TIPOS[m.tipo] || [m.tipo])[0]}<span className="muted"> · Lote {l.cod}</span></div>
+            {primeira ? (
+              <ul>
+                <li>Touro: {l.pai || "não informado"}{l.regPai ? ` (${rgdTxt(l.regPai)})` : ""}</li>
+                <li>Embriões congelados: {q}</li>
+                <li>Local de armazenamento: {[l.local, l.propriedade].filter(Boolean).join(" · ") || "não informado"}</li>
+                <li>Origem: {origemLoteTxt(l, ativos)}</li>
+              </ul>
+            ) : <div className="muted small">{m.tipo === "local" ? m.ref : `${s > 0 ? "+" : s < 0 ? "−" : ""}${q} embrião(ões)${m.ref ? ` · ${m.ref}` : ""}`}</div>}
+          </li>); })}</ol>
+    </div>
   );
 }
 
@@ -3419,12 +3571,13 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, embr
         </div>
 
         <nav className="ficha-nav" aria-label="Seções da ficha">
-          {[["fx-repro", "Reprodução"], ["fx-fin", "Financeiro"], ["fx-gen", "Genealogia"], ["fx-dados", "Dados"], ["fx-parc", "Parcelas"], ["fx-soc", "Sociedade"], ["fx-pes", "Pesagens"], ["fx-vend", "Vendas"], ["fx-hist", "Histórico"]].filter(([id]) => { if (id === "fx-repro") return a.tipo === "prenhez" || a.tipo === "aspiracao"; const proprio = a.tipo === "animal" && a.origem !== "genealogia"; if (id === "fx-pes" || id === "fx-vend") return proprio; if (id === "fx-soc") return proprio || (a.socios || []).length > 0; if (id === "fx-parc") return f.qtd > 0 || comprasAdic.length > 0; return true; }).map(([id, t]) => (
+          {[["fx-repro", "Reprodução"], ["fx-emb", "Embriões"], ["fx-fin", "Financeiro"], ["fx-gen", "Genealogia"], ["fx-dados", "Dados"], ["fx-parc", "Parcelas"], ["fx-soc", "Sociedade"], ["fx-pes", "Pesagens"], ["fx-vend", "Vendas"], ["fx-hist", "Histórico"]].filter(([id]) => { if (id === "fx-repro") return a.tipo === "prenhez" || a.tipo === "aspiracao"; if (id === "fx-emb") return a.tipo === "animal" && lotesDaDoadora(embrioes, a.id).length > 0; const proprio = a.tipo === "animal" && a.origem !== "genealogia"; if (id === "fx-pes" || id === "fx-vend") return proprio; if (id === "fx-soc") return proprio || (a.socios || []).length > 0; if (id === "fx-parc") return f.qtd > 0 || comprasAdic.length > 0; return true; }).map(([id, t]) => (
             <button key={id} type="button" onClick={() => { const el = document.getElementById(id); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }}>{t}</button>
           ))}
         </nav>
         <div className="modal-body">
           {(a.tipo === "prenhez" || a.tipo === "aspiracao") && a.origem !== "genealogia" && <SecaoRepro a={a} ativos={ativos} embrioes={embrioes} onAbrir={onAbrir} onIrLote={onIrLote || (() => {})} />}
+          {a.tipo === "animal" && <SecaoEmbrioesDoadora a={a} embrioes={embrioes} ativos={ativos} onIrLote={onIrLote || (() => {})} />}
           <div className="fin-cards" id="fx-fin">
             <KPI label="Valor pago pela cota" value={fmt(f.cota)} sub={`${f.pct || 0}% comprado`} />
             <KPI label="Valor total estimado" value={fmt(f.totalEstimado)} tone="gold" />
@@ -5115,7 +5268,9 @@ export default function App() {
   const [aberto, setAberto] = useState(null);
   const [analise, setAnalise] = useState(null);   // gráfico do Painel aberto em análise detalhada
   const [repro, setRepro] = useState(null);       // janela de ação reprodutiva aberta (transferência, diagnóstico, nascimento…)
-  const [loteSel, setLoteSel] = useState(null);   // lote selecionado no Banco de Embriões
+  const [loteSel, setLoteSel] = useState(null);
+  const [bancoDoadora, setBancoDoadora] = useState(null);   // Banco de Embriões filtrado pela doadora (vindo do card do animal)
+  useEffect(() => { if (view !== "embrioes") setBancoDoadora(null); }, [view]);   // lote selecionado no Banco de Embriões
   const [toast, setToast] = useState("");
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(""), 4500); return () => clearTimeout(t); }, [toast]);
   const [form, setForm] = useState(null);
@@ -5642,7 +5797,8 @@ export default function App() {
       setDb((p) => {
         const cod = proxCodLote(p.embrioes);
         const A = limpo.origem === "aspiracao" ? (p.ativos || []).find((x) => x && x.id === limpo.aspiracaoId) : null;
-        const ref = A ? `Congelamento da aspiração (${A.nome})` : limpo.origem === "compra" ? `Compra${limpo.compra && limpo.compra.leilao ? ` · ${limpo.compra.leilao}` : ""}` : "Estoque existente (sem aspiração no sistema) · inventário inicial";
+        const ref = A ? `Congelamento da aspiração (${A.nome})` : limpo.origem === "aspiracao" ? "Produção própria · aspiração" : limpo.origem === "compra" ? `Compra${limpo.compra && limpo.compra.leilao ? ` · ${limpo.compra.leilao}` : ""}`
+          : limpo.origem === "parceiro" ? `Recebido de ${limpo.parceiro || "sócio ou parceiro"}` : limpo.origem === "outra" ? (limpo.origemDesc || "Outra origem") : "Estoque existente (sem aspiração no sistema) · inventário inicial";
         const lote = { ...limpo, id: novoId, cod, aspiracaoId: A ? A.id : "", arquivado: false, criadoEm: agora, criadoPor: quem,
           movs: [{ id: uid(), data: limpo.dataCongelamento || today(), tipo: "entrada", qtd, ref, responsavel: quem, criadoEm: agora }] };
         const socios = [...(p.socios || [])];
@@ -5677,6 +5833,25 @@ export default function App() {
     else if (acao === "arquivar") { flushNext.current = true; setDb((p) => ({ ...p, embrioes: (p.embrioes || []).map((l) => (l.id === lote.id ? { ...l, arquivado: !l.arquivado } : l)) })); setToast(lote.arquivado ? "Lote desarquivado." : "Lote arquivado. Ele continua em “Arquivados”."); }
   };
   const irLote = (id) => { setAberto(null); setLoteSel(id); setView("embrioes"); };
+  // saldo dos lotes ligados a cada doadora (para o card do animal)
+  const embDoadora = {};
+  embrioes.forEach((l) => { if (!l || !l.doadoraId) return; const e = embDoadora[l.doadoraId] || (embDoadora[l.doadoraId] = { saldo: 0, lotes: [] }); e.lotes.push(l); if (!l.arquivado) e.saldo += saldoLote(l); });
+  const verEmbrioesDoadora = (a) => {
+    const ls = (embDoadora[a.id] || { lotes: [] }).lotes;
+    const prim = ls.find((l) => !l.arquivado && saldoLote(l) > 0) || ls[0];
+    setAberto(null); setView("embrioes"); setLoteSel(prim ? prim.id : null);
+    setTimeout(() => setBancoDoadora({ id: a.id, nome: a.nome }), 0);
+  };
+  const excluirLote = (lote) => {
+    if ((db.ativos || []).some((p) => p && p.loteOrigemId === lote.id)) return;   // já usado em TE: só arquivar
+    flushNext.current = true;
+    const quem = quemReg();
+    setDb((p) => ({ ...p,
+      embrioes: (p.embrioes || []).filter((l) => l.id !== lote.id),
+      ativos: lote.aspiracaoId ? (p.ativos || []).map((x) => (x && x.id === lote.aspiracaoId ? { ...x, historico: [...(x.historico || []), { id: uid(), data: today(), tipo: "Banco de Embriões", desc: `Lote ${lote.cod} excluído do Banco de Embriões`, responsavel: quem }] } : x)) : p.ativos }));
+    setRepro(null); setLoteSel(null);
+    setToast(`Lote ${lote.cod} excluído.`);
+  };
 
   // excluir = mover para a LIXEIRA (exclusão lógica). O animal sai das listagens,
   // mas é guardado inteiro (genealogia, sociedade, participação, compras, vendas,
@@ -6157,7 +6332,7 @@ export default function App() {
 
         {view === "prenhez" && <PaginaPrenhezes lista={visiveis} onAbrir={setAberto} />}
         {view === "aspiracao" && <PaginaAspiracoes lista={visiveis} ativos={ativos} embrioes={embrioes} onAbrir={setAberto} />}
-        {view === "embrioes" && <PaginaBanco embrioes={embrioes} ativos={ativos} busca={busca} sel={loteSel} setSel={setLoteSel} onAcao={acaoBanco} onAbrir={setAberto} />}
+        {view === "embrioes" && <PaginaBanco embrioes={embrioes} ativos={ativos} busca={busca} sel={loteSel} setSel={setLoteSel} onAcao={acaoBanco} onAbrir={setAberto} filtroDoadora={bancoDoadora} onLimparDoadora={() => setBancoDoadora(null)} />}
         {view === "animal" && (() => {
           // conta ativos/inativos (só animais com cadastro próprio)
           const baseAnim = view === "animal" ? visiveis.filter((a) => a.tipo === "animal" && !a.arquivada && (showAncestrais || a.origem !== "genealogia")) : [];
@@ -6204,6 +6379,10 @@ export default function App() {
                       )}
                       {ehAnimal && a.origem !== "genealogia" && (
                         <div className="asset-part"><span>Participação SM</span><span className="ac-bar"><i style={{ width: `${Math.max(0, Math.min(100, num(part)))}%` }} /></span><b className={part <= 0 ? "neg" : ""}>{String(part).replace(".", ",")}%</b></div>
+                      )}
+                      {ehAnimal && embDoadora[a.id] && (
+                        <button type="button" className="ac-emb" onClick={(e) => { e.stopPropagation(); verEmbrioesDoadora(a); }} onKeyDown={(e) => e.stopPropagation()} title="Ver os lotes no Banco de Embriões">
+                          <i aria-hidden="true" />Embriões congelados: <b>{embDoadora[a.id].saldo}</b> {embDoadora[a.id].saldo === 1 ? "disponível" : "disponíveis"}</button>
                       )}
                       <div className="asset-fin">
                         <div><small>{ehAnimal ? "Valor patrimonial" : "Valor"}</small><MoneyBig v={f.totalEstimado || f.cota} money={money} /></div>
@@ -6467,7 +6646,7 @@ export default function App() {
         onFull={() => { const a = repro.alvo; setRepro(null); nascer(a); }} onClose={() => setRepro(null)} />}
       {repro && repro.tipo === "mov" && <FolhaMovLote lote={embrioes.find((l) => l.id === repro.lote.id) || repro.lote} tipoInicial={repro.mov} onConfirm={(v) => movimentarLote(repro.lote, v)} onClose={() => setRepro(null)} />}
       {repro && repro.tipo === "lote" && <FolhaLote inicial={repro.lote ? (embrioes.find((l) => l.id === repro.lote.id) || repro.lote) : null} ativos={ativos} embrioes={embrioes} animalNames={animalNames} animalReg={animalReg} localNames={localNames} socioNames={socioNames} onQuickSocio={quickSocio}
-        onConfirm={salvarLote} onClose={() => setRepro(null)} />}
+        onConfirm={salvarLote} onExcluir={isAdmin ? excluirLote : null} onClose={() => setRepro(null)} />}
       {toast && <div className="rp-toast" role="status"><span>{toast}</span><button type="button" onClick={() => setToast("")}>Fechar</button></div>}
 
       {navOpen && <div className="scrim" onClick={() => setNavOpen(false)} />}
@@ -7250,6 +7429,29 @@ a{color:var(--em)}
 .rp-chip.o-compra{background:var(--champ-l);color:var(--champ-d)}
 .rp-chip.o-aspiracao{background:var(--em-l);color:var(--em)}
 .rp-chip.o-existente{background:var(--info-l);color:var(--info)}
+.rp-chip.o-parceiro{background:var(--info-l);color:var(--info)}
+.rp-chip.o-outra{background:var(--bg2);color:var(--muted)}
+.rp-chip-x{border:0;background:transparent;color:inherit;font:inherit;font-size:14px;line-height:1;padding:0 0 0 4px;cursor:pointer}
+.rp-vinc{display:inline-flex;align-items:center;gap:6px;margin-top:6px;font-size:12px;font-weight:600;color:var(--em)}
+.rp-vinc button{border:0;background:transparent;color:var(--muted);font:inherit;font-weight:500;text-decoration:underline;cursor:pointer;padding:0}
+.rp-exc{margin-right:auto;color:var(--neg,#B4463A)}
+.ac-emb{display:flex;align-items:center;gap:7px;width:100%;margin-top:2px;padding:6px 10px;border:1px solid rgba(23,107,70,.16);border-radius:10px;background:rgba(23,107,70,.05);color:var(--muted);font:inherit;font-size:12.5px;text-align:left;cursor:pointer;transition:background .15s,border-color .15s}
+.ac-emb:hover{background:rgba(23,107,70,.09);border-color:rgba(23,107,70,.3)}
+.ac-emb b{color:var(--em);font-weight:700}
+.ac-emb i{width:7px;height:7px;border-radius:50%;background:var(--em);box-shadow:0 0 0 3px rgba(23,107,70,.14);flex:none}
+.rp-doa{grid-template-columns:repeat(auto-fit,minmax(130px,1fr))}
+.rp-cruz{display:grid;gap:6px}
+.rp-cruz>div{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;padding:9px 12px;border:1px solid var(--line);border-radius:var(--r2);background:var(--surf)}
+.rp-cruz small{font-size:11.5px;color:var(--muted)}
+.rp-cruz span{margin-left:auto;font-size:12.5px;color:var(--muted)}
+.rp-tl{list-style:none;margin:0;padding:0 0 0 16px;border-left:2px solid var(--line)}
+.rp-tl>li{position:relative;padding:0 0 14px 4px}
+.rp-tl>li::before{content:"";position:absolute;left:-23px;top:5px;width:10px;height:10px;border-radius:50%;background:var(--surf);border:2px solid #7F9BBF}
+.rp-tl>li.prod::before{border-color:var(--em);background:var(--em)}
+.rp-tl>li.saida::before{border-color:#C9AE74}
+.rp-tl-h{font-size:13.5px}
+.rp-tl ul{margin:4px 0 0;padding-left:18px;font-size:12.5px;color:var(--muted)}
+.rp-tl ul li{margin:1px 0}
 .rp-gest{display:flex;flex-direction:column;gap:5px}
 .rp-gest-t{display:flex;justify-content:space-between;gap:8px;font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
 .rp-gest-t b{color:var(--txt);font-weight:600}
