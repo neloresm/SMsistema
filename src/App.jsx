@@ -495,6 +495,7 @@ function diasAteParto(a) {
 // a prenhez ainda está "em andamento" (não pariu, não perdeu, não concluiu/vendeu)?
 function prenhezAtiva(a) {
   if (!a || a.tipo !== "prenhez" || a.arquivada) return false;
+  const g = statusPrenhez(a).grupo; if (g === "concluido" || g === "cancelado") return false;
   const s = lc(a.status);
   if (s.includes("perda") || s.includes("perdida") || s.includes("vendida") || s.includes("concluída") || s.includes("concluida") || s.includes("parida")) return false;
   if (s.includes("não confirmada") || s.includes("nao confirmada") || a.diagnostico === "negativo") return false;   // diagnóstico negativo
@@ -516,6 +517,7 @@ function alertaParto(a) {
 // aspiração em andamento (não finalizada/cancelada)
 function aspAtiva(a) {
   if (!a || a.tipo !== "aspiracao" || a.arquivada) return false;
+  if (a.statusGrupo === "concluido" || a.statusGrupo === "cancelado" || a.concluidaManual) return false;
   const s = lc(a.status);
   return !(s.includes("finalizada") || s.includes("cancelada") || s.includes("concluída") || s.includes("concluida"));
 }
@@ -539,7 +541,7 @@ function faseReprod(p) {
   if (s.includes("não confirmada") || s.includes("nao confirmada") || p.diagnostico === "negativo") return { k: "enc", txt: "Não confirmada", tone: "red" };
   if (s.includes("nascimento informado")) return { k: "parto", txt: "Nascimento a cadastrar", tone: "amber" };
   const conf = p.diagnostico === "positivo" || !!p.dataConfirmacao || ["confirmada", "gesta", "próxima", "proxima", "ultrapassado"].some((x) => s.includes(x));
-  if (!conf) return { k: "diag", txt: "Aguardando diagnóstico", tone: "info" };
+  if (!conf) return { k: "diag", txt: p.dataTE && somaDias(p.dataTE, DIAG_DIAS) >= today() ? "Aguardando diagnóstico" : "Diagnóstico não informado", tone: "info" };
   const d = diasAteParto(p);
   if (d == null) return { k: "conf", txt: "Confirmada", tone: "green" };
   if (d < 0) return { k: "parto", txt: `Parto atrasado ${-d} dia(s)`, tone: "red", d };
@@ -655,6 +657,7 @@ function dadosAsp(a, ativos, embrioes) {
   const resto = [disp ? `${disp} embrião(ões) a transferir` : "", saldoBanco ? `${saldoBanco} no Banco` : ""].filter(Boolean).join(" · ");
   let st, prox, grupo;
   if (sa.includes("cancel")) { st = ["Cancelada", "red"]; prox = "Registro cancelado"; grupo = "cancelado"; }
+  else if (a.concluidaManual) { st = ["Concluída", "green"]; grupo = "concluido"; prox = [`Concluída manualmente${a.concluidaManual.data ? ` em ${dataBR(a.concluidaManual.data)}` : ""}`, saldoBanco ? `${saldoBanco} embrião(ões) continuam no Banco` : ""].filter(Boolean).join(" · "); }
   else if (gest || (nascidas && (aguardDiag || disp > 0 || saldoBanco > 0 || E == null)) || (manual && conf > 0)) { st = ["Prenhez confirmada", "green"]; grupo = "andamento"; prox = [gest ? `${gest} prenhez(es) em gestação` : "", nasc ? `${nasc} nascimento(s)` : "", aguardDiag ? `${aguardDiag} aguardando diagnóstico` : "", resto, !gest && !aguardDiag && E == null ? "informe os embriões produzidos para concluir" : ""].filter(Boolean).join(" · "); }
   else if (aguardDiag || (manual && transf > 0)) { st = ["Transferência realizada", "green"]; grupo = "andamento"; prox = [aguardDiag ? `${aguardDiag} receptora(s) aguardando diagnóstico` : "", resto].filter(Boolean).join(" · "); }
   else if (disp > 0) { st = ["Embriões produzidos", "gold"]; grupo = "andamento"; prox = `Próxima ação: gerar prenhez (${disp} embrião(ões) a transferir)${saldoBanco ? ` · ${saldoBanco} no Banco` : ""}`; }
@@ -2818,8 +2821,158 @@ function BarraGestacao({ p }) {
   );
 }
 
+/* ---------- vínculos entre registros reprodutivos (inclusive retroativos) ---------- */
+const mesmoNome = (x, y) => !!x && !!y && chaveNome(x) === chaveNome(y);
+const sociedadeTxt = (l) => (l || []).filter((s) => s && s.nome).map((s) => `${s.nome}${s.pct ? ` ${s.pct}%` : ""}`).join(" · ");
+// confere, antes de ligar um animal já cadastrado a uma prenhez, o que impede e o que merece atenção
+function conferirVinculoAnimal(p, an, ativos) {
+  const bloq = [], avisos = [];
+  if (!p || !an) return { bloq, avisos };
+  if (an.origemId === p.id || (p.animaisIds || []).includes(an.id)) bloq.push(`${an.nome} já está ligado a esta prenhez.`);
+  else if (an.origemId) { const o = (ativos || []).find((x) => x && x.id === an.origemId); bloq.push(`${an.nome} já consta como nascido de ${o ? rotuloReprod(o) : an.origemLabel || "outro registro"}. Desfaça esse vínculo na ficha do animal antes de ligar a outra prenhez.`); }
+  if (qtdRest(p) < 1) bloq.push("Esta prenhez já tem todos os nascimentos registrados.");
+  const pai = p.pai || p.touro;
+  if (an.mae && p.doadora && !mesmoNome(an.mae, p.doadora)) avisos.push(`Mãe na ficha do animal: ${an.mae} · doadora da prenhez: ${p.doadora}.`);
+  if (an.pai && pai && !mesmoNome(an.pai, pai)) avisos.push(`Pai na ficha do animal: ${an.pai} · touro da prenhez: ${pai}.`);
+  if (an.sexo && p.sexagem && an.sexo !== p.sexagem) avisos.push(`Sexo do animal (${an.sexo}) diferente da sexagem da prenhez (${p.sexagem}).`);
+  if (an.nascimento && p.dataTE && an.nascimento < p.dataTE) avisos.push(`O animal nasceu em ${dataBR(an.nascimento)}, antes da TE desta prenhez (${dataBR(p.dataTE)}).`);
+  if (an.nascimento && p.dataParto && an.nascimento !== p.dataParto) avisos.push(`Data de parto na prenhez (${dataBR(p.dataParto)}) diferente do nascimento do animal (${dataBR(an.nascimento)}).`);
+  return { bloq, avisos };
+}
+// conferência e opções do vínculo animal ↔ prenhez (o cadastro do animal só muda no que for marcado)
+function PainelVinculoAnimal({ p, an, ativos, opc, setOpc }) {
+  if (!p || !an) return null;
+  const c = conferirVinculoAnimal(p, an, ativos);
+  const pai = p.pai || p.touro;
+  const marca = (k) => (e) => setOpc((o) => ({ ...o, [k]: e.target.checked }));
+  const socP = sociedadeTxt(p.socios), socA = sociedadeTxt(an.socios);
+  const pctP = participacaoAtual(p), pctA = participacaoAtual(an);
+  return (
+    <div className="rp-vincbox">
+      <div className="rp-vinc-res">
+        <div><span>Animal</span><b>{an.nome}</b><em>{[an.registro && rgdTxt(an.registro), an.sexo, an.nascimento && `nasc. ${dataBR(an.nascimento)}`, an.mae && `mãe ${an.mae}`, an.pai && `pai ${an.pai}`].filter(Boolean).join(" · ") || "sem dados de nascimento"}</em></div>
+        <div><span>Prenhez</span><b>{p.doadora || "Doadora não informada"}{pai ? ` × ${pai}` : ""}</b><em>{[p.receptora && `receptora ${p.receptora}`, p.dataTE && `TE ${dataBR(p.dataTE)}`, p.ondeEsta].filter(Boolean).join(" · ") || "—"}</em></div>
+      </div>
+      {c.bloq.length > 0 && <div className="rp-conflito" role="alert"><b>Não é possível vincular</b>{c.bloq.map((t, i) => <div key={i} className="rp-conf-i"><span>{t}</span></div>)}</div>}
+      {!c.bloq.length && c.avisos.length > 0 && <div className="rp-conflito" role="alert"><b>Confira antes de vincular</b>{c.avisos.map((t, i) => <div key={i} className="rp-conf-i"><span>{t}</span></div>)}
+        <label className="rp-todos"><input type="checkbox" checked={!!opc.conferi} onChange={marca("conferi")} /> Conferi: este animal nasceu desta prenhez</label></div>}
+      {!c.bloq.length && <>
+        {(!an.mae && p.doadora) || (!an.pai && pai) ? <label className="rp-todos"><input type="checkbox" checked={!!opc.completarGen} onChange={marca("completarGen")} /> Preencher a genealogia que está vazia no animal com a da prenhez</label> : null}
+        {!socA && socP ? <label className="rp-todos"><input type="checkbox" checked={!!opc.copiarSocios} onChange={marca("copiarSocios")} /> Copiar a sociedade da prenhez para o animal ({socP})</label>
+          : socA && socP && socA !== socP ? <p className="muted small">Sociedade diferente — animal: {socA} · prenhez: {socP}. O cadastro do animal é mantido; ajuste na ficha se precisar.</p> : null}
+        {pctA <= 0 && pctP > 0 ? <label className="rp-todos"><input type="checkbox" checked={!!opc.herdarPct} onChange={marca("herdarPct")} /> Registrar no animal a participação da SM na prenhez ({pctTxt(pctP)}) — sem lançar valor</label>
+          : pctA > 0 && pctP > 0 && pctA !== pctP ? <p className="muted small">Participação da SM — animal: {pctTxt(pctA)} · prenhez: {pctTxt(pctP)}. O valor do animal é mantido.</p> : null}
+        <p className="muted small">O animal mantém o cadastro dele (valores, parcelas e sociedade só mudam no que você marcar). A compra e as parcelas continuam na ficha da prenhez — nada é lançado duas vezes.</p>
+      </>}
+    </div>
+  );
+}
+// lista pesquisável de prenhezes (para ligar a um animal ou a uma aspiração)
+function ListaPrenhezes({ itens, sel, setSel, q, setQ, vazio }) {
+  return (
+    <>
+      <label className="field wide"><span>Buscar prenhez</span><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="doadora, touro ou receptora" /></label>
+      <div className="rp-opcoes" role="listbox" aria-label="Prenhezes">
+        {itens.map(({ x, s }) => { const sp = statusPrenhez(x); return (
+          <button type="button" role="option" aria-selected={sel === x.id} key={x.id} className={`rp-opcao ${sel === x.id ? "on" : ""}`} onClick={() => setSel(x.id)}>
+            <b>{x.doadora || "Doadora não informada"}{x.pai || x.touro ? ` × ${x.pai || x.touro}` : ""}</b>
+            <span>{[x.receptora ? `Receptora ${x.receptora}` : "Receptora não informada", x.dataTE && `TE ${dataBR(x.dataTE)}`, x.ondeEsta, sp.txt].filter(Boolean).join(" · ")}</span>
+            {s >= 2 && <i className="rp-compat">mesma doadora{s >= 3 ? " e touro" : ""}</i>}
+          </button>); })}
+        {itens.length === 0 && <p className="muted small">{vazio}</p>}
+      </div>
+    </>
+  );
+}
+/* animal → prenhez de origem (vínculo retroativo, sem recriar o animal) */
+function FolhaVincularOrigem({ an, ativos, onConfirm, onClose }) {
+  const [q, setQ] = useState(""), [pid, setPid] = useState(""), [opc, setOpc] = useState({});
+  const itens = (ativos || []).filter((x) => x && x.tipo === "prenhez" && x.origem !== "genealogia" && qtdRest(x) > 0 && !faseReprod(x).cancel)
+    .map((x) => ({ x, s: (mesmoNome(x.doadora, an.mae) ? 2 : 0) + (mesmoNome(x.pai || x.touro, an.pai) ? 1 : 0) }))
+    .filter(({ x }) => !q.trim() || chaveNome(`${x.doadora || ""} ${x.pai || x.touro || ""} ${x.receptora || ""} ${x.nome || ""}`).includes(chaveNome(q)))
+    .sort((a, b) => b.s - a.s || (b.x.dataTE || "").localeCompare(a.x.dataTE || "")).slice(0, 40);
+  const p = pid ? (ativos || []).find((x) => x && x.id === pid) : null;
+  const c = conferirVinculoAnimal(p, an, ativos);
+  const pode = p && !c.bloq.length && (!c.avisos.length || opc.conferi);
+  return (
+    <Folha eyebrow={an.nome} titulo="Vincular à prenhez de origem" sub="Informe de qual prenhez este animal nasceu. O cadastro do animal é mantido; a prenhez é concluída e passa a mostrar este nascimento." onClose={onClose}
+      rodape={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-gold" disabled={!pode} onClick={() => onConfirm({ pid, anId: an.id, ...opc })}>Vincular</button></>}>
+      <ListaPrenhezes itens={itens} sel={pid} setSel={(v) => { setPid(v); setOpc({}); }} q={q} setQ={setQ} vazio="Nenhuma prenhez aguardando nascimento encontrada." />
+      <PainelVinculoAnimal p={p} an={an} ativos={ativos} opc={opc} setOpc={setOpc} />
+    </Folha>
+  );
+}
+/* aspiração → prenhez já cadastrada (vínculo retroativo) */
+function FolhaVincularPrenhez({ asp, ativos, onConfirm, onClose }) {
+  const [q, setQ] = useState(""), [pid, setPid] = useState(""), [ok, setOk] = useState(false);
+  const pai = asp.pai || asp.touro, dA = asp.dataAspiracao || asp.dataAsp || "";
+  const itens = (ativos || []).filter((x) => x && x.tipo === "prenhez" && x.origem !== "genealogia" && !origemDe(x))
+    .map((x) => ({ x, s: (mesmoNome(x.doadora, asp.doadora) ? 2 : 0) + (mesmoNome(x.pai || x.touro, pai) ? 1 : 0) }))
+    .filter(({ x }) => !q.trim() || chaveNome(`${x.doadora || ""} ${x.pai || x.touro || ""} ${x.receptora || ""} ${x.nome || ""}`).includes(chaveNome(q)))
+    .sort((a, b) => b.s - a.s || (b.x.dataTE || "").localeCompare(a.x.dataTE || "")).slice(0, 40);
+  const p = pid ? (ativos || []).find((x) => x && x.id === pid) : null;
+  const avisos = !p ? [] : [
+    p.doadora && asp.doadora && !mesmoNome(p.doadora, asp.doadora) ? `Doadora da prenhez: ${p.doadora} · da aspiração: ${asp.doadora}.` : "",
+    (p.pai || p.touro) && pai && !mesmoNome(p.pai || p.touro, pai) ? `Touro da prenhez: ${p.pai || p.touro} · da aspiração: ${pai}.` : "",
+    p.dataTE && dA && p.dataTE < dA ? `A TE (${dataBR(p.dataTE)}) é anterior à aspiração (${dataBR(dA)}).` : "",
+  ].filter(Boolean);
+  const pode = p && (!avisos.length || ok);
+  return (
+    <Folha eyebrow={asp.doadora || asp.nome} titulo="Vincular prenhez existente" sub="Liga a esta aspiração uma prenhez que já está cadastrada. Nenhum registro é criado ou duplicado; valores e parcelas continuam onde estão." onClose={onClose}
+      rodape={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-gold" disabled={!pode} onClick={() => onConfirm({ pid, aspId: asp.id })}>Vincular</button></>}>
+      <ListaPrenhezes itens={itens} sel={pid} setSel={(v) => { setPid(v); setOk(false); }} q={q} setQ={setQ} vazio="Nenhuma prenhez sem aspiração de origem encontrada." />
+      {avisos.length > 0 && <div className="rp-conflito" role="alert"><b>Confira antes de vincular</b>{avisos.map((t, i) => <div key={i} className="rp-conf-i"><span>{t}</span></div>)}
+        <label className="rp-todos"><input type="checkbox" checked={ok} onChange={(e) => setOk(e.target.checked)} /> Conferi: esta prenhez veio desta aspiração</label></div>}
+    </Folha>
+  );
+}
+/* ficha do animal: origem reprodutiva (aspiração → embrião → prenhez → animal) e investimento de origem */
+const InfoLink = ({ l, v, onClick }) => (v ? <div className="info"><span>{l}</span>{onClick ? <button type="button" className="rp-infolink" onClick={onClick}>{v} ↗</button> : <b>{v}</b>}</div> : null);
+function SecaoOrigem({ a, ativos, embrioes, onAbrir, onIrLote, onAcao }) {
+  const org = a.origemId ? (ativos || []).find((x) => x && x.id === a.origemId) : null;
+  if (!org) return (
+    <div className="fsec rp-sec rp-orig" id="fx-origem"><div className="fsec-h">Origem reprodutiva</div>
+      <p className="muted small">{a.origemLabel ? `Origem informada: ${a.origemLabel} (registro não encontrado no sistema). ` : "Não ligada a uma prenhez do sistema. "}
+        <button type="button" className="rp-link" onClick={() => onAcao("vincOrigem", a)}>Vincular à prenhez de origem</button></p>
+    </div>);
+  const pren = org.tipo === "prenhez" ? org : null;
+  const asp = pren ? (origemDe(pren) ? (ativos || []).find((x) => x && x.id === origemDe(pren)) : null) : org.tipo === "aspiracao" ? org : null;
+  const emb = pren && pren.embriaoId ? (embrioes || []).find((u) => u && u.id === pren.embriaoId) : null;
+  const acha = (nm) => (nm ? (ativos || []).find((x) => x && x.tipo === "animal" && mesmoNome(x.nome, nm) && x.origem !== "genealogia") || (ativos || []).find((x) => x && x.tipo === "animal" && mesmoNome(x.nome, nm)) : null);
+  const mae = a.mae || (pren || asp || {}).doadora, pai = a.pai || (pren || asp || {}).pai || (pren || asp || {}).touro;
+  const doa = acha(mae), tou = acha(pai);
+  const fin = pren ? finance(pren) : asp ? finance(asp) : null;
+  const src = pren || asp;
+  const socS = sociedadeTxt(src && src.socios), socA = sociedadeTxt(a.socios);
+  return (
+    <div className="fsec rp-sec rp-orig" id="fx-origem"><div className="fsec-h">Origem reprodutiva</div>
+      <div className="info-grid">
+        <InfoLink l="Doadora" v={mae} onClick={doa ? () => onAbrir(doa) : null} />
+        <InfoLink l="Touro" v={pai} onClick={tou ? () => onAbrir(tou) : null} />
+        <InfoLink l="Aspiração de origem" v={asp ? `${(asp.dataAspiracao || asp.dataAsp) ? dataBR(asp.dataAspiracao || asp.dataAsp) + " · " : ""}${asp.doadora || asp.nome}` : ""} onClick={asp ? () => onAbrir(asp) : null} />
+        <InfoLink l="Embrião" v={emb ? `${emb.cod} (congelado)` : pren && pren.loteOrigemId ? "do Banco de Embriões" : ""} onClick={emb ? () => onIrLote(emb.id) : null} />
+        <InfoLink l="Prenhez de origem" v={pren ? `${pren.receptora ? `Receptora ${pren.receptora}` : "Receptora não informada"}${pren.dataTE ? ` · TE ${dataBR(pren.dataTE)}` : ""}` : ""} onClick={pren ? () => onAbrir(pren) : null} />
+        <InfoLink l="Data de nascimento" v={a.nascimento ? dataBR(a.nascimento) : ""} />
+        <InfoLink l="Criatório responsável" v={a.ondeEsta} />
+      </div>
+      {src && (fin.cota > 0 || src.leilao || socS || participacaoAtual(src) > 0) && <>
+        <div className="rp-sub">Investimento de origem <em className="muted small">· registrado na ficha {pren ? "da prenhez" : "da aspiração"}</em></div>
+        <div className="info-grid">
+          <InfoR l="Valor da compra" v={fin.cota > 0 ? fmt(fin.cota) : ""} />
+          <InfoR l="Pago / em aberto" v={fin.cota > 0 ? `${fmt(fin.pago || 0)} · ${fmt(Math.max(0, fin.aberto || 0))}` : ""} />
+          <InfoR l="Participação da SM" v={participacaoAtual(src) > 0 ? pctTxt(participacaoAtual(src)) : ""} />
+          <InfoR l="Leilão de origem" v={src.leilao} />
+          <InfoR l="Sociedade" v={socS} />
+        </div>
+        <p className="muted small">Compra e parcelas ficam na ficha {pren ? "da prenhez" : "da aspiração"} e não são lançadas de novo no animal.{socA && socS && socA !== socS ? ` A sociedade do animal (${socA}) é diferente da registrada na origem.` : ""}</p>
+      </>}
+      <button type="button" className="rp-link" onClick={() => onAcao("desvOrigem", a)}>Desfazer vínculo de origem</button>
+    </div>
+  );
+}
+
 /* seção "Reprodução" dentro da ficha da prenhez / aspiração */
-function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote }) {
+function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote, onAcao }) {
   if (a.tipo === "prenhez") {
     const f = faseReprod(a);
     const asp = origemDe(a) ? (ativos || []).find((x) => x && x.id === origemDe(a)) : null;
@@ -2837,7 +2990,7 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote }) {
     const prevSug = !a.previsaoParto && a.dataTE ? somaDias(a.dataTE, PARTO_DIAS) : "";
     const diagTxt = a.diagnostico === "positivo" || a.dataConfirmacao ? `positivo${a.dataConfirmacao ? " · " + dataBR(a.dataConfirmacao) : ""}`
       : a.diagnostico === "negativo" ? `negativo${a.dataDiagnostico ? " · " + dataBR(a.dataDiagnostico) : ""}`
-      : a.dataTE ? `pendente · sugerido ${dataBR(somaDias(a.dataTE, DIAG_DIAS))}` : "pendente";
+      : a.dataTE ? `não informado (opcional) · sugerido ${dataBR(somaDias(a.dataTE, DIAG_DIAS))}` : "não informado (opcional)";
     return (
       <div className="fsec rp-sec" id="fx-repro"><div className="fsec-h">Reprodução</div>
         <div className="rp-linha">{(() => { const sp = statusPrenhez(a); return <Badge tone={sp.tone}>{sp.destaque === "ok" ? "✓ " : ""}{sp.txt}</Badge>; })()}{qtdTotal(a) > 1 && <Badge tone="gold">Ficha com {qtdTotal(a)} prenhezes · restam {qtdRest(a)}</Badge>}</div>
@@ -2853,6 +3006,10 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote }) {
           <InfoR l="Perda gestacional" v={a.perda ? `${dataBR(a.perda.data)} · ${a.perda.motivo}` : ""} />
         </div>
         {(f.k === "conf" || f.k === "parto") && <BarraGestacao p={a} />}
+        {onAcao && <div className="rp-acoes-l">
+          {qtdRest(a) > 0 && !f.cancel && <button type="button" className="rp-link" onClick={() => onAcao("nascVinc", a)}>Vincular animal já cadastrado</button>}
+          {asp && <button type="button" className="rp-link" onClick={() => onAcao("desvAsp", a)}>Desfazer vínculo com a aspiração</button>}
+        </div>}
         <div className="rp-sub">Linha do tempo</div>
         <LinhaTempo eventos={linhaTempoPrenhez(a, ativos, embrioes)} onAbrir={onAbrir} onIrLote={onIrLote} />
       </div>
@@ -2879,11 +3036,12 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote }) {
         </>
       )}
       <div className="rp-sub">Prenhezes geradas ({D.ps.length})</div>
-      {D.ps.length ? D.ps.map((p) => { const f = faseReprod(p); return (
+      {D.ps.length ? D.ps.map((p) => { const f = statusPrenhez(p); return (
         <button type="button" className="rp-prow" key={p.id} onClick={() => onAbrir(p)}>
           <span><b>{p.receptora ? `Receptora ${p.receptora}` : p.nome}</b><small>{p.dataTE ? `TE ${dataBR(p.dataTE)}` : ""}{p.loteOrigemId ? " · embrião congelado" : ""}</small></span>
           <Badge tone={f.tone}>{f.txt}</Badge>
-        </button>); }) : <p className="muted small">Nenhuma prenhez vinculada ainda. Use “Gerar prenhez”.</p>}
+        </button>); }) : <p className="muted small">Nenhuma prenhez vinculada ainda. Use “Gerar prenhez” ou vincule uma já cadastrada.</p>}
+      {onAcao && <button type="button" className="rp-link" onClick={() => onAcao("vincPren", a)}>Vincular prenhez existente</button>}
       {D.lotes.length > 0 && <>
         <div className="rp-sub">No Banco de Embriões</div>
         {[...new Set(D.lotes.map(grupoDe))].map((gid) => { const g = doGrupo(D.lotes, gid), l = g[0]; return (
@@ -2909,21 +3067,30 @@ function statusPrenhez(p) {
     return { txt: f.txt, tone: "gold", grupo: "concluido", destaque: "" };
   }
   if (f.k === "diag") return { txt: f.txt, tone: f.tone, grupo: "pendente", destaque: "" };
-  if (nasc > 0) return { txt: `${f.txt} · ${nasc} nascido(s)`, tone: f.tone, grupo: "andamento", destaque: "ok" };
+  if (nasc > 0) return { txt: `${f.txt} · ${nasc} nascido(s)`, tone: f.tone, grupo: "andamento", destaque: "" };
   return { txt: f.txt, tone: f.tone, grupo: "andamento", destaque: f.d != null && f.d < 0 ? "atencao" : "" };
 }
-const GRUPOS_SIT = [["todos", "Todos"], ["pendente", "Pendentes"], ["andamento", "Em andamento"], ["concluido", "Concluídos"], ["cancelado", "Cancelados"]];
-function FiltroSituacao({ itens, valor, setValor, ocultar, setOcultar }) {
-  const n = (g) => (g === "todos" ? itens.filter((x) => !ocultar || (x.grupo !== "concluido" && x.grupo !== "cancelado")).length : itens.filter((x) => x.grupo === g).length);
+const ESCOPOS = [["ativos", "Ativos"], ["inativos", "Inativos"], ["todos", "Todos"]];
+const ABAS_SIT = {
+  ativos: () => [["todos", "Todos os ativos"], ["pendente", "Pendentes"], ["andamento", "Em andamento"]],
+  inativos: (tipo) => (tipo === "pren" ? [["todos", "Todos os inativos"], ["nasc", "Nascimento registrado"], ["sem", "Encerradas sem nascimento"], ["cancelado", "Canceladas"]] : [["todos", "Todos os inativos"], ["concluido", "Concluídas"], ["cancelado", "Canceladas"]]),
+  todos: () => [["todos", "Todos"], ["pendente", "Pendentes"], ["andamento", "Em andamento"], ["concluido", "Concluídos"], ["cancelado", "Cancelados"]],
+};
+const noEscopo = (x, e) => (e === "todos" ? true : e === "inativos" ? x.grupo === "concluido" || x.grupo === "cancelado" : x.grupo === "pendente" || x.grupo === "andamento");
+const naAba = (x, v) => (v === "todos" ? true : v === "nasc" || v === "sem" ? x.grupo === "concluido" && x.sub === v : x.grupo === v);
+function FiltroSituacao({ itens, escopo, setEscopo, valor, setValor, tipo }) {
+  const doEsc = (e) => itens.filter((x) => noEscopo(x, e));
+  const base = doEsc(escopo);
   return (
     <div className="rp-sitbar">
-      <div className="rp-tabs" role="tablist" aria-label="Situação">{GRUPOS_SIT.map(([k, l]) => (
-        <button key={k} type="button" role="tab" aria-selected={valor === k} className={valor === k ? "on" : ""} onClick={() => setValor(k)}>{l}<b>{n(k)}</b></button>))}</div>
-      <label className="rp-ocultar"><input type="checkbox" checked={ocultar} onChange={(e) => setOcultar(e.target.checked)} /> Ocultar concluídos e cancelados em “Todos”</label>
+      <div className="seg-group rp-escopo" role="tablist" aria-label="Ativos ou inativos">{ESCOPOS.map(([k, l]) => (
+        <button key={k} type="button" role="tab" aria-selected={escopo === k} className={`seg ${escopo === k ? "on" : ""}`} onClick={() => { setEscopo(k); setValor("todos"); }}>{l} <b>{doEsc(k).length}</b></button>))}</div>
+      <div className="rp-tabs" role="tablist" aria-label="Situação">{ABAS_SIT[escopo](tipo).map(([k, l]) => (
+        <button key={k} type="button" role="tab" aria-selected={valor === k} className={valor === k ? "on" : ""} onClick={() => setValor(k)}>{l}<b>{base.filter((x) => naAba(x, k)).length}</b></button>))}</div>
     </div>
   );
 }
-const filtraSituacao = (lista, valor, ocultar) => lista.filter((x) => (valor === "todos" ? !ocultar || (x.grupo !== "concluido" && x.grupo !== "cancelado") : x.grupo === valor));
+const filtraSituacao = (lista, escopo, valor) => lista.filter((x) => noEscopo(x, escopo) && naAba(x, valor));
 
 /* ---------- linha do tempo: só eventos com registro que os comprove ---------- */
 // cada evento: { data, titulo, desc, futuro, links: [{ txt, abrir | lote }] }
@@ -3008,17 +3175,17 @@ function LinhaTempo({ eventos, onAbrir, onIrLote }) {
 /* ---------------- página: Prenhezes ---------------- */
 function PaginaPrenhezes({ lista, onAbrir }) {
   const [sit, setSit] = useState("todos");
-  const [ocultar, setOcultar] = useState(false);
+  const [escopo, setEscopo] = useState("ativos");
   const [origem, setOrigem] = useState("");
   const [cri, setCri] = useState("");
   const [ordem, setOrdem] = useState("parto");
-  const base = (lista || []).filter((p) => p && p.tipo === "prenhez" && p.origem !== "genealogia").map((p) => { const s = statusPrenhez(p); return { p, f: faseReprod(p), s, grupo: s.grupo }; });
+  const base = (lista || []).filter((p) => p && p.tipo === "prenhez" && p.origem !== "genealogia").map((p) => { const s = statusPrenhez(p); return { p, f: faseReprod(p), s, grupo: s.grupo, sub: s.grupo === "concluido" ? (qtdConvertidos(p) > 0 ? "nasc" : "sem") : "" }; });
   const criatorios = [...new Set(base.map(({ p }) => p.ondeEsta).filter(Boolean))].sort();
   const filt = base.filter(({ p }) => (!origem || origemPrenhez(p) === origem) && (!cri || p.ondeEsta === cri));
   const prevDe = (p) => p.previsaoParto || (p.dataTE ? somaDias(p.dataTE, PARTO_DIAS) : "9999");
-  const ord = sit === "concluido" || sit === "cancelado" ? (a, b) => (b.p.dataParto || b.p.dataTE || "").localeCompare(a.p.dataParto || a.p.dataTE || "")
+  const ord = escopo === "inativos" ? (a, b) => (b.p.dataParto || b.p.dataTE || "").localeCompare(a.p.dataParto || a.p.dataTE || "")
     : ordem === "te" ? (a, b) => (b.p.dataTE || "").localeCompare(a.p.dataTE || "") : (a, b) => (a.grupo === "concluido" || a.grupo === "cancelado") - (b.grupo === "concluido" || b.grupo === "cancelado") || prevDe(a.p).localeCompare(prevDe(b.p));
-  const lst = filtraSituacao(filt, sit, ocultar).sort(ord);
+  const lst = filtraSituacao(filt, escopo, sit).sort(ord);
   const ativas = base.filter((x) => x.f.k !== "enc");
   return (
     <section className="wrap rp-pag">
@@ -3029,11 +3196,11 @@ function PaginaPrenhezes({ lista, onAbrir }) {
         <KPI label="Partos atrasados" value={base.filter((x) => x.f.d < 0).length} tone={base.some((x) => x.f.d < 0) ? "neg" : ""} sub="previsão já passou" />
         <KPI label="Nascimentos registrados" value={base.reduce((s, { p }) => s + qtdConvertidos(p), 0)} sub="animais cadastrados a partir de prenhezes" />
       </div>
-      <FiltroSituacao itens={filt} valor={sit} setValor={setSit} ocultar={ocultar} setOcultar={setOcultar} />
+      <FiltroSituacao itens={filt} escopo={escopo} setEscopo={setEscopo} valor={sit} setValor={setSit} tipo="pren" />
       <div className="rp-filtros">
         <select value={origem} onChange={(e) => setOrigem(e.target.value)} aria-label="Origem"><option value="">Todas as origens</option><option value="aspiracao">Aspiração da SM</option><option value="banco">Banco de Embriões</option><option value="compra">Adquirida / direta</option></select>
         <select value={cri} onChange={(e) => setCri(e.target.value)} aria-label="Criatório"><option value="">Todos os criatórios</option>{criatorios.map((c) => <option key={c} value={c}>{c}</option>)}</select>
-        {sit !== "concluido" && sit !== "cancelado" && <select value={ordem} onChange={(e) => setOrdem(e.target.value)} aria-label="Ordenar"><option value="parto">Ordenar por previsão de parto</option><option value="te">Ordenar pela TE mais recente</option></select>}
+        {escopo !== "inativos" && <select value={ordem} onChange={(e) => setOrdem(e.target.value)} aria-label="Ordenar"><option value="parto">Ordenar por previsão de parto</option><option value="te">Ordenar pela TE mais recente</option></select>}
       </div>
       <div className="cards-grid rp-grid">
         {lst.map(({ p, f, s }) => (
@@ -3050,7 +3217,7 @@ function PaginaPrenhezes({ lista, onAbrir }) {
               : <span className="rp-meta">{p.dataParto ? `Nascimento em ${dataBR(p.dataParto)}` : p.perda ? `Perda em ${dataBR(p.perda.data)} · ${p.perda.motivo}` : s.motivo ? `Motivo: ${s.motivo}` : p.dataTE ? `TE em ${dataBR(p.dataTE)}` : ""}</span>}
           </button>
         ))}
-        {lst.length === 0 && <div className="empty">Nenhuma prenhez nesta situação{origem || cri ? " com esses filtros" : ""}.</div>}
+        {lst.length === 0 && <div className="empty">Nenhuma prenhez {escopo === "ativos" ? "ativa " : escopo === "inativos" ? "inativa " : ""}nesta situação{origem || cri ? " com esses filtros" : ""}.</div>}
       </div>
     </section>
   );
@@ -3059,9 +3226,9 @@ function PaginaPrenhezes({ lista, onAbrir }) {
 /* ---------------- página: Aspirações ---------------- */
 function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir }) {
   const [sit, setSit] = useState("todos");
-  const [ocultar, setOcultar] = useState(false);
-  const base = (lista || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia" && !a.arquivada).map((a) => { const D = dadosAsp(a, ativos, embrioes); return { a, D, grupo: D.grupo }; });
-  const lst = filtraSituacao(base, sit, ocultar).sort((x, y) => (x.grupo === "concluido" || x.grupo === "cancelado") - (y.grupo === "concluido" || y.grupo === "cancelado") || (y.a.dataAspiracao || y.a.dataAsp || "").localeCompare(x.a.dataAspiracao || x.a.dataAsp || ""));
+  const [escopo, setEscopo] = useState("ativos");
+  const base = (lista || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia").map((a) => { const D = dadosAsp(a, ativos, embrioes); return { a, D, grupo: D.grupo }; });
+  const lst = filtraSituacao(base, escopo, sit).sort((x, y) => (x.grupo === "concluido" || x.grupo === "cancelado") - (y.grupo === "concluido" || y.grupo === "cancelado") || (y.a.dataAspiracao || y.a.dataAsp || "").localeCompare(x.a.dataAspiracao || x.a.dataAsp || ""));
   const soma = (k) => base.reduce((s, x) => s + (x.D[k] || 0), 0);
   const ooComE = base.filter((x) => x.D.E != null).reduce((s, x) => s + x.D.oocitos, 0);
   return (
@@ -3073,7 +3240,7 @@ function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir }) {
         <KPI label="No Banco de Embriões" value={soma("saldoBanco")} sub="congelados destas aspirações" />
         <KPI label="Taxa de prenhez" value={soma("diag") ? Math.round((soma("conf") / soma("diag")) * 100) + "%" : "—"} sub="confirmadas ÷ diagnosticadas" />
       </div>
-      <FiltroSituacao itens={base} valor={sit} setValor={setSit} ocultar={ocultar} setOcultar={setOcultar} />
+      <FiltroSituacao itens={base} escopo={escopo} setEscopo={setEscopo} valor={sit} setValor={setSit} tipo="asp" />
       <div className="cards-grid rp-grid">
         {lst.map(({ a, D }) => {
           const w = (v) => `${D.E ? (v / D.E) * 100 : 0}%`;
@@ -3087,7 +3254,7 @@ function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir }) {
             </button>
           );
         })}
-        {lst.length === 0 && <div className="empty">Nenhuma aspiração nesta situação.</div>}
+        {lst.length === 0 && <div className="empty">Nenhuma aspiração {escopo === "ativos" ? "ativa " : escopo === "inativos" ? "inativa " : ""}nesta situação.</div>}
       </div>
       {base.some((x) => x.D.E != null) && <div className="rp-legenda"><span><i style={{ background: "var(--em)" }} />transferidos</span><span><i style={{ background: "#C9AE74" }} />congelados</span><span><i style={{ background: "#9CC5AF" }} />a transferir</span></div>}
     </section>
@@ -3307,22 +3474,25 @@ function FolhaTransferencia({ asp, lote, ativos, embrioes, localNames, onQuickLo
   );
 }
 function FolhaDiagnostico({ p, onConfirm, onClose }) {
+  const temDiag = p.diagnostico === "positivo" || p.diagnostico === "negativo" || !!p.dataConfirmacao;
   const [res, setRes] = useState("positivo");
   const [data, setData] = useState(today());
   const [sexagem, setSexagem] = useState(p.sexagem || "");
   const [prev, setPrev] = useState(p.previsaoParto || (p.dataTE ? somaDias(p.dataTE, PARTO_DIAS) : ""));
   return (
     <Folha eyebrow={p.receptora ? `Receptora ${p.receptora}` : p.nome} titulo="Lançar diagnóstico" onClose={onClose}
-      rodape={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-gold" disabled={!data} onClick={() => onConfirm({ res, data, sexagem, prev })}>Salvar diagnóstico</button></>}>
+      rodape={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-gold" disabled={!data && res !== "nao"} onClick={() => onConfirm({ res, data, sexagem, prev })}>Salvar diagnóstico</button></>}>
       <div className="field wide"><span>Resultado</span><div className="segmented">
         <button type="button" className={`seg ${res === "positivo" ? "on" : ""}`} onClick={() => setRes("positivo")}>Positivo · prenhe</button>
-        <button type="button" className={`seg ${res === "negativo" ? "on" : ""}`} onClick={() => setRes("negativo")}>Negativo · vazia</button></div></div>
+        <button type="button" className={`seg ${res === "negativo" ? "on" : ""}`} onClick={() => setRes("negativo")}>Negativo · vazia</button>
+        {temDiag && <button type="button" className={`seg ${res === "nao" ? "on" : ""}`} onClick={() => setRes("nao")}>Não informado</button>}</div></div>
+      <p className="muted small">O diagnóstico é opcional: se o nascimento já é conhecido, use “Nasceu” direto na ficha.</p>
       <div className="grid">
-        <label className="field"><span>Data do diagnóstico</span><input type="date" value={data} onChange={(e) => setData(e.target.value)} /></label>
+        {res !== "nao" && <label className="field"><span>Data do diagnóstico</span><input type="date" value={data} onChange={(e) => setData(e.target.value)} /></label>}
         {res === "positivo" && <label className="field"><span>Sexagem <em className="new-hint">· opcional</em></span><select value={sexagem} onChange={(e) => setSexagem(e.target.value)}><option value="">Não informada</option><option>Fêmea</option><option>Macho</option></select></label>}
         {res === "positivo" && <label className="field"><span>Previsão de parto</span><input type="date" value={prev} onChange={(e) => setPrev(e.target.value)} /></label>}
       </div>
-      <p className="muted small">{res === "positivo" ? "A prenhez passa para Confirmadas e entra no acompanhamento de parto." : "A ficha fica como “Encerrada sem nascimento” (diagnóstico negativo) e entra na taxa de prenhez da origem. Os valores financeiros não são alterados."}</p>
+      <p className="muted small">{res === "nao" ? "Remove o diagnóstico registrado; a prenhez continua ativa, sem diagnóstico informado." : res === "positivo" ? "A prenhez passa para Confirmadas e entra no acompanhamento de parto." : "A ficha fica como “Encerrada sem nascimento” (diagnóstico negativo) e entra na taxa de prenhez da origem. Os valores financeiros não são alterados."}</p>
     </Folha>
   );
 }
@@ -3343,7 +3513,15 @@ function FolhaPerda({ p, onConfirm, onClose }) {
     </Folha>
   );
 }
-function FolhaNascimento({ p, animalNames, onConfirm, onFull, onClose }) {
+function FolhaNascimento({ p, ativos, animalNames, modoInicial, onConfirm, onVincular, onFull, onClose }) {
+  const [modo, setModo] = useState(modoInicial || "novo");
+  const [pct, setPct] = useState(participacaoAtual(p) > 0 ? String(participacaoAtual(p)) : "");
+  const [busca, setBusca] = useState(""), [anId, setAnId] = useState(""), [opc, setOpc] = useState({});
+  const candidatos = (ativos || []).filter((x) => x && x.tipo === "animal" && x.origem !== "genealogia");
+  const an = anId ? candidatos.find((x) => x.id === anId) : null;
+  const cv = conferirVinculoAnimal(p, an, ativos);
+  const podeVinc = an && !cv.bloq.length && (!cv.avisos.length || opc.conferi);
+  const somaSoc = (p.socios || []).filter(Boolean).reduce((t, x) => t + num(x.pct), 0);
   const prev = p.previsaoParto || "";
   const [nome, setNome] = useState("");
   const [data, setData] = useState(p.dataParto || (prev && prev < today() ? prev : today()));
@@ -3352,10 +3530,19 @@ function FolhaNascimento({ p, animalNames, onConfirm, onFull, onClose }) {
   const dup = nome.trim() && (animalNames || []).some((x) => lc(x).trim() === lc(nome).trim());
   const soc = (p.socios || []).filter((s) => s && s.nome);
   return (
-    <Folha eyebrow="Substitui o antigo “Nasceu”" titulo="Registrar nascimento"
-      sub={`${p.doadora || ""}${p.pai || p.touro ? ` × ${p.pai || p.touro}` : ""}${p.receptora ? ` · receptora ${p.receptora}` : ""}. Cria a ficha do animal ligada a esta prenhez.`} onClose={onClose}
-      rodape={<><button className="btn btn-ghost rp-esq" onClick={onFull}>Formulário completo</button><button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
-        <button className="btn btn-gold" disabled={!nome.trim() || !sexo || !data} onClick={() => onConfirm({ nome: nome.trim(), data, sexo, registro: registro.trim() })}>Cadastrar animal</button></>}>
+    <Folha eyebrow={p.receptora ? `Receptora ${p.receptora}` : "Prenhez"} titulo="Nasceu"
+      sub={`${p.doadora || ""}${p.pai || p.touro ? ` × ${p.pai || p.touro}` : ""}. A prenhez é concluída e o animal fica ligado a ela. Não é preciso lançar diagnóstico antes.`} onClose={onClose}
+      rodape={modo === "novo" ? <><button className="btn btn-ghost rp-esq" onClick={onFull}>Formulário completo</button><button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+        <button className="btn btn-gold" disabled={!nome.trim() || !sexo || !data} onClick={() => onConfirm({ nome: nome.trim(), data, sexo, registro: registro.trim(), pct })}>Cadastrar animal</button></>
+        : <><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-gold" disabled={!podeVinc} onClick={() => onVincular({ pid: p.id, anId, ...opc })}>Vincular animal</button></>}>
+      <div className="segmented rp-modo">
+        <button type="button" className={`seg ${modo === "novo" ? "on" : ""}`} onClick={() => setModo("novo")}>Cadastrar novo animal</button>
+        <button type="button" className={`seg ${modo === "existente" ? "on" : ""}`} onClick={() => setModo("existente")}>Vincular animal existente</button></div>
+      {modo === "existente" ? <>
+        <div className="grid"><BuscaAnimal rotulo="Animal já cadastrado" animais={candidatos} nome={busca} id={anId} placeholder="buscar por nome ou RGD" semCriar
+          onTexto={(v) => { setBusca(v); setAnId(""); setOpc({}); }} onEscolher={(x) => { setBusca(x.nome); setAnId(x.id); setOpc({}); }} onDesvincular={() => { setAnId(""); setOpc({}); }} /></div>
+        <PainelVinculoAnimal p={p} an={an} ativos={ativos} opc={opc} setOpc={setOpc} />
+      </> : <>
       <div className="grid">
         <label className="field"><span>Nome do animal</span><input value={nome} onChange={(e) => setNome(e.target.value)} placeholder="ex.: Aurora da SM" autoFocus /></label>
         <label className="field"><span>Data de nascimento</span><input type="date" value={data} onChange={(e) => setData(e.target.value)} /></label>
@@ -3363,7 +3550,10 @@ function FolhaNascimento({ p, animalNames, onConfirm, onFull, onClose }) {
           <button type="button" className={`seg ${sexo === "Fêmea" ? "on" : ""}`} onClick={() => setSexo("Fêmea")}>♀ Fêmea</button>
           <button type="button" className={`seg ${sexo === "Macho" ? "on" : ""}`} onClick={() => setSexo("Macho")}>♂ Macho</button></div></div>
         <label className="field"><span>Registro <em className="new-hint">· opcional</em></span><input value={registro} onChange={(e) => setRegistro(e.target.value)} placeholder="pode preencher depois" /></label>
+        <label className="field"><span>Participação da SM (%) <em className="new-hint">· {participacaoAtual(p) > 0 ? "a mesma da prenhez" : "não informada na prenhez"}</em></span><input inputMode="decimal" value={pct} onChange={(e) => setPct(e.target.value)} placeholder="ex.: 50" /></label>
       </div>
+      {!(num(pct) > 0) && <p className="muted small">Sem participação da SM informada, o animal entra como inativo (regra dos 0%). Pode ajustar depois na ficha.</p>}
+      {num(pct) + somaSoc > 100.001 && <div className="aviso">SM {pctTxt(num(pct))} + sócios {pctTxt(somaSoc)} passa de 100%. Confira a participação.</div>}
       {dup && <div className="aviso">Já existe um animal chamado “{nome.trim()}”. Confira se não é o mesmo nascimento antes de continuar.</div>}
       <div className="rp-herda">
         <b>Herdado automaticamente (pode ser revisado na ficha do animal)</b>
@@ -3371,6 +3561,7 @@ function FolhaNascimento({ p, animalNames, onConfirm, onFull, onClose }) {
         <span>Sociedade: {soc.length ? soc.map((s) => `${s.nome}${s.pct ? ` ${s.pct}%` : ""}`).join(" · ") : "não informada"} · criatório {p.ondeEsta || "—"}</span>
         <span>A compra e as parcelas continuam na ficha da prenhez; nada é lançado duas vezes.</span>
       </div>
+      </>}
     </Folha>
   );
 }
@@ -3435,7 +3626,7 @@ function achaAnimal(lista, nome, reg) {
   const m = (lista || []).filter((x) => chaveNome(x.nome) === n);
   return m.length === 1 ? m[0] : null;
 }
-function BuscaAnimal({ rotulo, animais, nome, id, onTexto, onEscolher, onDesvincular, placeholder }) {
+function BuscaAnimal({ rotulo, animais, nome, id, onTexto, onEscolher, onDesvincular, placeholder, semCriar }) {
   const [open, setOpen] = useState(false);
   const [hi, setHi] = useState(-1);
   const q = chaveNome(nome);
@@ -3460,7 +3651,7 @@ function BuscaAnimal({ rotulo, animais, nome, id, onTexto, onEscolher, onDesvinc
             {x.nome}{x.registro ? <span className="auto-rg">{rgdTxt(x.registro)}</span> : <span className="auto-rg">sem RGD</span>}</button>))}</div>}
       </div>
       {vinc ? <span className="rp-vinc"><i aria-hidden="true">✓</i> Ligado à ficha de {vinc.nome}<button type="button" onClick={onDesvincular}>desfazer</button></span>
-        : q ? <em className="new-hint">{ms.length ? "Escolha na lista ou continue: se não existir, será cadastrado ao salvar." : "Novo: será cadastrado na base de animais ao salvar."}</em> : null}
+        : q ? <em className="new-hint">{semCriar ? (ms.length ? "Escolha o animal na lista." : "Nenhum animal cadastrado com esse nome ou RGD.") : ms.length ? "Escolha na lista ou continue: se não existir, será cadastrado ao salvar." : "Novo: será cadastrado na base de animais ao salvar."}</em> : null}
     </div>
   );
 }
@@ -3872,14 +4063,18 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, embr
             </div>
             <div className="ficha-actions"><button className={`btn ${a.tipo === "animal" ? "btn-gold" : "btn-ghost"}`} onClick={onEdit}>Editar</button>
               {a.tipo === "aspiracao" && a.origem !== "genealogia" && onRepro && <button className="btn btn-gold" onClick={() => onRepro("transf", a)}>Gerar prenhez</button>}
+              {a.tipo === "aspiracao" && a.origem !== "genealogia" && onRepro && (() => { const D = dadosAsp(a, ativos, embrioes);
+                return a.concluidaManual ? <button className="btn btn-ghost" onClick={() => onRepro("reabrirAsp", a)}>Reabrir aspiração</button>
+                  : D.grupo === "pendente" || D.grupo === "andamento" ? <button className="btn btn-ghost" onClick={() => onRepro("concluirAsp", a)}>Concluir aspiração</button> : null; })()}
               {a.tipo === "prenhez" && a.origem !== "genealogia" && onRepro && (() => {
                 const fz = faseReprod(a);
                 const filhos = (ativos || []).filter((x) => x && x.tipo === "animal" && x.origemId === a.id);
-                const viva = (fz.k === "conf" || fz.k === "parto") && qtdRest(a) > 0;
+                const viva = qtdRest(a) > 0 && !fz.cancel && !["Vendida", "Perda gestacional"].includes(fz.txt) && (fz.k !== "enc" || fz.txt === "Não confirmada");
+                const temDiag = a.diagnostico === "positivo" || a.diagnostico === "negativo" || !!a.dataConfirmacao;
                 return <>
-                  {fz.k === "diag" && <button className="btn btn-gold" onClick={() => onRepro("diag", a)}>Lançar diagnóstico</button>}
-                  {viva && <button className="btn btn-gold" onClick={() => onRepro("nasc", a)}><Ico n="nascer" size={16} /> Registrar nascimento</button>}
-                  {viva && <button className="btn btn-ghost" onClick={() => onRepro("perda", a)}>Registrar perda</button>}
+                  {viva && <button className="btn btn-gold" onClick={() => onRepro("nasc", a)}><Ico n="nascer" size={16} /> Nasceu</button>}
+                  {viva && <button className="btn btn-ghost" onClick={() => onRepro("diag", a)}>{temDiag ? "Corrigir diagnóstico" : "Lançar diagnóstico"}</button>}
+                  {viva && fz.k !== "enc" && <button className="btn btn-ghost" onClick={() => onRepro("perda", a)}>Registrar perda</button>}
                   {filhos.length > 0 && <button className="btn btn-ghost" onClick={() => onAbrir(filhos[filhos.length - 1])}>Ver animal</button>}
                 </>;
               })()}
@@ -3888,12 +4083,13 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, embr
         </div>
 
         <nav className="ficha-nav" aria-label="Seções da ficha">
-          {[["fx-repro", "Reprodução"], ["fx-emb", "Embriões"], ["fx-fin", "Financeiro"], ["fx-gen", "Genealogia"], ["fx-dados", "Dados"], ["fx-parc", "Parcelas"], ["fx-soc", "Sociedade"], ["fx-pes", "Pesagens"], ["fx-vend", "Vendas"], ["fx-hist", "Histórico"]].filter(([id]) => { if (id === "fx-repro") return a.tipo === "prenhez" || a.tipo === "aspiracao"; if (id === "fx-emb") return a.tipo === "animal" && lotesDaDoadora(embrioes, a.id).length > 0; const proprio = a.tipo === "animal" && a.origem !== "genealogia"; if (id === "fx-pes" || id === "fx-vend") return proprio; if (id === "fx-soc") return proprio || (a.socios || []).length > 0; if (id === "fx-parc") return f.qtd > 0 || comprasAdic.length > 0; return true; }).map(([id, t]) => (
+          {[["fx-repro", "Reprodução"], ["fx-origem", "Origem"], ["fx-emb", "Embriões"], ["fx-fin", "Financeiro"], ["fx-gen", "Genealogia"], ["fx-dados", "Dados"], ["fx-parc", "Parcelas"], ["fx-soc", "Sociedade"], ["fx-pes", "Pesagens"], ["fx-vend", "Vendas"], ["fx-hist", "Histórico"]].filter(([id]) => { if (id === "fx-repro") return a.tipo === "prenhez" || a.tipo === "aspiracao"; if (id === "fx-origem") return a.tipo === "animal" && a.origem !== "genealogia"; if (id === "fx-emb") return a.tipo === "animal" && lotesDaDoadora(embrioes, a.id).length > 0; const proprio = a.tipo === "animal" && a.origem !== "genealogia"; if (id === "fx-pes" || id === "fx-vend") return proprio; if (id === "fx-soc") return proprio || (a.socios || []).length > 0; if (id === "fx-parc") return f.qtd > 0 || comprasAdic.length > 0; return true; }).map(([id, t]) => (
             <button key={id} type="button" onClick={() => { const el = document.getElementById(id); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }}>{t}</button>
           ))}
         </nav>
         <div className="modal-body">
-          {(a.tipo === "prenhez" || a.tipo === "aspiracao") && a.origem !== "genealogia" && <SecaoRepro a={a} ativos={ativos} embrioes={embrioes} onAbrir={onAbrir} onIrLote={onIrLote || (() => {})} />}
+          {(a.tipo === "prenhez" || a.tipo === "aspiracao") && a.origem !== "genealogia" && <SecaoRepro a={a} ativos={ativos} embrioes={embrioes} onAbrir={onAbrir} onIrLote={onIrLote || (() => {})} onAcao={onRepro} />}
+          {a.tipo === "animal" && a.origem !== "genealogia" && onRepro && <SecaoOrigem a={a} ativos={ativos} embrioes={embrioes} onAbrir={onAbrir} onIrLote={onIrLote || (() => {})} onAcao={onRepro} />}
           {a.tipo === "animal" && <SecaoEmbrioesDoadora a={a} embrioes={embrioes} ativos={ativos} onIrLote={onIrLote || (() => {})} />}
           <div className="fin-cards" id="fx-fin">
             <KPI label="Valor pago pela cota" value={fmt(f.cota)} sub={`${f.pct || 0}% comprado`} />
@@ -6223,7 +6419,7 @@ export default function App() {
     return { qtd: doMes.length, total: doMes.reduce((s, p) => s + num(p.valor), 0), pagas: doMes.filter((p) => p.status === "pago").length };
   }, [parcelas]);
   const proximas = parcelas.filter((p) => p.status === "aberto" || p.status === "parcial").sort((a, b) => (a.venc || "").localeCompare(b.venc || "")).slice(0, 6);
-  const count = (t) => (ativos || []).filter((a) => a && a.tipo === t && a.origem !== "genealogia" && !a.arquivada && (t !== "animal" || ehAtivo(a))).length;
+  const count = (t) => (ativos || []).filter((a) => a && a.tipo === t && a.origem !== "genealogia" && !a.arquivada && (t === "prenhez" ? prenhezAtiva(a) : t === "aspiracao" ? aspAtiva(a) : ehAtivo(a))).length;
 
   const salvar = (d) => {
     flushNext.current = true; // concluir cadastro = gravação imediata
@@ -6300,6 +6496,8 @@ export default function App() {
       nome: "", registro: "", raca: src.raca || "Nelore",
       sexo: ehPren ? (src.sexagem || "") : "",       // vem da sexagem, quando informada
       nascimento: ehPren ? (src.dataParto || "") : "", status: "", ondeEsta: src.ondeEsta || "", criatorio: src.criatorio || "",
+      // participação da SM herdada da origem (só o percentual: a compra e as parcelas continuam na origem)
+      porcentagemComprada: participacaoAtual(src) > 0 ? participacaoAtual(src) : "", pctHerdadaDe: participacaoAtual(src) > 0 ? src.id : "",
       origemAnimal: src.tipo === "aspiracao" ? "Nascimento de aspiração" : "Nascimento de prenhez",
       // genealogia herdada
       pai: src.pai || src.touro || "", mae: src.doadora || "",
@@ -6350,9 +6548,16 @@ export default function App() {
       let txt, grupo;
       if (a.tipo === "aspiracao") { const D = dadosAsp(a, lista, embrioes); txt = D.st[0]; grupo = D.grupo; }
       else { const sp = statusPrenhez(a); grupo = sp.grupo; txt = /^Parto em|^Parto previsto hoje/.test(sp.txt) ? "Confirmada" : /^Parto atrasado/.test(sp.txt) ? "Parto atrasado" : sp.txt; }
-      if (a.statusAuto !== txt || a.statusGrupo !== grupo) mud.set(a.id, [txt, grupo]);
+      const inativo = grupo === "concluido" || grupo === "cancelado";
+      if (a.statusAuto !== txt || a.statusGrupo !== grupo || !!a.inativo !== inativo) mud.set(a.id, [txt, grupo, inativo]);
     });
-    if (mud.size) setDb((p) => ({ ...p, ativos: (p.ativos || []).map((a) => { const m = a && mud.get(a.id); return m ? { ...a, statusAuto: m[0], statusGrupo: m[1] } : a; }) }));
+    if (mud.size) setDb((p) => ({ ...p, ativos: (p.ativos || []).map((a) => {
+      const m = a && mud.get(a.id); if (!m) return a;
+      const [txt, grupo, inativo] = m, eraIn = !!a.inativo, conhecido = a.statusGrupo != null;
+      const n = { ...a, statusAuto: txt, statusGrupo: grupo, inativo };
+      if (inativo && !eraIn) { n.inativadoEm = conhecido ? today() : ""; if (conhecido) n.historico = [...(a.historico || []), { id: uid(), data: today(), tipo: "Inativação automática", desc: `${txt} — registro passou para os inativos`, responsavel: "Sistema" }]; }
+      if (!inativo && eraIn) { n.inativadoEm = ""; n.historico = [...(a.historico || []), { id: uid(), data: today(), tipo: "Reativação automática", desc: `${txt} — registro voltou para os ativos`, responsavel: "Sistema" }]; }
+      return n; }) }));
   }, [db.ativos, embrioes, dataReady]);
   const abertoAtual = aberto ? ((ativos || []).find((x) => x && x.id === aberto.id) || aberto) : null;   // ficha sempre com os dados mais recentes
   const quemReg = () => (profile && profile.nome) || "";
@@ -6406,6 +6611,11 @@ export default function App() {
     setToast(`${n} prenhez(es) criada(s)${lote ? " com embriões do banco" : ""}. Status: ${confirmada ? "prenhez confirmada" : "aguardando diagnóstico"}.`);
   };
   const registrarDiagnostico = (p, { res, data, sexagem, prev }) => {
+    if (res === "nao") {
+      const np = { ...p, diagnostico: "", dataDiagnostico: "", dataConfirmacao: "", status: "Aguardando confirmação",
+        historico: [...(p.historico || []), { id: uid(), data: today(), tipo: "Diagnóstico", desc: "Diagnóstico removido: passa a constar como não informado", responsavel: quemReg() }] };
+      setRepro(null); updateAtivo(np); setToast("Diagnóstico marcado como não informado."); return;
+    }
     const pos = res === "positivo";
     const np = { ...p, diagnostico: res, dataDiagnostico: data, status: pos ? "Confirmada" : "Não confirmada",
       dataConfirmacao: pos ? data : (p.dataConfirmacao || ""), sexagem: pos ? sexagem : (p.sexagem || ""),
@@ -6424,12 +6634,96 @@ export default function App() {
     setRepro(null); updateAtivo(np);
     setToast("Perda gestacional registrada.");
   };
-  const registrarNascimento = (p, { nome, data, sexo, registro }) => {
+  const registrarNascimento = (p, { nome, data, sexo, registro, pct }) => {
     if (qtdRest(p) < 1) return;   // a prenhez já teve todos os nascimentos registrados
-    const d = { ...montaNascimento(p), nome, nascimento: data, sexo, registro };
+    const base = montaNascimento(p), pc = num(pct);
+    const d = { ...base, nome, nascimento: data, sexo, registro, porcentagemComprada: pc > 0 ? pc : "", pctHerdadaDe: pc > 0 && pc === num(base.porcentagemComprada) ? base.pctHerdadaDe : "" };
     setRepro(null); setAberto(null);
     salvar(d);   // mesma gravação do cadastro manual: genealogia, sociedade, origem e contador da prenhez
     setToast(`Animal ${nome} cadastrado a partir da prenhez.`);
+  };
+  /* ---- vínculos retroativos e conclusão manual ---- */
+  const histE = (tipo, desc, refId) => ({ id: uid(), data: today(), tipo, desc, responsavel: quemReg(), ...(refId ? { refId } : {}) });
+  const vincularAnimalPrenhez = ({ pid, anId, completarGen, copiarSocios, herdarPct }) => {
+    const p0 = (ativos || []).find((x) => x && x.id === pid), an0 = (ativos || []).find((x) => x && x.id === anId);
+    if (!p0 || !an0 || conferirVinculoAnimal(p0, an0, ativos).bloq.length) { setToast("Não foi possível vincular: confira os dados."); return; }
+    flushNext.current = true;
+    setDb((st) => {
+      const p = st.ativos.find((x) => x && x.id === pid), an = st.ativos.find((x) => x && x.id === anId);
+      if (!p || !an || conferirVinculoAnimal(p, an, st.ativos).bloq.length) return st;
+      const conv = qtdConvertidos(p) + 1, pai = p.pai || p.touro || "", aspId = origemDe(p);
+      const gen = completarGen ? { mae: an.mae || p.doadora || "", maeRegistro: an.maeRegistro || p.regDoadora || "", pai: an.pai || pai,
+        avoPaterno: an.avoPaterno || p.avoPaterno || "", avoPaterna: an.avoPaterna || p.avoPaterna || "", avoMaterno: an.avoMaterno || p.avoMaterno || "", avoMaterna: an.avoMaterna || p.avoMaterna || "" } : {};
+      const soc = copiarSocios && !sociedadeTxt(an.socios) ? { socios: (p.socios || []).filter((x) => x && x.nome).map((x) => ({ id: uid(), nome: x.nome, pct: x.pct, obs: x.obs || "" })) } : {};
+      const pc = herdarPct && participacaoAtual(an) <= 0 && participacaoAtual(p) > 0 ? { porcentagemComprada: participacaoAtual(p), pctHerdadaDe: p.id } : {};
+      const nAn = { ...an, ...gen, ...soc, ...pc, origemTipo: "prenhez", origemId: p.id, origemLabel: rotuloReprod(p), origemVinculadaEm: today(),
+        historico: [...(an.historico || []), histE("Origem", `Vinculado como nascido de ${rotuloReprod(p)} (cadastro existente mantido)${completarGen ? " · genealogia vazia completada" : ""}${soc.socios ? " · sociedade copiada da prenhez" : ""}${pc.porcentagemComprada ? ` · participação da SM ${pctTxt(pc.porcentagemComprada)}` : ""}`, p.id)] };
+      const nP = { ...p, convertidos: conv, arquivada: conv + qtdPerdas(p) >= qtdTotal(p), animaisIds: [...(p.animaisIds || []), an.id],
+        ...(!p.dataParto && an.nascimento ? { dataParto: an.nascimento, dataPartoDoAnimal: true } : {}),
+        historico: [...(p.historico || []), histE("Nascimento", `Vinculado ao animal ${an.nome}, já cadastrado${an.nascimento ? ` (nascido em ${dataBR(an.nascimento)})` : ""}`, an.id)] };
+      return { ...st, ativos: st.ativos.map((x) => (!x ? x : x.id === an.id ? nAn : x.id === p.id ? nP
+        : aspId && x.id === aspId ? { ...x, historico: [...(x.historico || []), histE("Nascimento", `${an.nome} vinculado como nascido da prenhez${p.receptora ? ` da receptora ${p.receptora}` : ""}`, an.id)] } : x)) };
+    });
+    setRepro(null);
+    setToast(`${an0.nome} vinculado à prenhez. Prenhez concluída.`);
+  };
+  const desfazerOrigem = (an) => setConfirmar({
+    titulo: "Desfazer vínculo de origem?",
+    mensagem: `${an.nome} deixa de constar como nascido de ${an.origemLabel || "sua origem"}. O cadastro do animal é mantido e a prenhez volta a aguardar o nascimento. Valores e parcelas não são alterados.`, usos: [],
+    botoes: [{ label: "Desfazer vínculo", tone: "danger", onClick: () => {
+      flushNext.current = true;
+      setDb((st) => ({ ...st, ativos: st.ativos.map((x) => {
+        if (!x) return x;
+        if (x.id === an.id) { const { origemId, origemTipo, origemLabel, origemVinculadaEm, ...resto } = x; return { ...resto, historico: [...(x.historico || []), histE("Origem", `Vínculo com ${x.origemLabel || "a origem"} desfeito`)] }; }
+        if (x.id === an.origemId) {
+          const conv = Math.max(0, qtdConvertidos(x) - 1);
+          return { ...x, convertidos: conv, arquivada: conv > 0 && conv + qtdPerdas(x) >= qtdTotal(x), animaisIds: (x.animaisIds || []).filter((i) => i !== an.id),
+            ...(x.dataPartoDoAnimal && conv === 0 ? { dataParto: "", dataPartoDoAnimal: false } : {}),
+            historico: [...(x.historico || []), histE("Nascimento", `Vínculo com o animal ${an.nome} desfeito`, an.id)] };
+        }
+        return x; }) }));
+      setConfirmar(null); setToast("Vínculo de origem desfeito.");
+    } }],
+  });
+  const vincularPrenhezAsp = ({ pid, aspId }) => {
+    flushNext.current = true;
+    setDb((st) => {
+      const p = st.ativos.find((x) => x && x.id === pid), A = st.ativos.find((x) => x && x.id === aspId);
+      if (!p || !A || origemDe(p)) return st;
+      return { ...st, ativos: st.ativos.map((x) => (!x ? x : x.id === p.id ? { ...x, origemId: A.id, aspiracaoOrigemId: A.id, origemTipo: "aspiracao", origemLabel: rotuloReprod(A),
+        historico: [...(x.historico || []), histE("Origem", `Vinculada à ${rotuloReprod(A)}`, A.id)] }
+        : x.id === A.id ? { ...x, historico: [...(x.historico || []), histE("Prenhez vinculada", `Prenhez ${p.receptora ? `da receptora ${p.receptora} ` : ""}vinculada a esta aspiração`, p.id)] } : x)) };
+    });
+    setRepro(null); setToast("Prenhez vinculada à aspiração.");
+  };
+  const desfazerAsp = (p) => { const A = (ativos || []).find((x) => x && x.id === origemDe(p)); setConfirmar({
+    titulo: "Desfazer vínculo com a aspiração?", mensagem: `A prenhez deixa de constar como gerada de ${A ? rotuloReprod(A) : "sua aspiração"}. Nenhum registro é excluído.`, usos: [],
+    botoes: [{ label: "Desfazer vínculo", tone: "danger", onClick: () => {
+      flushNext.current = true;
+      setDb((st) => ({ ...st, ativos: st.ativos.map((x) => {
+        if (!x) return x;
+        if (x.id === p.id) { const { origemId, aspiracaoOrigemId, origemTipo, origemLabel, ...resto } = x; return { ...resto, historico: [...(x.historico || []), histE("Origem", "Vínculo com a aspiração desfeito")] }; }
+        if (A && x.id === A.id) return { ...x, historico: [...(x.historico || []), histE("Prenhez desvinculada", `Prenhez ${p.receptora ? `da receptora ${p.receptora} ` : ""}desvinculada`, p.id)] };
+        return x; }) }));
+      setConfirmar(null); setToast("Vínculo com a aspiração desfeito.");
+    } }] }); };
+  const concluirAsp = (a) => {
+    const D = dadosAsp(a, ativos, embrioes);
+    const pend = [D.E == null ? "resultado do laboratório não lançado" : "", D.disp ? `${D.disp} embrião(ões) fresco(s) sem destino registrado` : "",
+      D.saldoBanco ? `${D.saldoBanco} embrião(ões) no Banco (continuam no estoque)` : "",
+      D.ps.filter((x) => prenhezAtiva(x)).length ? `${D.ps.filter((x) => prenhezAtiva(x)).length} prenhez(es) ainda em andamento (continuam ativas)` : ""].filter(Boolean);
+    setConfirmar({ titulo: "Concluir esta aspiração?",
+      mensagem: pend.length ? `Ainda consta: ${pend.join("; ")}. Concluir não altera o Banco nem as prenhezes; a aspiração vai para os inativos e pode ser reaberta.` : "A aspiração vai para os inativos (concluídas) e pode ser reaberta depois.", usos: [],
+      botoes: [{ label: "Concluir aspiração", tone: "gold", onClick: () => { updateAtivo({ ...a, concluidaManual: { data: today(), por: quemReg() }, historico: [...(a.historico || []), histE("Conclusão", `Concluída manualmente${pend.length ? ` (constava: ${pend.join("; ")})` : ""}`)] }); setConfirmar(null); setToast("Aspiração concluída."); } }] });
+  };
+  const reabrirAsp = (a) => { const { concluidaManual, ...resto } = a; updateAtivo({ ...resto, historico: [...(a.historico || []), histE("Reabertura", "Aspiração reaberta")] }); setToast("Aspiração reaberta."); };
+  const acaoRepro = (tipo, a) => {
+    if (tipo === "desvOrigem") return desfazerOrigem(a);
+    if (tipo === "desvAsp") return desfazerAsp(a);
+    if (tipo === "concluirAsp") return concluirAsp(a);
+    if (tipo === "reabrirAsp") return reabrirAsp(a);
+    if (tipo === "nascVinc") return setRepro({ tipo: "nasc", alvo: a, modo: "existente" });
+    setRepro({ tipo, alvo: a });
   };
   // campos que pertencem ao embrião individual e não são copiados entre embriões do mesmo lote
   const CAMPOS_PROPRIOS = ["id", "cod", "seq", "loteId", "loteCod", "movs", "arquivado", "criadoEm", "criadoPor", "migradoDe"];
@@ -7334,7 +7628,7 @@ export default function App() {
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
         onSave={salvar} onApprove={aprovarFicha} onClose={() => setForm(null)} />}
       {abertoAtual && <Detalhe a={abertoAtual} ativos={ativos} embrioes={embrioes} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onGerarPrenhez={gerarPrenhez} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo}
-        onRepro={(tipo, a) => setRepro({ tipo, alvo: a })} onIrLote={irLote}
+        onRepro={acaoRepro} onIrLote={irLote}
         onEdit={() => { setForm({ tipo: abertoAtual.tipo, initial: abertoAtual }); setAberto(null); }} onDelete={() => pedirExcluirAtivo(abertoAtual)} />}
       {repro && repro.tipo === "transf" && (() => {
         const asp = repro.alvo ? ((ativos || []).find((x) => x && x.id === repro.alvo.id) || repro.alvo) : null;
@@ -7344,7 +7638,9 @@ export default function App() {
       })()}
       {repro && repro.tipo === "diag" && <FolhaDiagnostico p={repro.alvo} onConfirm={(v) => registrarDiagnostico(abertoAtual && abertoAtual.id === repro.alvo.id ? abertoAtual : repro.alvo, v)} onClose={() => setRepro(null)} />}
       {repro && repro.tipo === "perda" && <FolhaPerda p={repro.alvo} onConfirm={(v) => registrarPerda(abertoAtual && abertoAtual.id === repro.alvo.id ? abertoAtual : repro.alvo, v)} onClose={() => setRepro(null)} />}
-      {repro && repro.tipo === "nasc" && <FolhaNascimento p={repro.alvo} animalNames={nomesAnimais} onConfirm={(v) => registrarNascimento(abertoAtual && abertoAtual.id === repro.alvo.id ? abertoAtual : repro.alvo, v)}
+      {repro && repro.tipo === "vincOrigem" && <FolhaVincularOrigem an={(ativos || []).find((x) => x && x.id === repro.alvo.id) || repro.alvo} ativos={ativos} onConfirm={vincularAnimalPrenhez} onClose={() => setRepro(null)} />}
+      {repro && repro.tipo === "vincPren" && <FolhaVincularPrenhez asp={(ativos || []).find((x) => x && x.id === repro.alvo.id) || repro.alvo} ativos={ativos} onConfirm={vincularPrenhezAsp} onClose={() => setRepro(null)} />}
+      {repro && repro.tipo === "nasc" && <FolhaNascimento p={(ativos || []).find((x) => x && x.id === repro.alvo.id) || repro.alvo} ativos={ativos} modoInicial={repro.modo} onVincular={vincularAnimalPrenhez} animalNames={nomesAnimais} onConfirm={(v) => registrarNascimento(abertoAtual && abertoAtual.id === repro.alvo.id ? abertoAtual : repro.alvo, v)}
         onFull={() => { const a = repro.alvo; setRepro(null); nascer(a); }} onClose={() => setRepro(null)} />}
       {repro && repro.tipo === "mov" && <FolhaMovLote lote={embrioes.find((l) => l.id === repro.lote.id) || repro.lote} embrioes={embrioes} tipoInicial={repro.mov} onConfirm={(v) => movimentarLote(repro.lote, v)} onClose={() => setRepro(null)} />}
       {repro && repro.tipo === "lote" && <FolhaLote inicial={repro.lote ? (embrioes.find((l) => l.id === repro.lote.id) || repro.lote) : null} ativos={ativos} embrioes={embrioes} animalNames={animalNames} animalReg={animalReg} localNames={localNames} onQuickLocal={quickLocal} leilaoNames={leilaoNames} onQuickLeilao={quickLeilao} vendedorNames={vendedorNames} onQuickVendedor={quickVendedor} onAbrirAnimal={(an) => { setRepro(null); setAberto(an); }} socioNames={socioNames} onQuickSocio={quickSocio}
@@ -8167,6 +8463,25 @@ a{color:var(--em)}
 .rp-tl-links{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
 .rp-tl-links button{font:inherit;font-size:12px;padding:2px 9px;border-radius:999px;border:1px solid rgba(23,107,70,.22);background:rgba(23,107,70,.06);color:var(--em);cursor:pointer}
 .rp-tl-links button:hover{background:rgba(23,107,70,.12)}
+.rp-escopo{display:inline-flex}
+.rp-escopo .seg b{font-weight:600;opacity:.6;margin-left:4px;font-size:12px}
+.rp-modo{margin:0 0 14px;display:flex}
+.rp-modo .seg{flex:1}
+.rp-vincbox{display:flex;flex-direction:column;gap:10px;margin-top:6px}
+.rp-vinc-res{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.rp-vinc-res>div{border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:2px;background:var(--surf)}
+.rp-vinc-res span{font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.rp-vinc-res em{font-style:normal;font-size:12.5px;color:var(--muted)}
+.rp-opcoes{display:flex;flex-direction:column;gap:6px;max-height:300px;overflow:auto;margin:4px 0 10px;padding:2px}
+.rp-opcao{text-align:left;border:1px solid var(--line);background:var(--surf);border-radius:12px;padding:9px 12px;display:flex;flex-direction:column;gap:2px;cursor:pointer;font:inherit;color:inherit;position:relative}
+.rp-opcao:hover{border-color:rgba(23,107,70,.35)}
+.rp-opcao.on{border-color:var(--em);background:rgba(23,107,70,.07);box-shadow:0 0 0 3px rgba(23,107,70,.12)}
+.rp-opcao span{font-size:12.5px;color:var(--muted)}
+.rp-compat{position:absolute;top:9px;right:10px;font-style:normal;font-size:11px;color:var(--em);background:rgba(23,107,70,.08);border-radius:999px;padding:1px 8px}
+.rp-acoes-l{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:6px}
+.rp-infolink{border:0;background:transparent;padding:0;font:inherit;font-weight:600;color:var(--em);cursor:pointer;text-align:left}
+.rp-infolink:hover{text-decoration:underline}
+@media (max-width:640px){.rp-vinc-res{grid-template-columns:1fr}.rp-modo{flex-direction:column}}
 .rp-grupo{background:var(--surf);border:1px solid var(--line);border-radius:var(--r3);padding:14px 16px;box-shadow:var(--sh1);display:flex;flex-direction:column;gap:10px}
 .rp-grupo-h{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
 .rp-grupo-h>div{display:flex;flex-direction:column;gap:2px;min-width:0}
