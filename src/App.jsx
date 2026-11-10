@@ -4227,6 +4227,338 @@ const BUSCA_TIPOS = [["geral", "Geral"], ["animal", "Animal"], ["socio", "Sócio
 const EYE_ON = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>;
 const EYE_OFF = <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" /><line x1="1" y1="1" x2="23" y2="23" /></svg>;
 
+
+/* ======================================================================
+   RELATÓRIOS SM — identidade única para PDF e Excel (reutilizável)
+   ====================================================================== */
+const REL = { em: "176B46", emEsc: "0F4A31", ouro: "B89A5E", ouroClaro: "EFE6D2", tinta: "1C2621", mudo: "5C6761", linha: "E7E2D7", zebra: "FAF8F3", fundoCab: "F4F1EA" };
+const REL_FONTE = `-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter","Segoe UI",system-ui,Arial,sans-serif`;
+const relEsc = (v) => String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const relAgora = () => { const d = new Date(); return { data: d.toLocaleDateString("pt-BR"), hora: d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }), iso: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}` }; /* data local, não UTC */ };
+const relLogoUrl = (grande) => `${typeof location !== "undefined" ? location.origin : ""}${grande ? LOGO_SRC : LOGO_SRC_SM}`;
+// carrega uma biblioteca da CDN só quando for usada
+function carregarLib(src) {
+  return new Promise((resolve, reject) => {
+    const ex = [...document.scripts].find((s) => s.src === src);
+    if (ex) { if (ex.dataset.pronto) return resolve(); ex.addEventListener("load", () => resolve()); ex.addEventListener("error", reject); return; }
+    const s = document.createElement("script"); s.src = src;
+    s.onload = () => { s.dataset.pronto = "1"; resolve(); }; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+// a mesma logo do site, como dataURL (PNG com transparência)
+const _logoCache = {};
+async function relLogoDataUrl(grande) {
+  const url = relLogoUrl(grande);
+  if (_logoCache[url]) return _logoCache[url];
+  const blob = await (await fetch(url)).blob();
+  const data = await new Promise((ok, ko) => { const fr = new FileReader(); fr.onload = () => ok(fr.result); fr.onerror = ko; fr.readAsDataURL(blob); });
+  _logoCache[url] = data; return data;
+}
+function relBaixar(blob, nome) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = nome; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+/* ---------- PDF: documento HTML com blocos (data-blk) ---------- */
+// Cada bloco é colocado inteiro numa página; nada é cortado no meio. data-keep = fica junto do bloco seguinte.
+function relHtmlDoc({ titulo, subtitulo, filtros, kpis, blocos }) {
+  const ag = relAgora();
+  const fil = (filtros || []).filter(Boolean);
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${relEsc(titulo)} — SM Agropecuária</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+*{box-sizing:border-box}
+html{background:#ECEAE4}
+body{margin:0 auto;width:794px;max-width:100%;background:#fff;color:#${REL.tinta};font-family:${REL_FONTE};font-size:12px;line-height:1.45;-webkit-font-smoothing:antialiased;padding:0 56px 28px}
+[data-blk]{padding-top:14px}
+.capa{padding-top:40px}
+.capa-top{display:flex;align-items:center;gap:14px;padding-bottom:16px;border-bottom:1px solid #${REL.ouro}}
+.capa-top img{width:58px;height:auto;display:block}
+.marca{flex:1;display:flex;flex-direction:column;gap:1px}
+.marca b{font-size:15px;font-weight:700;letter-spacing:.01em;color:#${REL.emEsc}}
+.marca span{font-size:10.5px;color:#${REL.mudo};letter-spacing:.12em;text-transform:uppercase}
+.emitido{text-align:right;font-size:10.5px;color:#${REL.mudo};line-height:1.35}
+.emitido b{display:block;font-size:12px;color:#${REL.tinta};font-weight:600}
+h1{font-size:25px;font-weight:650;margin:22px 0 4px;color:#${REL.tinta}}
+.sub{margin:0;color:#${REL.mudo};font-size:12.5px}
+.filtros{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px;align-items:center}
+.filtros .fl{font-size:9.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#9A7B3A;margin-right:4px}
+.chip{display:inline-block;padding:3px 9px;border-radius:999px;background:#${REL.fundoCab};border:1px solid #${REL.linha};font-size:10.5px;color:#${REL.tinta}}
+.sec{font-size:9.5px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:#9A7B3A;margin:0 0 8px}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.kpi{border:1px solid #${REL.linha};border-radius:10px;padding:10px 12px;background:#fff}
+.kpi span{display:block;font-size:9.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#${REL.mudo}}
+.kpi b{display:block;font-size:17px;font-weight:650;margin-top:3px;color:#${REL.tinta}}
+.kpi b.pos{color:#${REL.em}} .kpi b.alerta{color:#9A6B1F}
+.kpi small{display:block;font-size:10px;color:#${REL.mudo};margin-top:2px}
+table.t{width:100%;border-collapse:collapse;font-size:11px}
+table.t th{text-align:left;font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#${REL.mudo};padding:7px 8px;border-bottom:1.5px solid #${REL.ouro};background:#${REL.fundoCab}}
+table.t td{padding:6px 8px;border-bottom:1px solid #${REL.linha};vertical-align:top}
+table.t tr:nth-child(even) td{background:#${REL.zebra}}
+table.t .n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+table.t td b{font-weight:600}
+.grupo{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:9px 14px;border-radius:8px;background:#${REL.em};color:#fff;margin-top:10px}
+.grupo b{font-size:12.5px;font-weight:650;letter-spacing:.02em}
+.grupo span{font-size:10.5px;color:#E9DDBF;white-space:nowrap}
+.grupo.plano{background:transparent;color:#${REL.emEsc};border-bottom:1.5px solid #${REL.ouro};border-radius:0;padding:6px 0}
+.grupo.plano span{color:#9A7B3A}
+.reg{border:1px solid #${REL.linha};border-radius:12px;padding:14px 16px 12px;background:#fff}
+.reg-h{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid #${REL.linha}}
+.reg h3{margin:0;font-size:15px;font-weight:650;letter-spacing:-.005em;color:#${REL.tinta}}
+.reg-sub{font-size:10.5px;color:#${REL.mudo};margin-top:2px}
+.pill{font-size:9.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;padding:3px 9px;border-radius:999px;background:#E7F1EC;color:#${REL.em};white-space:nowrap}
+.pill.off{background:#F4EEE2;color:#9A6B1F}
+.kv{display:grid;grid-template-columns:repeat(3,1fr);gap:9px 16px}
+.kv div{min-width:0}
+.kv span,.kl span{display:block;font-size:9px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:#${REL.mudo}}
+.kv b{display:block;font-size:11.5px;font-weight:500;color:#${REL.tinta};overflow-wrap:anywhere}
+.kv b.fin{font-weight:600;font-variant-numeric:tabular-nums}
+.kv b.pos{color:#${REL.em}} .kv b.alerta{color:#9A6B1F}
+.kl{margin-top:10px;padding-top:9px;border-top:1px dashed #${REL.linha};display:flex;flex-direction:column;gap:7px}
+.kl p{margin:1px 0 0;font-size:11px;color:#${REL.tinta};overflow-wrap:anywhere}
+.kl a{color:#${REL.em};text-decoration:none}
+.gen{border:1px solid #${REL.linha};border-radius:12px;padding:12px 14px;background:#FFFEFB}
+.gen svg{display:block;margin:0 auto;max-width:100%;height:auto}
+.gen .leg{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;font-size:10px;color:#${REL.mudo};margin-top:8px}
+.gen .sw{display:inline-block;width:10px;height:10px;border-radius:3px;vertical-align:-1px;margin-right:4px;border:1px solid #ccc}
+.gen .sw.m{background:#e8f0fb;border-color:#5b86cf} .gen .sw.f{background:#fbe9f1;border-color:#cf7aa3}
+.gen .lado{color:#9A7B3A;font-weight:600}
+.gen .obs{font-size:10.5px;color:#${REL.mudo};margin-top:8px;text-align:center}
+.gen-t{font-size:9.5px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:#9A7B3A;margin-bottom:6px}
+.totais{border-top:1.5px solid #${REL.ouro};padding-top:12px;margin-top:6px}
+.totais .linhas{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:6px}
+.fim{font-size:10px;color:#${REL.mudo};text-align:center;margin-top:18px}
+@media screen and (max-width:760px){body{width:auto;padding:0 18px 24px}.kpis,.totais .linhas{grid-template-columns:repeat(2,1fr)}.kv{grid-template-columns:repeat(2,1fr)}}
+@media print{html{background:#fff}body{width:auto;padding:0}@page{size:A4;margin:14mm 14mm 16mm}[data-blk]{break-inside:avoid}[data-keep]{break-after:avoid}}
+</style></head><body>
+<header class="capa" data-blk>
+  <div class="capa-top"><img src="${relLogoUrl(true)}" alt="SM Agropecuária"><div class="marca"><b>SM Agropecuária</b><span>Nelore de elite</span></div>
+    <div class="emitido">Emitido em<b>${ag.data} · ${ag.hora}</b></div></div>
+  <h1>${relEsc(titulo)}</h1>${subtitulo ? `<p class="sub">${relEsc(subtitulo)}</p>` : ""}
+  ${fil.length ? `<div class="filtros"><span class="fl">Filtros</span>${fil.map((f) => `<span class="chip">${relEsc(f)}</span>`).join("")}</div>` : ""}
+</header>
+${kpis && kpis.length ? `<section data-blk><div class="sec">Resumo</div><div class="kpis">${kpis.map(([r, v, sub, tom]) => `<div class="kpi"><span>${relEsc(r)}</span><b class="${tom || ""}">${relEsc(v)}</b>${sub ? `<small>${relEsc(sub)}</small>` : ""}</div>`).join("")}</div></section>` : ""}
+${(blocos || []).join("\n")}
+<div data-blk class="fim">Documento gerado pelo sistema SM Agropecuária.</div>
+</body></html>`;
+}
+
+// gera o PDF paginado: cada bloco inteiro numa página, cabeçalho com a logo e rodapé numerado em todas as páginas
+async function relPdfDeHtml(html, { titulo }) {
+  await carregarLib("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
+  await carregarLib("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+  const html2canvas = window.html2canvas, jsPDF = window.jspdf && window.jspdf.jsPDF;
+  if (!html2canvas || !jsPDF) throw new Error("bibliotecas de PDF não carregaram");
+  const LARG = 794;
+  const fr = document.createElement("iframe");
+  fr.setAttribute("aria-hidden", "true");
+  fr.style.cssText = `position:fixed;left:-12000px;top:0;width:${LARG}px;height:10px;border:0;background:#fff`;
+  document.body.appendChild(fr);
+  try {
+    const td = fr.contentDocument;
+    td.open(); td.write(html); td.close();
+    await new Promise((r) => setTimeout(r, 300));
+    try { if (td.fonts && td.fonts.ready) await Promise.race([td.fonts.ready, new Promise((r) => setTimeout(r, 2500))]); } catch (e) {}
+    await Promise.all([...td.images].map((im) => (im.complete ? 1 : new Promise((r) => { im.onload = im.onerror = r; setTimeout(r, 3000); }))));
+    td.documentElement.style.background = "#fff";
+    const body = td.body;
+    const H = Math.max(body.scrollHeight, body.offsetHeight, 200);
+    fr.style.height = H + "px";
+    const topoBody = body.getBoundingClientRect().top;
+    const blocos = [...td.querySelectorAll("[data-blk]")].map((el) => { const r = el.getBoundingClientRect(); return { top: r.top - topoBody, h: r.height, keep: el.hasAttribute("data-keep"), html: el.outerHTML }; });
+    // captura por trechos: cada trecho é desenhado num documento pequeno só com os seus blocos
+    // (uma imagem única muito alta sai em branco no navegador; copiar o documento inteiro a cada trecho seria lento)
+    const ESC = 1.75, TRECHO = 6500;
+    let seg = null;
+    const trecho = async (y0, h) => {
+      if (seg && y0 >= seg.y0 - 0.5 && y0 + h <= seg.y1 + 0.5) return seg;
+      let i0 = blocos.findIndex((b, i) => y0 >= b.top - 0.5 && y0 < (blocos[i + 1] ? blocos[i + 1].top : H));
+      if (i0 < 0) i0 = blocos.length - 1;
+      let i1 = i0;
+      while (i1 + 1 < blocos.length && blocos[i1 + 1].top + blocos[i1 + 1].h - blocos[i0].top <= TRECHO) i1++;
+      body.innerHTML = blocos.slice(i0, i1 + 1).map((b) => b.html).join("");
+      await Promise.all([...td.images].map((im) => (im.complete ? 1 : new Promise((ok) => { im.onload = im.onerror = ok; setTimeout(ok, 3000); }))));
+      await new Promise((ok) => setTimeout(ok, 20));
+      const hh = Math.max(1, body.scrollHeight);
+      fr.style.height = hh + "px";
+      const loc0 = body.querySelector("[data-blk]").getBoundingClientRect().top - body.getBoundingClientRect().top;
+      const c = await html2canvas(body, { scale: ESC, useCORS: true, backgroundColor: "#ffffff", width: LARG, height: hh, windowWidth: LARG, windowHeight: hh, scrollX: 0, scrollY: 0, logging: false });
+      seg = { y0: blocos[i0].top, y1: blocos[i1 + 1] ? blocos[i1 + 1].top : H, base: blocos[i0].top - loc0, c };
+      return seg;
+    };
+    const pdf = new jsPDF({ unit: "pt", format: "a4", compress: true });
+    const PW = pdf.internal.pageSize.getWidth(), PH = pdf.internal.pageSize.getHeight(), k = PW / LARG;
+    const TOPO1 = 6, TOPO = 60, BASE = PH - 46;
+    let logo = null; try { logo = await relLogoDataUrl(false); } catch (e) {}
+    const recorte = async (y, h) => {
+      const sg = await trecho(y, h);
+      const c = document.createElement("canvas"); c.width = sg.c.width; c.height = Math.max(1, Math.round(h * ESC));
+      const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(sg.c, 0, Math.round((y - sg.base) * ESC) + 2, sg.c.width, c.height - 2, 0, 2, c.width, c.height - 2);   // 2px de folga: não pega a borda do bloco anterior
+      return c.toDataURL("image/jpeg", 0.88);
+    };
+    let pagina = 1, y = TOPO1;
+    const novaPagina = () => { pdf.addPage(); pagina += 1; y = TOPO; };
+    const util = () => BASE - TOPO;
+    for (let i = 0; i < blocos.length; i++) {
+      const b = blocos[i], prox = blocos[i + 1];
+      const hPx = prox ? Math.max(b.h, prox.top - b.top) : b.h + 8;
+      const hPt = hPx * k;
+      const precisa = b.keep && prox ? hPt + Math.min(prox.h * k, util() * 0.5) : hPt;
+      if (y + precisa > BASE && y > (pagina === 1 ? TOPO1 : TOPO) + 1) novaPagina();
+      if (hPt <= BASE - y) { pdf.addImage(await recorte(b.top, hPx), "JPEG", 0, y, PW, hPt); y += hPt; continue; }
+      // bloco maior que uma página: divide em partes (raro: registro com muitos textos longos)
+      let ini = b.top, resto = hPx;
+      while (resto > 0) {
+        const parte = Math.min(resto, (BASE - y) / k);
+        pdf.addImage(await recorte(ini, parte), "JPEG", 0, y, PW, parte * k);
+        ini += parte; resto -= parte; y += parte * k;
+        if (resto > 0) novaPagina();
+      }
+    }
+    // cabeçalho (a partir da 2ª página) e rodapé em todas
+    const total = pdf.internal.getNumberOfPages(), ag = relAgora();
+    for (let p = 1; p <= total; p++) {
+      pdf.setPage(p);
+      if (p > 1) {
+        if (logo) pdf.addImage(logo, "PNG", 42, 20, 24, 23);
+        pdf.setFont("helvetica", "bold"); pdf.setFontSize(9.5); pdf.setTextColor(15, 74, 49); pdf.text("SM Agropecuária", 72, 30);
+        pdf.setFont("helvetica", "normal"); pdf.setFontSize(8.5); pdf.setTextColor(92, 103, 97); pdf.text(String(titulo || "Relatório"), 72, 41);
+        pdf.text(`Emitido em ${ag.data}`, PW - 42, 30, { align: "right" });
+        pdf.setDrawColor(184, 154, 94); pdf.setLineWidth(0.6); pdf.line(42, 50, PW - 42, 50);
+      }
+      pdf.setDrawColor(231, 226, 215); pdf.setLineWidth(0.6); pdf.line(42, PH - 34, PW - 42, PH - 34);
+      pdf.setFont("helvetica", "normal"); pdf.setFontSize(8); pdf.setTextColor(92, 103, 97);
+      pdf.text(`SM Agropecuária  ·  Gerado em ${ag.data} às ${ag.hora}`, 42, PH - 21);
+      pdf.text(`Página ${p} de ${total}`, PW - 42, PH - 21, { align: "right" });
+    }
+    pdf.setProperties({ title: `${titulo || "Relatório"} — SM Agropecuária`, author: "SM Agropecuária", creator: "Sistema SM Agropecuária" });
+    return pdf.output("blob");
+  } finally { fr.remove(); }
+}
+
+/* ---------- Excel: mesma identidade em todas as abas ---------- */
+// tipos de coluna: texto | longo | moeda | pct | data | num
+const relTipoColuna = (k) => {
+  if (/^(Valor|Total investido|Parcelas \(total\)|Comissão \(R\$\)|Estimado|Investido|Pago|Em aberto)/i.test(k)) return "moeda";
+  if (/\(%\)|^% |Porcentagem/i.test(k)) return "pct";
+  if (/^(Nascimento|Previsão parto|Data parto|Vencimento|Data|Data da compra)$/i.test(k)) return "data";
+  if (/^(Parcelas \(qtd\)|Nº|Oócitos|Embriões|Embriões transf\.|Prenhezes conf\.|Parcelas|Registros)$/i.test(k)) return "num";
+  if (/Histórico|Sociedade|Vendas|Compras adicionais|Observações|Vídeos|Obs\. genealógicas|vinculadas/i.test(k)) return "longo";
+  return "texto";
+};
+const relDataSerial = (v) => { const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(String(v || "").trim()); if (!m) return null; return (Date.UTC(+m[3], +m[2] - 1, +m[1]) - Date.UTC(1899, 11, 30)) / 86400000; };
+const relValorCelula = (v, tipo) => {
+  if (v == null || v === "") return null;
+  if (tipo === "data") { const s = relDataSerial(v); return s == null ? String(v) : s; }
+  if (tipo === "moeda" || tipo === "pct" || tipo === "num") { const n = typeof v === "number" ? v : num(v); return Number.isFinite(n) && String(v).trim() !== "" ? n : String(v); }
+  return typeof v === "number" ? v : String(v);
+};
+const REL_FMT = { moeda: '"R$" #,##0.00', pct: '0.0"%"', data: "dd/mm/yyyy", num: "#,##0" };
+const relLargura = (k, vals, tipo) => {
+  let mx = String(k).length + 2;
+  vals.forEach((v) => { if (v == null) return; const l = tipo === "moeda" ? 16 : tipo === "data" ? 12 : String(v).length; if (l > mx) mx = l; });
+  return Math.min(Math.max(mx + 2, tipo === "longo" ? 24 : 10), tipo === "longo" ? 60 : 44);
+};
+
+// spec: { arquivo, titulo, info, abas: [{ nome, colunas: [nomes], linhas: [obj], totalizar: bool }] }
+async function relExcel(spec) {
+  try {
+    await carregarLib("https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js");
+    if (!window.ExcelJS) throw new Error("ExcelJS indisponível");
+    await relExcelJS(spec);
+  } catch (e) {
+    relExcelBasico(spec);   // sem internet para a biblioteca: mesmo conteúdo e formatação, sem a logo
+  }
+}
+async function relExcelJS({ arquivo, titulo, info, abas }) {
+  const ExcelJS = window.ExcelJS;
+  const wb = new ExcelJS.Workbook(); wb.creator = "SM Agropecuária"; wb.created = new Date();
+  let imgId = null; try { imgId = wb.addImage({ base64: await relLogoDataUrl(false), extension: "png" }); } catch (e) {}
+  const ag = relAgora();
+  const CAB = 5;   // linha do cabeçalho da tabela (1–4: identidade)
+  const borda = (rgb) => ({ style: "thin", color: { argb: "FF" + rgb } });
+  abas.forEach((aba) => {
+    const cols = aba.colunas, tipos = cols.map((c) => aba.tipos && aba.tipos[c] ? aba.tipos[c] : relTipoColuna(c));
+    const ws = wb.addWorksheet(aba.nome.slice(0, 31), {
+      views: [{ state: "frozen", ySplit: CAB, xSplit: aba.congelarColunas || 0, showGridLines: false }],
+      pageSetup: { paperSize: 9, orientation: cols.length > 6 ? "landscape" : "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.6, header: 0.2, footer: 0.3 } },
+      headerFooter: { oddFooter: `&L&8SM Agropecuária · ${titulo}&R&8Página &P de &N` },
+    });
+    ws.properties.defaultRowHeight = 18;
+    const larg = cols.map((c, i) => relLargura(c, aba.linhas.map((l) => l[c]), tipos[i]));
+    ws.columns = cols.map((c, i) => ({ key: "c" + i, width: larg[i] }));
+    // identidade: logo + nome + título + data/filtros
+    ws.getRow(1).height = 24; ws.getRow(2).height = 18; ws.getRow(3).height = 16; ws.getRow(4).height = 8;
+    if (imgId != null) ws.addImage(imgId, { tl: { col: 0.12, row: 0.15 }, ext: { width: 50, height: 48 }, editAs: "oneCell" });
+    const ind = imgId != null ? 8 : 0;
+    const t1 = ws.getCell(1, 1); t1.value = "SM Agropecuária"; t1.font = { name: "Calibri", size: 15, bold: true, color: { argb: "FF" + REL.emEsc } }; t1.alignment = { vertical: "middle", indent: ind };
+    const t2 = ws.getCell(2, 1); t2.value = aba.titulo || titulo; t2.font = { name: "Calibri", size: 11.5, color: { argb: "FF" + REL.tinta } }; t2.alignment = { vertical: "middle", indent: ind };
+    const t3 = ws.getCell(3, 1); t3.value = `Emitido em ${ag.data} às ${ag.hora}${info ? "  ·  " + info : ""}`; t3.font = { name: "Calibri", size: 9, italic: true, color: { argb: "FF" + REL.mudo } }; t3.alignment = { vertical: "middle", indent: ind };
+    for (let c = 1; c <= Math.max(cols.length, 6); c++) ws.getCell(4, c).border = { bottom: { style: "thin", color: { argb: "FF" + REL.ouro } } };
+    // cabeçalho da tabela
+    const hr = ws.getRow(CAB); hr.height = 30;
+    cols.forEach((c, i) => {
+      const cell = hr.getCell(i + 1); cell.value = c;
+      cell.font = { name: "Calibri", size: 10, bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF" + REL.em } };
+      cell.alignment = { vertical: "middle", horizontal: ["moeda", "pct", "num"].includes(tipos[i]) ? "right" : tipos[i] === "data" ? "center" : "left", wrapText: true };
+      cell.border = { bottom: { style: "medium", color: { argb: "FF" + REL.ouro } } };
+    });
+    // dados
+    aba.linhas.forEach((l, r) => {
+      const row = ws.getRow(CAB + 1 + r);
+      const destaque = l.__destaque;
+      cols.forEach((c, i) => {
+        const cell = row.getCell(i + 1), t = tipos[i];
+        const v = relValorCelula(l[c], t); cell.value = v;
+        if (typeof v === "number" && REL_FMT[t]) cell.numFmt = REL_FMT[t];
+        cell.font = { name: "Calibri", size: 10, bold: !!destaque, color: { argb: "FF" + (destaque ? REL.emEsc : REL.tinta) } };
+        cell.alignment = { vertical: "top", horizontal: ["moeda", "pct", "num"].includes(t) ? "right" : t === "data" ? "center" : "left", wrapText: t === "longo" };
+        cell.border = { bottom: borda(REL.linha) };
+        if (destaque) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF" + REL.ouroClaro } };
+        else if (r % 2 === 1) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF" + REL.zebra } };
+      });
+    });
+    const ult = CAB + aba.linhas.length;
+    if (aba.linhas.length && !aba.semFiltro) ws.autoFilter = { from: { row: CAB, column: 1 }, to: { row: ult, column: cols.length } };
+    // total (fora do filtro): soma só o que está visível depois de filtrar
+    if (aba.totalizar && aba.linhas.length) {
+      const tr = ws.getRow(ult + 2);
+      cols.forEach((c, i) => {
+        const cell = tr.getCell(i + 1), t = tipos[i];
+        if (i === 0) cell.value = "Total";
+        else if (t === "moeda") { const L = ws.getColumn(i + 1).letter; cell.value = { formula: `SUBTOTAL(109,${L}${CAB + 1}:${L}${ult})` }; cell.numFmt = REL_FMT.moeda; }
+        cell.font = { name: "Calibri", size: 10, bold: true, color: { argb: "FF" + REL.emEsc } };
+        cell.alignment = { horizontal: t === "moeda" ? "right" : "left" };
+        cell.border = { top: { style: "thin", color: { argb: "FF" + REL.ouro } } };
+      });
+    }
+  });
+  const buf = await wb.xlsx.writeBuffer();
+  relBaixar(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), arquivo);
+}
+function relExcelBasico({ arquivo, titulo, info, abas }) {
+  const wb = XLSX.utils.book_new(), ag = relAgora();
+  abas.forEach((aba) => {
+    const cols = aba.colunas, tipos = cols.map((c) => aba.tipos && aba.tipos[c] ? aba.tipos[c] : relTipoColuna(c));
+    const aoa = [["SM Agropecuária"], [aba.titulo || titulo], [`Emitido em ${ag.data} às ${ag.hora}${info ? "  ·  " + info : ""}`], [], cols];
+    aba.linhas.forEach((l) => aoa.push(cols.map((c, i) => { const v = relValorCelula(l[c], tipos[i]); return v == null ? "" : v; })));
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const st = (r, c, s) => { const a = XLSX.utils.encode_cell({ r, c }); if (ws[a]) ws[a].s = s; };
+    st(0, 0, { font: { bold: true, sz: 15, color: { rgb: REL.emEsc } } }); st(1, 0, { font: { sz: 11.5 } }); st(2, 0, { font: { italic: true, sz: 9, color: { rgb: REL.mudo } } });
+    cols.forEach((c, i) => st(4, i, { fill: { fgColor: { rgb: REL.em } }, font: { bold: true, color: { rgb: "FFFFFF" } }, alignment: { wrapText: true, vertical: "center" }, border: { bottom: { style: "medium", color: { rgb: REL.ouro } } } }));
+    aba.linhas.forEach((l, r) => cols.forEach((c, i) => { const a = XLSX.utils.encode_cell({ r: 5 + r, c: i }); if (!ws[a]) return; const t = tipos[i]; if (ws[a].t === "n" && REL_FMT[t]) ws[a].z = REL_FMT[t];
+      ws[a].s = { font: { sz: 10, bold: !!l.__destaque }, alignment: { vertical: "top", wrapText: t === "longo", horizontal: ["moeda", "pct", "num"].includes(t) ? "right" : t === "data" ? "center" : "left" }, border: { bottom: { style: "thin", color: { rgb: REL.linha } } }, ...(r % 2 ? { fill: { fgColor: { rgb: REL.zebra } } } : {}) }; }));
+    ws["!cols"] = cols.map((c, i) => ({ wch: relLargura(c, aba.linhas.map((l) => l[c]), tipos[i]) }));
+    if (aba.linhas.length && !aba.semFiltro) ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 4, c: 0 }, e: { r: 4 + aba.linhas.length, c: cols.length - 1 } }) };
+    XLSX.utils.book_append_sheet(wb, ws, aba.nome.slice(0, 31));
+  });
+  XLSX.writeFile(wb, arquivo);
+}
+
 function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const [q, setQ] = useState("");
   const [campos, setCampos] = useState({ basico: true, idade: true, genealogia: false, sociedade: true, participacao: true, estimado: true, investido: true, pago: true, aberto: true, parcelas: false, comissao: false, compras: false, vendas: false, prenhezVinc: false, aspiracaoVinc: false, historico: false, reprodutivo: false, videos: false, obs: false });
@@ -4382,37 +4714,11 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   // O relatório é renderizado numa LARGURA FIXA de folha A4 (fora da tela), pra o PDF sair
   // sempre em layout de página normal — igual no computador — mesmo gerando pelo celular.
   const gerarPdfBlob = async () => {
-    await carregarScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
-    await carregarScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
-    const html2canvas = window.html2canvas;
-    const jsPDF = window.jspdf && window.jspdf.jsPDF;
-    if (!html2canvas || !jsPDF) throw new Error("libs não carregaram");
     if (!pdfDoc) throw new Error("sem conteúdo");
-    const LARG = 794; // largura de uma folha A4 a 96dpi (≈21cm) → layout de documento normal
-    const temp = document.createElement("iframe");
-    temp.setAttribute("aria-hidden", "true");
-    temp.style.cssText = `position:fixed;left:-10000px;top:0;width:${LARG}px;height:10px;border:0;background:#fff`;
-    document.body.appendChild(temp);
-    try {
-      const td = temp.contentDocument;
-      td.open(); td.write(pdfDoc); td.close();
-      await new Promise((r) => setTimeout(r, 400)); // deixa carregar fontes/SVG
-      const body = td.body;
-      const alt = Math.max(body.scrollHeight, body.offsetHeight, 200);
-      temp.style.height = alt + "px";
-      const canvas = await html2canvas(body, { scale: 2, useCORS: true, backgroundColor: "#ffffff", width: LARG, windowWidth: LARG, height: alt, windowHeight: alt });
-      const pdf = new jsPDF({ unit: "pt", format: "a4", compress: true });
-      const pw = pdf.internal.pageSize.getWidth(), ph = pdf.internal.pageSize.getHeight();
-      const img = canvas.toDataURL("image/jpeg", 0.92);
-      const imgH = (canvas.height * pw) / canvas.width;
-      let resto = imgH, pos = 0;
-      pdf.addImage(img, "JPEG", 0, pos, pw, imgH);
-      resto -= ph;
-      while (resto > 0) { pos -= ph; pdf.addPage(); pdf.addImage(img, "JPEG", 0, pos, pw, imgH); resto -= ph; }
-      return pdf.output("blob");
-    } finally { temp.remove(); }
+    const t = (pdfDoc.match(/<h1>([^<]*)<\/h1>/) || [])[1] || "Relatório";
+    return relPdfDeHtml(pdfDoc, { titulo: t.replace(/&amp;/g, "&") });
   };
-  const nomePdf = () => `Relatorio-SM-${new Date().toISOString().slice(0, 10)}.pdf`;
+  const nomePdf = () => `Relatorio-SM-${relAgora().iso}.pdf`;
   const baixarPdf = async () => {
     setGerandoPdf(true);
     try {
@@ -4420,7 +4726,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a"); a.href = url; a.download = nomePdf(); document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 4000);
-    } catch (e) { imprimirPdf(); }
+    } catch (e) { console.warn("Falha ao gerar o PDF:", e && (e.stack || e.message || e)); imprimirPdf(); }
     finally { setGerandoPdf(false); }
   };
   const compartilharPdf = async () => {
@@ -4512,157 +4818,120 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
     return "F5F2EA";
   };
 
-  const exportarExcel = (opts) => {
+  /* ---- conteúdo comum ao PDF e ao Excel (mesmos dados, filtros e totais) ---- */
+  const TIPO_LBL = { animal: "Animal", prenhez: "Prenhez", aspiracao: "Aspiração" };
+  const ehMoeda = (k) => relTipoColuna(k) === "moeda";
+  const ehPct = (k) => relTipoColuna(k) === "pct";
+  const valorTxt = (k, v) => (v == null || v === "" ? "—" : typeof v === "number" && ehMoeda(k) ? fmt(v) : ehPct(k) && v !== "" ? `${String(v).replace(".", ",")}%` : k === "Tipo" ? TIPO_LBL[v] || v : String(v));
+  const metaRel = (o) => {
+    const agr = (AGRUPAR_OPC.find(([k]) => k === o.agrupar) || [])[1] || "";
+    const ord = (ORDENAR_OPC.find(([k]) => k === o.ordenar) || [])[1] || "";
+    const filtros = [...chipsAtivos.map((c) => c.label), q.trim() ? `Busca: “${q.trim()}”` : "", o.agrupar !== "nenhum" ? `Agrupado por: ${agr}` : "", `Ordenado por: ${ord}`, `${nCampos} grupo(s) de informações`];
+    const porTipo = ["animal", "prenhez", "aspiracao"].map((t) => [t, selecionados.filter((a) => a.tipo === t).length]).filter(([, n]) => n);
+    return { agr, ord, filtros: filtros.filter(Boolean), porTipo };
+  };
+  const tituloRel = () => { const ts = [...new Set(selecionados.map((a) => a.tipo))]; return ts.length === 1 ? `Relatório de ${({ animal: "Animais", prenhez: "Prenhezes", aspiracao: "Aspirações" })[ts[0]]}` : "Relatório do Plantel"; };
+
+  const exportarExcel = async (opts) => {
     if (!selecionados.length) return;
     const o = opts || exp;
     const grupos = montarGrupos(selecionados, o.agrupar, o.ordenar);
-
-    // colunas: união dos campos (mesma lógica de linhaDe) preservando a ordem
-    const linhasPorId = new Map();
-    const colset = [];
+    const M = metaRel(o);
+    const linhasPorId = new Map(); const colset = [];
     selecionados.forEach((a) => { const r = linhaDe(a); linhasPorId.set(a.id, r); Object.keys(r).forEach((k) => { if (!colset.includes(k)) colset.push(k); }); });
-    const C = colset.length || 1;
-
-    const aoa = []; const estilos = [];
-    const addRow = (arr, st) => { aoa.push(arr); estilos.push(st || {}); };
-    const verde = "1A4A2D", ouro = "C6A15B";
-
-    // título principal + meta
-    addRow(["RELATÓRIO SM AGROPECUÁRIA"], { 0: { font: { bold: true, sz: 14, color: { rgb: verde } } } });
-    const metaAgr = (AGRUPAR_OPC.find(([k]) => k === o.agrupar) || [])[1] || "";
-    const metaOrd = (ORDENAR_OPC.find(([k]) => k === o.ordenar) || [])[1] || "";
-    addRow([`Gerado em ${new Date().toLocaleDateString("pt-BR")} · ${selecionados.length} registro(s) único(s) · Agrupado por: ${metaAgr} · Ordenado por: ${metaOrd}`], { 0: { font: { italic: true, sz: 9, color: { rgb: "777777" } } } });
-    addRow([]);
-
-    grupos.forEach((g) => {
-      if (o.agrupar !== "nenhum") {
-        const barra = {}; for (let i = 0; i < C; i++) barra[i] = { fill: { fgColor: { rgb: o.titulos ? verde : "FFFFFF" } }, font: { bold: true, sz: 12, color: { rgb: o.titulos ? "FFFFFF" : verde } } };
-        addRow(colset.map((_, i) => (i === 0 ? `${g.titulo}  (${g.itens.length} registro(s))` : "")), barra);
-      }
-      // cabeçalho (cores pastéis por categoria)
-      const hst = {}; colset.forEach((k, i) => { hst[i] = { fill: { fgColor: { rgb: corCampoHex(k) } }, font: { bold: true, sz: 10, color: { rgb: "333333" } }, alignment: { wrapText: true, vertical: "center" } }; });
-      addRow(colset.slice(), hst);
-      // dados (células brancas, valores inalterados)
-      g.itens.forEach((a) => { const r = linhasPorId.get(a.id); addRow(colset.map((k) => (r[k] == null ? "" : r[k]))); });
-      addRow([]);
-    });
-
-    // total geral sem duplicidade
+    const agrupado = o.agrupar !== "nenhum";
+    const colGrupo = agrupado ? (PREFIXO_GRUPO[o.agrupar] ? M.agr : "Grupo") : null;
+    // uma tabela contínua (com filtro e cabeçalho congelado); o agrupamento vira a primeira coluna
+    const linhas = [];
+    grupos.forEach((g) => g.itens.forEach((a) => { const r = { ...linhasPorId.get(a.id) }; if (r.Tipo) r.Tipo = TIPO_LBL[r.Tipo] || r.Tipo; if (agrupado) r[colGrupo] = g.titulo.replace(/^[^:]+:\s*/, ""); linhas.push(r); }));
     const T = totaisGerais();
-    addRow([`Total geral: ${T.unicos} registro(s) único(s)`], { 0: { font: { bold: true, sz: 11, color: { rgb: verde } } } });
-    if (T.temFin) addRow([`Estimado: ${fmt(T.est)}  ·  Investido: ${fmt(T.inv)}  ·  Pago: ${fmt(T.pago)}  ·  Em aberto: ${fmt(T.aberto)}`], { 0: { font: { sz: 10, color: { rgb: "555555" } } } });
-
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    estilos.forEach((st, r) => Object.entries(st).forEach(([c, s]) => { const addr = XLSX.utils.encode_cell({ r, c: +c }); if (ws[addr]) ws[addr].s = s; }));
-    // AutoFit: largura de cada coluna pelo conteúdo real (cabeçalho + todas as células).
-    // A coluna A também precisa caber as barras de título de grupo (ex.: "SÓCIO: NELORE LUCENTE (12)"),
-    // que ficam exatamente nessa coluna — por isso antes apareciam cortadas.
-    const tituloGrupoMax = (o.agrupar !== "nenhum")
-      ? grupos.reduce((mx, g) => Math.max(mx, `${g.titulo}  (${g.itens.length} registro(s))`.length), 0)
-      : 0;
-    ws["!cols"] = colset.map((k, idx) => {
-      let max = String(k).length;
-      selecionados.forEach((a) => { const r = linhasPorId.get(a.id); const v = r[k]; if (v != null && v !== "") { const len = String(v).length; if (len > max) max = len; } });
-      if (idx === 0 && tituloGrupoMax > max) max = tituloGrupoMax; // inclui o texto do título de grupo na coluna A
-      return { wch: Math.min(Math.max(max + 2, 10), 80) };
-    });
-
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Relatório");
-
-    // abas detalhadas (preservadas como já existiam)
+    const resumo = [
+      { Indicador: "Registros únicos", Valor: T.unicos },
+      ...M.porTipo.map(([t, n]) => ({ Indicador: ({ animal: "Animais", prenhez: "Prenhezes", aspiracao: "Aspirações" })[t], Valor: n })),
+      ...(T.temFin ? [{ Indicador: "Valor estimado (total)", Valor: T.est, __m: 1 }, { Indicador: "Total investido", Valor: T.inv, __m: 1 }, { Indicador: "Valor pago", Valor: T.pago, __m: 1 }, { Indicador: "Valor em aberto", Valor: T.aberto, __m: 1, __destaque: T.aberto > 0 }] : []),
+      ...(agrupado ? [{ Indicador: "Agrupamento", Valor: M.agr }] : []),
+      { Indicador: "Ordenação", Valor: M.ord },
+      ...chipsAtivos.map((c) => ({ Indicador: "Filtro", Valor: c.label })),
+    ].map((l) => ({ ...l, Valor: l.__m ? l.Valor : l.Valor }));
+    const abas = [
+      { nome: "Relatório", titulo: tituloRel(), colunas: agrupado ? [colGrupo, ...colset] : colset, linhas, congelarColunas: (agrupado ? 1 : 0) + colset.indexOf("Nome") + 1 },
+      { nome: "Resumo", titulo: `${tituloRel()} — resumo`, colunas: ["Indicador", "Valor"], tipos: { Valor: "texto" }, semFiltro: true,
+        linhas: resumo.map((l) => ({ ...l, Valor: l.__m ? fmt(l.Valor) : l.Valor })) },
+    ];
     if (campos.parcelas) {
-      const rows = [];
-      selecionados.forEach((a) => parcelasUnificadas(a).forEach((p) => rows.push({ Animal: a.nome, "Nº": p.numero, Vencimento: dataBR(p.venc), Valor: p.valor, Origem: p.valorAdic > 0 && p.valorBase > 0 ? "original+adicional" : p.valorAdic > 0 ? "adicional" : "original" })));
-      if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Parcelas");
+      const rows = []; selecionados.forEach((a) => parcelasUnificadas(a).forEach((p) => rows.push({ Animal: a.nome, "Nº": p.numero, Vencimento: dataBR(p.venc), Valor: p.valor, Origem: p.valorAdic > 0 && p.valorBase > 0 ? "original+adicional" : p.valorAdic > 0 ? "adicional" : "original" })));
+      if (rows.length) abas.push({ nome: "Parcelas", titulo: "Parcelas", colunas: ["Animal", "Nº", "Vencimento", "Valor", "Origem"], linhas: rows, totalizar: true, congelarColunas: 1 });
     }
     if (campos.sociedade) {
-      const rows = [];
-      selecionados.forEach((a) => ((a.sociedadeAtual || a.socios || []).filter(Boolean)).forEach((s) => rows.push({ Animal: a.nome, Sócio: s.nome, "Porcentagem (%)": num(s.pct), Observações: s.obs || "" })));
-      if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Sociedade");
+      const rows = []; selecionados.forEach((a) => ((a.sociedadeAtual || a.socios || []).filter(Boolean)).forEach((s) => rows.push({ Animal: a.nome, Sócio: s.nome, "Porcentagem (%)": num(s.pct), Observações: s.obs || "" })));
+      if (rows.length) abas.push({ nome: "Sociedade", titulo: "Sociedade", colunas: ["Animal", "Sócio", "Porcentagem (%)", "Observações"], linhas: rows, congelarColunas: 1 });
     }
     if (campos.vendas) {
-      const rows = [];
-      selecionados.forEach((a) => vendasDo(a).forEach((v) => rows.push({ Animal: a.nome, Tipo: v.tipo, Data: dataBR(v.data), "% vendida": v.pctVendida || "", Comprador: v.comprador || "", Valor: v.valor })));
-      if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Vendas");
+      const rows = []; selecionados.forEach((a) => vendasDo(a).forEach((v) => rows.push({ Animal: a.nome, Tipo: v.tipo, Data: dataBR(v.data), "% vendida": v.pctVendida || "", Comprador: v.comprador || "", Valor: v.valor })));
+      if (rows.length) abas.push({ nome: "Vendas", titulo: "Vendas", colunas: ["Animal", "Tipo", "Data", "% vendida", "Comprador", "Valor"], linhas: rows, totalizar: true, congelarColunas: 1 });
     }
     if (campos.compras) {
-      const rows = [];
-      selecionados.forEach((a) => (a.comprasAdic || []).forEach((c) => rows.push({ Animal: a.nome, Data: dataBR(c.data), "% adquirida": num(c.pctAdicional), Valor: num(c.valor) || num(c.valorParcela) * num(c.parcelas), Parcelas: c.parcelas || "" })));
-      if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Compras");
+      const rows = []; selecionados.forEach((a) => (a.comprasAdic || []).forEach((c) => rows.push({ Animal: a.nome, Data: dataBR(c.data), "% adquirida": num(c.pctAdicional), Valor: num(c.valor) || num(c.valorParcela) * num(c.parcelas), Parcelas: c.parcelas || "" })));
+      if (rows.length) abas.push({ nome: "Compras", titulo: "Compras adicionais", colunas: ["Animal", "Data", "% adquirida", "Valor", "Parcelas"], linhas: rows, totalizar: true, congelarColunas: 1 });
     }
-    XLSX.writeFile(wb, "relatorio-sm-agropecuaria.xlsx");
+    await relExcel({ arquivo: `Relatorio-SM-${relAgora().iso}.xlsx`, titulo: tituloRel(), info: `${T.unicos} registro(s)${chipsAtivos.length ? ` · ${chipsAtivos.length} filtro(s)` : ""}`, abas });
   };
 
   const exportarPDF = (opts) => {
     if (!selecionados.length) return;
     const o = opts || exp;
-    const esc = (v) => String(v ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-    // cartão de um registro — MESMO modelo atual, incluindo a genealogia (SVG)
-    const cardDe = (a) => {
+    const M = metaRel(o);
+    const LONGOS = /Histórico|Sociedade|Vendas|Compras adicionais|Observações|vinculadas|Obs\. genealógicas/;
+    const genKeys = ["Pai", "Mãe", "Registro da mãe", "Avô paterno", "Avó paterna", "Avô materno", "Avó materna", "Obs. genealógicas"];
+    // registro: cabeçalho (nome, tipo, RGD, situação) + todas as informações marcadas + genealogia (materna à esquerda, paterna à direita)
+    const blocoDe = (a) => {
       const row = linhaDe(a);
-      const genKeys = ["Pai", "Mãe", "Registro da mãe", "Avô paterno", "Avó paterna", "Avô materno", "Avó materna", "Obs. genealógicas"];
-      const linhas = Object.entries(row).filter(([k]) => k !== "Nome" && k !== "Vídeos (links)" && !(campos.genealogia && genKeys.includes(k))).map(([k, v]) => `<tr><td class="k" style="background:#${corCampoHex(k)}">${esc(k)}</td><td>${esc(typeof v === "number" && /valor|investido|estimado|comiss|pago|aberto|parcela/i.test(k) ? fmt(v) : v)}</td></tr>`).join("");
-      let linhaVideos = "";
-      if (campos.videos) {
-        const vids = videosLista(a);
-        if (vids.length) {
-          const itens = vids.map((v) => `<a href="${esc(v.url)}" style="color:#1d3a2b">${esc(v.tipo || "Vídeo")}: ${esc(v.url)}</a>`).join("<br>");
-          linhaVideos = `<tr><td class="k" style="background:#EFEFEF">Vídeos</td><td>${itens}</td></tr>`;
-        }
-      }
-      let genBloco = "";
+      const sub = [TIPO_LBL[a.tipo] || a.tipo, row["Registro"] ? rgdTxt(row["Registro"]) : "", row["Sexo"], row["Categoria"]].filter(Boolean).join(" · ");
+      const sit = row["Situação"];
+      const fora = new Set(["Nome", "Tipo", "Registro", "Situação", "Vídeos (links)", ...(campos.genealogia ? genKeys : [])]);
+      const curtos = [], longos = [];
+      Object.entries(row).forEach(([k, v]) => {
+        if (fora.has(k) || (k === "Sexo" || k === "Categoria")) return;
+        const txt = valorTxt(k, v);
+        if (LONGOS.test(k) && String(v || "").length > 0) longos.push(`<div><span>${relEsc(k)}</span><p>${relEsc(txt)}</p></div>`);
+        else { const fin = ehMoeda(k) || ehPct(k); const tom = k === "Valor estimado" && v ? " pos" : k === "Valor em aberto" && num(v) > 0 ? " alerta" : ""; curtos.push(`<div><span>${relEsc(k)}</span><b class="${fin ? "fin" : ""}${tom}">${relEsc(txt)}</b></div>`); }
+      });
+      if (campos.videos) { const vids = videosLista(a); if (vids.length) longos.push(`<div><span>Vídeos</span><p>${vids.map((v) => `<a href="${relEsc(v.url)}">${relEsc(v.tipo || "Vídeo")}: ${relEsc(v.url)}</a>`).join("<br>")}</p></div>`); }
+      let html = `<div data-blk><article class="reg"><div class="reg-h"><div><h3>${relEsc(a.nome)}</h3><div class="reg-sub">${relEsc(sub)}</div></div>${sit ? `<span class="pill${sit === "Ativo" ? "" : " off"}">${relEsc(sit)}</span>` : ""}</div>`
+        + (curtos.length ? `<div class="kv">${curtos.join("")}</div>` : "") + (longos.length ? `<div class="kl">${longos.join("")}</div>` : "") + `</article></div>`;
       if (campos.genealogia) {
         const svg = svgGenealogiaStr(a);
-        if (svg) genBloco = `<div class="gtit">Genealogia</div><div class="ped">${svg}<div class="ped-legend"><span><i class="sw m"></i> Macho</span><span><i class="sw f"></i> Fêmea</span><span class="side">◀ Materno</span><span class="side">Paterno ▶</span></div>${a.obsGen ? `<div class="gobs">Obs. genealógicas: ${esc(a.obsGen)}</div>` : ""}</div>`;
+        const regMae = row["Registro da mãe"];
+        if (svg) html += `<div data-blk><div class="gen"><div class="gen-t">Genealogia · ${relEsc(a.nome)}</div>${svg}<div class="leg"><span><i class="sw m"></i>Macho</span><span><i class="sw f"></i>Fêmea</span><span class="lado">◀ Materno</span><span class="lado">Paterno ▶</span></div>${regMae ? `<div class="obs">Registro da mãe: ${relEsc(regMae)}</div>` : ""}${a.obsGen ? `<div class="obs">Obs. genealógicas: ${relEsc(a.obsGen)}</div>` : ""}</div></div>`;
+        else if (genKeys.some((k) => row[k])) html += `<div data-blk><div class="reg"><div class="gen-t">Genealogia</div><div class="kv">${genKeys.filter((k) => row[k]).map((k) => `<div><span>${relEsc(k)}</span><b>${relEsc(row[k])}</b></div>`).join("")}</div></div></div>`;
       }
-      return `<div class="animal"><h2>${esc(a.nome)} <small>${esc(a.tipo)}</small></h2>${(linhas || linhaVideos) ? `<table>${linhas}${linhaVideos}</table>` : ""}${genBloco}</div>`;
+      return html;
     };
-
+    // índice: visão executiva dos registros incluídos (em partes, para nunca cortar na página)
+    const colsIdx = [["Nome", (a, r) => `<b>${relEsc(a.nome)}</b>`], ["Tipo", (a) => relEsc(TIPO_LBL[a.tipo] || a.tipo)], ["Registro", (a) => relEsc(a.registro || "—")],
+      ...(campos.participacao ? [["Participação", (a, r) => relEsc(valorTxt("Participação atual (%)", r["Participação atual (%)"])), "n"]] : []),
+      ...(campos.estimado ? [["Valor estimado", (a, r) => relEsc(valorTxt("Valor estimado", r["Valor estimado"])), "n"]] : []),
+      ...(campos.aberto ? [["Em aberto", (a, r) => relEsc(valorTxt("Valor em aberto", r["Valor em aberto"])), "n"]] : [])];
+    const ordemIdx = ordenarLista(selecionados, o.ordenar);
+    const partes = [];
+    for (let i = 0; i < ordemIdx.length; i += 18) partes.push(ordemIdx.slice(i, i + 18));
+    const indice = partes.map((pt, pi) => `<section data-blk>${pi === 0 ? `<div class="sec">Registros incluídos (${ordemIdx.length})</div>` : ""}<table class="t"><thead><tr>${colsIdx.map(([h, , n]) => `<th class="${n || ""}">${h}</th>`).join("")}</tr></thead><tbody>${pt.map((a) => { const r = linhaDe(a); return `<tr>${colsIdx.map(([, f, n]) => `<td class="${n || ""}">${f(a, r)}</td>`).join("")}</tr>`; }).join("")}</tbody></table></section>`);
     const grupos = montarGrupos(selecionados, o.agrupar, o.ordenar);
-    const corpo = grupos.map((g) => {
-      const cards = g.itens.map(cardDe).join("");
-      if (o.agrupar === "nenhum") return `<section class="grupo">${cards}</section>`;
-      const tituloHtml = `<div class="grupo-tit${o.titulos ? "" : " plano"}">${esc(g.titulo)} <span>(${g.itens.length} registro(s))</span></div>`;
-      return `<section class="grupo">${tituloHtml}${cards}</section>`;
-    }).join("");
-
+    const detalhe = [`<div data-blk data-keep><div class="sec" style="margin-top:8px">Detalhamento</div></div>`];
+    grupos.forEach((g) => {
+      if (o.agrupar !== "nenhum") detalhe.push(`<div data-blk data-keep><div class="grupo${o.titulos ? "" : " plano"}"><b>${relEsc(g.titulo)}</b><span>${g.itens.length} registro(s)</span></div></div>`);
+      g.itens.forEach((a) => detalhe.push(blocoDe(a)));
+    });
     const T = totaisGerais();
-    const totalHtml = `<div class="totais"><b>Total geral:</b> ${T.unicos} registro(s) único(s)${T.temFin ? ` &nbsp;·&nbsp; Estimado ${esc(fmt(T.est))} &nbsp;·&nbsp; Pago ${esc(fmt(T.pago))} &nbsp;·&nbsp; Em aberto ${esc(fmt(T.aberto))}` : ""}</div>`;
-    const metaAgr = (AGRUPAR_OPC.find(([k]) => k === o.agrupar) || [])[1] || "";
-    const metaOrd = (ORDENAR_OPC.find(([k]) => k === o.ordenar) || [])[1] || "";
-
-    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório SM Agropecuária</title>
-      <style>
-        *{box-sizing:border-box} body{font-family:Georgia,serif;color:#22201a;margin:32px;max-width:900px}
-        h1{font-size:22px;border-bottom:2px solid #c6a15b;padding-bottom:8px;color:#1a4a2d}
-        .meta{color:#666;font-size:12px;margin-bottom:18px}
-        .grupo{margin-bottom:6px}
-        .grupo-tit{break-after:avoid;break-inside:avoid;page-break-after:avoid;background:#1a4a2d;color:#fff;border-left:5px solid #c6a15b;padding:9px 14px;border-radius:8px;margin:20px 0 12px;font-family:Arial,sans-serif;font-size:14px;font-weight:700;letter-spacing:.02em}
-        .grupo-tit span{color:#d9c38a;font-weight:600;font-size:12px}
-        .grupo-tit.plano{background:#fff;color:#1a4a2d;border:1px solid #e5ddc9;border-left:5px solid #c6a15b}
-        .grupo-tit.plano span{color:#9a7b3a}
-        .animal{break-inside:avoid;margin:0 0 14px;border:1px solid #e5ddc9;border-radius:10px;padding:14px 16px}
-        .animal h2{font-size:16px;margin:0 0 10px;color:#1d3a2b} .animal h2 small{color:#9a7b3a;font-size:11px;text-transform:uppercase;letter-spacing:.08em}
-        table{width:100%;border-collapse:collapse;font-family:Arial,sans-serif;font-size:12.5px}
-        td{padding:5px 8px;border-bottom:1px solid #f0ead9;vertical-align:top} td.k{color:#555;width:38%;font-weight:600}
-        .gtit{font-family:Arial,sans-serif;font-size:12px;font-weight:700;color:#9a7b3a;text-transform:uppercase;letter-spacing:.08em;margin:14px 0 8px}
-        .ped{break-inside:avoid;border:1px solid #ece3cf;border-radius:10px;padding:12px;background:#fffdf8}
-        .ped svg{display:block;margin:0 auto}
-        .ped-legend{display:flex;gap:16px;justify-content:center;flex-wrap:wrap;font-family:Arial,sans-serif;font-size:11px;color:#666;margin-top:10px}
-        .ped-legend .sw{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-1px;margin-right:4px;border:1px solid #ccc}
-        .ped-legend .sw.m{background:#e8f0fb;border-color:#5b86cf} .ped-legend .sw.f{background:#fbe9f1;border-color:#cf7aa3}
-        .ped-legend .side{color:#9a7b3a;font-weight:600}
-        .gobs{font-size:11px;color:#555;background:#faf7f0;border:1px solid #ece3cf;border-radius:6px;padding:6px 8px;margin-top:10px}
-        .totais{margin-top:18px;border-top:2px solid #c6a15b;padding-top:10px;font-family:Arial,sans-serif;font-size:12.5px;color:#333}
-        @media print{body{margin:12mm} .animal{page-break-inside:avoid} .ped{page-break-inside:avoid} .grupo-tit{page-break-after:avoid}}
-      </style></head><body>
-      <h1>Relatório — SM Agropecuária · Gado de Elite</h1>
-      <div class="meta">Gerado em ${new Date().toLocaleDateString("pt-BR")} · ${selecionados.length} registro(s) único(s) · Agrupado por: ${esc(metaAgr)} · Ordenado por: ${esc(metaOrd)}</div>
-      ${corpo}
-      ${totalHtml}
-      </body></html>`;
-    // Abre o visualizador in-app (iframe) — funciona no Safari e no PWA, sem tela branca nem pop-up bloqueado.
+    const kpis = [["Registros", String(T.unicos), M.porTipo.map(([t, n]) => `${n} ${({ animal: "animal(is)", prenhez: "prenhez(es)", aspiracao: "aspiração(ões)" })[t]}`).join(" · ")]];
+    if (selecionados.some((a) => a.tipo === "animal")) { const an = selecionados.filter((a) => a.tipo === "animal"); kpis.push(["Situação", `${an.filter(estaAtivo).length} ativo(s)`, `${an.filter((a) => !estaAtivo(a)).length} inativo(s)`]); }
+    if (T.temFin) kpis.push(["Valor estimado", fmt(T.est), `investido ${fmt(T.inv)}`, "pos"], ["Pago · em aberto", fmt(T.pago), `em aberto ${fmt(T.aberto)}`, T.aberto > 0 ? "" : ""]);
+    while (kpis.length < 4 && o.agrupar !== "nenhum" && kpis.length === 2) kpis.push(["Grupos", String(grupos.length), M.agr]);
+    const totais = `<div data-blk><section class="totais"><div class="sec">Totais gerais · registros únicos</div><div class="linhas">
+      <div class="kpi"><span>Registros</span><b>${T.unicos}</b></div>
+      ${T.temFin ? `<div class="kpi"><span>Valor estimado</span><b class="pos">${relEsc(fmt(T.est))}</b></div><div class="kpi"><span>Valor pago</span><b>${relEsc(fmt(T.pago))}</b></div><div class="kpi"><span>Em aberto</span><b class="${T.aberto > 0 ? "alerta" : ""}">${relEsc(fmt(T.aberto))}</b></div>` : ""}
+      </div>${T.temFin ? `<p class="sub" style="margin-top:8px">Total investido: ${relEsc(fmt(T.inv))}. Registros que aparecem em mais de um grupo são contados uma única vez.</p>` : ""}</section></div>`;
+    const html = relHtmlDoc({ titulo: tituloRel(), subtitulo: `${T.unicos} registro(s) selecionado(s)${o.agrupar !== "nenhum" ? ` · agrupados por ${M.agr.toLowerCase()}` : ""}`, filtros: M.filtros, kpis, blocos: [...indice, ...detalhe, totais] });
     setPdfDoc(html);
   };
 
