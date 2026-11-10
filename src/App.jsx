@@ -372,7 +372,7 @@ function toEmbed(url) {
 /* ------------------------------- opções -------------------------------- */
 const RACAS = ["Nelore", "Brahman", "Gir", "Guzerá", "Angus", "Senepol", "Tabapuã", "Girolando"];
 const STATUS_ANIMAL = ["Pista", "Doadora", "Aposentada"];
-const STATUS_PRENHEZ = ["Aguardando confirmação", "Confirmada", "Gestação em andamento", "Próxima do parto", "Parto previsto ultrapassado", "Nascimento informado", "Perda gestacional", "Não confirmada", "Parida", "Concluída", "Vendida"];
+const STATUS_PRENHEZ = ["Aguardando confirmação", "Confirmada", "Gestação em andamento", "Próxima do parto", "Parto previsto ultrapassado", "Nascimento informado", "Perda gestacional", "Não confirmada", "Parida", "Concluída", "Vendida", "Cancelada"];
 const STATUS_ASP = ["Realizada", "Em laboratório", "Embriões produzidos", "Transferida", "Finalizada", "Cancelada"];
 
 /* --------------------------- esquemas de ficha ------------------------- */
@@ -422,7 +422,7 @@ const SCHEMAS = {
       ["doadora", "Mãe doadora", "link"], ["regDoadora", "Registro da mãe doadora", "text"],
       ["pai", "Pai", "link"],
       ["qtd", "Quantidade de prenhezes", "number"],
-      ["status", "Status", "select", STATUS_PRENHEZ], ["ondeEsta", "Criatório responsável", "local"],
+      ["status", "Situação manual (opcional)", "select", STATUS_PRENHEZ], ["ondeEsta", "Criatório responsável", "local"],
     ]},
     { g: "Acompanhamento reprodutivo", f: [
       ["responsavel", "Responsável pelo acompanhamento", "text"],
@@ -445,7 +445,7 @@ const SCHEMAS = {
       ["doadora", "Mãe doadora", "link"], ["regDoadora", "Registro da mãe doadora", "text"],
       ["pai", "Pai (se houver)", "link"],
       ["qtd", "Quantidade", "number"],
-      ["status", "Status", "select", STATUS_ASP], ["ondeEsta", "Criatório responsável", "local"],
+      ["status", "Situação manual (opcional)", "select", STATUS_ASP], ["ondeEsta", "Criatório responsável", "local"],
     ]},
     { g: "Acompanhamento reprodutivo", f: [
       ["responsavel", "Responsável pelo acompanhamento", "text"],
@@ -531,6 +531,7 @@ const origemDe = (p) => (p && (p.origemId || p.aspiracaoOrigemId)) || "";
 function faseReprod(p) {
   const s = lc(p && p.status);
   const nasc = qtdConvertidos(p);
+  if (s.includes("cancel")) return { k: "enc", txt: "Cancelada", tone: "red", cancel: true };
   if (p.arquivada || (nasc > 0 && qtdRest(p) === 0)) return { k: "enc", txt: nasc > 1 ? `${nasc} nascidos` : nasc ? "Nascida" : "Encerrada", tone: "gold" };
   if (s.includes("vendida")) return { k: "enc", txt: "Vendida", tone: "gold" };
   if (s.includes("concluída") || s.includes("concluida") || s.includes("parida")) return { k: "enc", txt: p.status, tone: "gold" };
@@ -648,14 +649,23 @@ function dadosAsp(a, ativos, embrioes) {
   const nasc = ps.reduce((s, x) => s + qtdConvertidos(x), 0) + qtdConvertidos(a);
   const saldoBanco = lotes.reduce((s, l) => s + saldoLote(l), 0);
   const andamento = ps.filter((x) => faseReprod(x).k !== "enc").length;
-  const sa = lc(a.status);
-  let st, prox;
-  if (sa.includes("cancelada")) { st = ["Cancelada", "red"]; prox = ""; }
-  else if (E == null) { st = ["Aguardando laboratório", "amber"]; prox = "Próxima ação: lançar o resultado do laboratório (editar a ficha)"; }
-  else if (disp > 0) { st = [`${disp} embrião(ões) a transferir`, "gold"]; prox = "Próxima ação: registrar transferência"; }
-  else if (andamento) { st = ["Prenhezes em andamento", "green"]; prox = `Acompanhando ${andamento} prenhez(es)`; }
-  else { st = ["Concluída", "gold"]; prox = saldoBanco ? `${saldoBanco} embrião(ões) no Banco de Embriões` : "Sem pendências"; }
-  return { lotes, ps, manual, E, oocitos, frescas, transf, congelados, disp, conf, diag, nasc, saldoBanco, andamento, st, prox };
+  const sa = lc(a.status), dA = a.dataAspiracao || a.dataAsp || "", hoje = today();
+  const gest = ps.filter((x) => ["conf", "parto"].includes(faseReprod(x).k)).length, nascidas = ps.filter((x) => qtdConvertidos(x) > 0).length;
+  const aguardDiag = ps.filter((x) => faseReprod(x).k === "diag").length;
+  const resto = [disp ? `${disp} embrião(ões) a transferir` : "", saldoBanco ? `${saldoBanco} no Banco` : ""].filter(Boolean).join(" · ");
+  let st, prox, grupo;
+  if (sa.includes("cancel")) { st = ["Cancelada", "red"]; prox = "Registro cancelado"; grupo = "cancelado"; }
+  else if (gest || (nascidas && (aguardDiag || disp > 0 || saldoBanco > 0 || E == null)) || (manual && conf > 0)) { st = ["Prenhez confirmada", "green"]; grupo = "andamento"; prox = [gest ? `${gest} prenhez(es) em gestação` : "", nasc ? `${nasc} nascimento(s)` : "", aguardDiag ? `${aguardDiag} aguardando diagnóstico` : "", resto, !gest && !aguardDiag && E == null ? "informe os embriões produzidos para concluir" : ""].filter(Boolean).join(" · "); }
+  else if (aguardDiag || (manual && transf > 0)) { st = ["Transferência realizada", "green"]; grupo = "andamento"; prox = [aguardDiag ? `${aguardDiag} receptora(s) aguardando diagnóstico` : "", resto].filter(Boolean).join(" · "); }
+  else if (disp > 0) { st = ["Embriões produzidos", "gold"]; grupo = "andamento"; prox = `Próxima ação: gerar prenhez (${disp} embrião(ões) a transferir)${saldoBanco ? ` · ${saldoBanco} no Banco` : ""}`; }
+  else if (saldoBanco > 0) { st = ["Embriões congelados", "info"]; grupo = "andamento"; prox = `${saldoBanco} embrião(ões) no Banco de Embriões`; }
+  else if (ps.length && E == null) { st = ["Transferência realizada", "green"]; grupo = "andamento"; prox = "Prenhezes encerradas · informe os embriões produzidos para saber se ainda restam embriões"; }
+  else if (E != null || ps.length || lotes.length) { st = ["Concluída", "green"]; grupo = "concluido"; prox = nasc ? `${nasc} nascimento(s) registrado(s)` : "Sem pendências"; }
+  else if (dA && dA <= hoje) { st = ["Realizada", "info"]; grupo = "andamento"; prox = "Próxima ação: lançar o resultado do laboratório (editar a ficha)"; }
+  else { st = ["Pendente", "gold"]; grupo = "pendente"; prox = dA ? `Aspiração prevista para ${dataBR(dA)}` : "Próxima ação: informar a data e o resultado da aspiração"; }
+  // verde-claro quando já houve transferência/prenhez; discreto quando cancelada
+  const destaque = grupo === "cancelado" ? "cancel" : ps.length > 0 || (manual && transf > 0) || grupo === "concluido" ? "ok" : "";
+  return { lotes, ps, manual, E, oocitos, frescas, transf, congelados, disp, conf, diag, nasc, saldoBanco, andamento, st, prox, grupo, destaque };
 }
 
 /* -------------------------------- seed --------------------------------- */
@@ -1377,7 +1387,7 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
           {initial && initial.__fromOrigem && (tipo === "animal"
             ? <div className="aviso" style={{ margin: "0 0 14px" }}>Nascimento de <b>{initial.origemLabel}</b> — genealogia e sociedade já preenchidas. Complete os dados do animal e confira o sexo.</div>
             : <div className="aviso" style={{ margin: "0 0 14px" }}>Prenhez gerada a partir de <b>{initial.origemLabel}</b> — doadora, pai, genealogia e sociedade já preenchidos.</div>)}
-          {tipo === "prenhez" && !initial && <div className="aviso aviso-info" style={{ margin: "0 0 14px" }}>Prenhez de aspiração da SM? Use “Registrar transferência” na ficha da aspiração. Embrião congelado? Use “Usar em transferência” no Banco de Embriões. Este formulário é para prenhez adquirida ou cadastro direto.</div>}
+          {tipo === "prenhez" && !initial && <div className="aviso aviso-info" style={{ margin: "0 0 14px" }}>Prenhez de aspiração da SM? Use “Gerar prenhez” na ficha da aspiração. Embrião congelado? Use “Usar em transferência” no Banco de Embriões. Este formulário é para prenhez adquirida ou cadastro direto.</div>}
           {SCHEMAS[tipo].map((sec) => RECOLHE[sec.g] && !secAberta[sec.g] && !secTemDados(sec) ? (
             <div className="fsec" key={sec.g}><button type="button" className="fsec-abrir" onClick={() => setSecAberta((x) => ({ ...x, [sec.g]: true }))}>+ {sec.g} <span>· opcional, {RECOLHE[sec.g]}</span></button></div>
           ) : (
@@ -2830,7 +2840,7 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote }) {
       : a.dataTE ? `pendente · sugerido ${dataBR(somaDias(a.dataTE, DIAG_DIAS))}` : "pendente";
     return (
       <div className="fsec rp-sec" id="fx-repro"><div className="fsec-h">Reprodução</div>
-        <div className="rp-linha"><Badge tone={f.tone}>{f.txt}</Badge>{qtdTotal(a) > 1 && <Badge tone="gold">Ficha com {qtdTotal(a)} prenhezes · restam {qtdRest(a)}</Badge>}</div>
+        <div className="rp-linha">{(() => { const sp = statusPrenhez(a); return <Badge tone={sp.tone}>{sp.destaque === "ok" ? "✓ " : ""}{sp.txt}</Badge>; })()}{qtdTotal(a) > 1 && <Badge tone="gold">Ficha com {qtdTotal(a)} prenhezes · restam {qtdRest(a)}</Badge>}</div>
         <CadeiaRepro itens={itens} />
         <div className="info-grid">
           <InfoR l="Receptora" v={a.receptora} />
@@ -2843,6 +2853,8 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote }) {
           <InfoR l="Perda gestacional" v={a.perda ? `${dataBR(a.perda.data)} · ${a.perda.motivo}` : ""} />
         </div>
         {(f.k === "conf" || f.k === "parto") && <BarraGestacao p={a} />}
+        <div className="rp-sub">Linha do tempo</div>
+        <LinhaTempo eventos={linhaTempoPrenhez(a, ativos, embrioes)} onAbrir={onAbrir} onIrLote={onIrLote} />
       </div>
     );
   }
@@ -2871,7 +2883,7 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote }) {
         <button type="button" className="rp-prow" key={p.id} onClick={() => onAbrir(p)}>
           <span><b>{p.receptora ? `Receptora ${p.receptora}` : p.nome}</b><small>{p.dataTE ? `TE ${dataBR(p.dataTE)}` : ""}{p.loteOrigemId ? " · embrião congelado" : ""}</small></span>
           <Badge tone={f.tone}>{f.txt}</Badge>
-        </button>); }) : <p className="muted small">Nenhuma prenhez vinculada ainda. Use “Registrar transferência”.</p>}
+        </button>); }) : <p className="muted small">Nenhuma prenhez vinculada ainda. Use “Gerar prenhez”.</p>}
       {D.lotes.length > 0 && <>
         <div className="rp-sub">No Banco de Embriões</div>
         {[...new Set(D.lotes.map(grupoDe))].map((gid) => { const g = doGrupo(D.lotes, gid), l = g[0]; return (
@@ -2879,26 +2891,135 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote }) {
             <span><b>{g.length} embrião(ões) · cadastro {codLote(l)}</b><small>{[l.propriedade, l.local].filter(Boolean).join(" · ") || "local não informado"}</small></span><Badge tone="green">{g.filter(noEstoque).length} em estoque</Badge>
           </button>); })}
       </>}
+      <div className="rp-sub">Linha do tempo</div>
+      <LinhaTempo eventos={linhaTempoAsp(a, ativos, embrioes)} onAbrir={onAbrir} onIrLote={onIrLote} />
     </div>
+  );
+}
+
+/* ---------- situação dos registros reprodutivos (calculada pelos fatos e gravada em statusAuto) ---------- */
+// grupos: pendente · andamento · concluido · cancelado   |   destaque: "ok" (verde-claro) · "atencao" · "cancel" · ""
+function statusPrenhez(p) {
+  const f = faseReprod(p), nasc = qtdConvertidos(p);
+  if (f.cancel) return { txt: "Cancelada", tone: "red", grupo: "cancelado", destaque: "cancel" };
+  if (f.k === "enc") {
+    if (nasc > 0) return { txt: nasc > 1 ? `Nascimentos registrados (${nasc})` : "Nascimento registrado", tone: "green", grupo: "concluido", destaque: "ok" };
+    if (f.txt === "Perda gestacional" || f.txt === "Não confirmada") return { txt: "Encerrada sem nascimento", motivo: f.txt === "Perda gestacional" ? "perda gestacional" : "diagnóstico negativo", tone: "red", grupo: "concluido", destaque: "atencao" };
+    if (f.txt === "Encerrada") return { txt: "Encerrada sem nascimento", tone: "gold", grupo: "concluido", destaque: "" };
+    return { txt: f.txt, tone: "gold", grupo: "concluido", destaque: "" };
+  }
+  if (f.k === "diag") return { txt: f.txt, tone: f.tone, grupo: "pendente", destaque: "" };
+  if (nasc > 0) return { txt: `${f.txt} · ${nasc} nascido(s)`, tone: f.tone, grupo: "andamento", destaque: "ok" };
+  return { txt: f.txt, tone: f.tone, grupo: "andamento", destaque: f.d != null && f.d < 0 ? "atencao" : "" };
+}
+const GRUPOS_SIT = [["todos", "Todos"], ["pendente", "Pendentes"], ["andamento", "Em andamento"], ["concluido", "Concluídos"], ["cancelado", "Cancelados"]];
+function FiltroSituacao({ itens, valor, setValor, ocultar, setOcultar }) {
+  const n = (g) => (g === "todos" ? itens.filter((x) => !ocultar || (x.grupo !== "concluido" && x.grupo !== "cancelado")).length : itens.filter((x) => x.grupo === g).length);
+  return (
+    <div className="rp-sitbar">
+      <div className="rp-tabs" role="tablist" aria-label="Situação">{GRUPOS_SIT.map(([k, l]) => (
+        <button key={k} type="button" role="tab" aria-selected={valor === k} className={valor === k ? "on" : ""} onClick={() => setValor(k)}>{l}<b>{n(k)}</b></button>))}</div>
+      <label className="rp-ocultar"><input type="checkbox" checked={ocultar} onChange={(e) => setOcultar(e.target.checked)} /> Ocultar concluídos e cancelados em “Todos”</label>
+    </div>
+  );
+}
+const filtraSituacao = (lista, valor, ocultar) => lista.filter((x) => (valor === "todos" ? !ocultar || (x.grupo !== "concluido" && x.grupo !== "cancelado") : x.grupo === valor));
+
+/* ---------- linha do tempo: só eventos com registro que os comprove ---------- */
+// cada evento: { data, titulo, desc, futuro, links: [{ txt, abrir | lote }] }
+function ordenaEventos(ev) {
+  let ult = "";
+  const k = ev.map((e, i) => { if (e.data) ult = e.data; return { e, i, chave: e.data || ult }; });
+  return k.sort((a, b) => a.chave.localeCompare(b.chave) || a.i - b.i).map((x) => x.e);
+}
+function eventoCadastro(r) {
+  const h = (r.historico || []).find((x) => x && /cadastro criado/i.test(x.tipo || ""));
+  return h ? { data: h.data, titulo: "Cadastro no sistema", desc: h.responsavel ? `por ${h.responsavel}` : "" } : null;
+}
+function linhaTempoAsp(a, ativos, embrioes) {
+  const D = dadosAsp(a, ativos, embrioes), hoje = today(), ev = [];
+  const cad = eventoCadastro(a); if (cad) ev.push(cad);
+  const dA = a.dataAspiracao || a.dataAsp;
+  if (dA) ev.push({ data: dA, titulo: dA > hoje ? "Aspiração prevista" : "Aspiração", futuro: dA > hoje, desc: [a.ondeEsta, a.leilao && `leilão ${a.leilao}`].filter(Boolean).join(" · ") });
+  if (D.E != null) ev.push({ data: "", titulo: "Resultado do laboratório", desc: `${D.oocitos || 0} oócito(s) · ${D.E} embrião(ões) produzido(s)`, semData: true });
+  // congelamentos e outras saídas do Banco (por cadastro de embriões)
+  const porCad = {}; D.lotes.forEach((u) => { const g = grupoDe(u); (porCad[g] || (porCad[g] = [])).push(u); });
+  Object.entries(porCad).forEach(([gid, us]) => {
+    const ent = us.flatMap((u) => (u.movs || []).filter((m) => m && m.tipo === "entrada")).sort((x, y) => (x.data || "").localeCompare(y.data || ""))[0];
+    ev.push({ data: (ent && ent.data) || us[0].dataCongelamento || "", titulo: "Embriões congelados", desc: `${us.length} embrião(ões) no Banco · cadastro ${codLote(us[0])}`, links: [{ txt: `Abrir no Banco`, lote: gid }] });
+    const saidas = {};
+    us.forEach((u) => (u.movs || []).filter((m) => m && ["venda", "terceiro", "descarte"].includes(m.tipo)).forEach((m) => { const k = (m.grupo || m.id) + m.tipo; (saidas[k] || (saidas[k] = { m, q: 0 })).q += Math.round(num(m.qtd)); }));
+    Object.values(saidas).forEach(({ m, q }) => ev.push({ data: m.data, titulo: `${(MOV_TIPOS[m.tipo] || [m.tipo])[0]} de embrião congelado`, desc: `${q} embrião(ões)${m.ref ? ` · ${m.ref}` : ""}`, links: [{ txt: "Abrir no Banco", lote: gid }] }));
+  });
+  // transferências (frescas e com embrião do banco), agrupadas por data
+  const porTE = {}; D.ps.forEach((p) => { const k = p.dataTE || ""; (porTE[k] || (porTE[k] = [])).push(p); });
+  Object.entries(porTE).forEach(([dt, ps]) => {
+    const cong = ps.filter((p) => p.loteOrigemId).length;
+    ev.push({ data: dt, titulo: "Transferência de embriões", semData: !dt, desc: `${ps.reduce((s, p) => s + qtdTotal(p), 0)} receptora(s)${cong ? ` · ${cong} com embrião congelado` : ""}`, links: ps.map((p) => ({ txt: p.receptora ? `Receptora ${p.receptora}` : p.nome, abrir: p })) });
+  });
+  ev.push(...eventosDiagENasc(D.ps, ativos, a));
+  return ordenaEventos(ev);
+}
+function eventosDiagENasc(ps, ativos, extraOrigem) {
+  const ev = [];
+  const diag = {};
+  ps.forEach((p) => {
+    const pos = p.diagnostico === "positivo" || !!p.dataConfirmacao, neg = p.diagnostico === "negativo";
+    if (!pos && !neg) return;
+    const dt = (pos ? p.dataConfirmacao || p.dataDiagnostico : p.dataDiagnostico) || "";
+    const k = dt + (pos ? "+" : "-"); (diag[k] || (diag[k] = { dt, pos, ps: [] })).ps.push(p);
+  });
+  Object.values(diag).forEach(({ dt, pos, ps: l }) => ev.push({ data: dt, semData: !dt, titulo: pos ? "Prenhez confirmada" : "Diagnóstico negativo", desc: `${l.length} receptora(s)`, links: l.map((p) => ({ txt: p.receptora ? `Receptora ${p.receptora}` : p.nome, abrir: p })) }));
+  ps.filter((p) => p.perda && p.perda.data).forEach((p) => ev.push({ data: p.perda.data, titulo: "Perda gestacional", desc: p.perda.motivo || "", links: [{ txt: p.receptora ? `Receptora ${p.receptora}` : p.nome, abrir: p }] }));
+  const ids = new Set(ps.map((p) => p.id)); if (extraOrigem) ids.add(extraOrigem.id);
+  (ativos || []).filter((x) => x && x.tipo === "animal" && ids.has(x.origemId)).forEach((an) => ev.push({ data: an.nascimento || "", semData: !an.nascimento, titulo: "Nascimento", desc: [an.sexo, an.registro && rgdTxt(an.registro)].filter(Boolean).join(" · "), links: [{ txt: an.nome || "animal", abrir: an }] }));
+  return ev;
+}
+function linhaTempoPrenhez(p, ativos, embrioes) {
+  const ev = [], hoje = today();
+  const cad = eventoCadastro(p); if (cad) ev.push(cad);
+  const asp = origemDe(p) ? (ativos || []).find((x) => x && x.id === origemDe(p)) : null;
+  const emb = p.embriaoId ? (embrioes || []).find((u) => u && u.id === p.embriaoId) : null;
+  if (asp) ev.push({ data: asp.dataAspiracao || asp.dataAsp || "", semData: !(asp.dataAspiracao || asp.dataAsp), titulo: "Aspiração de origem", desc: asp.doadora || asp.nome, links: [{ txt: "Abrir aspiração", abrir: asp }] });
+  const dCong = emb ? emb.dataCongelamento || ((emb.movs || []).find((m) => m && m.tipo === "entrada") || {}).data || "" : "";
+  if (p.loteOrigemId) ev.push({ data: dCong, semData: !dCong, titulo: "Embrião congelado", desc: emb ? `Embrião ${emb.cod}` : "do Banco de Embriões", links: [{ txt: "Abrir no Banco", lote: emb ? emb.id : p.loteOrigemId }] });
+  if (p.dataTE) ev.push({ data: p.dataTE, titulo: "Transferência de embrião", desc: p.receptora ? `Receptora ${p.receptora}` : "" });
+  ev.push(...eventosDiagENasc([p], ativos, null).map((e) => ({ ...e, links: e.titulo === "Nascimento" ? e.links : [] })));
+  if (qtdConvertidos(p) === 0 && !p.perda && p.diagnostico !== "negativo") {
+    const prev = p.previsaoParto || (p.dataTE ? somaDias(p.dataTE, PARTO_DIAS) : "");
+    if (prev && prev >= hoje) ev.push({ data: prev, titulo: p.previsaoParto ? "Parto previsto" : "Parto previsto (sugerido)", futuro: true, desc: "" });
+  }
+  if (lc(p.status).includes("cancel")) ev.push({ data: "", semData: true, titulo: "Cancelada", desc: "registro marcado como cancelado" });
+  return ordenaEventos(ev);
+}
+function LinhaTempo({ eventos, onAbrir, onIrLote }) {
+  if (!eventos.length) return <p className="muted small">Ainda não há eventos com data registrada.</p>;
+  return (
+    <ol className="rp-tl rp-tl-reg">{eventos.map((e, i) => (
+      <li key={i} className={e.futuro ? "futuro" : e.titulo === "Nascimento" || e.titulo === "Prenhez confirmada" ? "prod" : /Perda|negativo|Cancel|Descarte/.test(e.titulo) ? "saida" : ""}>
+        <div className="rp-tl-h"><b>{e.data ? dataBR(e.data) : "sem data"}</b> — {e.titulo}{e.futuro && <span className="muted"> · previsão</span>}</div>
+        {e.desc && <div className="muted small">{e.desc}</div>}
+        {e.links && e.links.length > 0 && <div className="rp-tl-links">{e.links.slice(0, 40).map((l, j) => (
+          <button type="button" key={j} onClick={() => (l.lote ? onIrLote(l.lote) : onAbrir(l.abrir))}>{l.txt} ↗</button>))}{e.links.length > 40 && <span className="muted small">+{e.links.length - 40}</span>}</div>}
+      </li>))}</ol>
   );
 }
 
 /* ---------------- página: Prenhezes ---------------- */
 function PaginaPrenhezes({ lista, onAbrir }) {
-  const [tab, setTab] = useState("ativas");
+  const [sit, setSit] = useState("todos");
+  const [ocultar, setOcultar] = useState(false);
   const [origem, setOrigem] = useState("");
   const [cri, setCri] = useState("");
   const [ordem, setOrdem] = useState("parto");
-  const base = (lista || []).filter((p) => p && p.tipo === "prenhez" && p.origem !== "genealogia").map((p) => ({ p, f: faseReprod(p) }));
+  const base = (lista || []).filter((p) => p && p.tipo === "prenhez" && p.origem !== "genealogia").map((p) => { const s = statusPrenhez(p); return { p, f: faseReprod(p), s, grupo: s.grupo }; });
   const criatorios = [...new Set(base.map(({ p }) => p.ondeEsta).filter(Boolean))].sort();
   const filt = base.filter(({ p }) => (!origem || origemPrenhez(p) === origem) && (!cri || p.ondeEsta === cri));
-  const grupos = { ativas: filt.filter((x) => x.f.k !== "enc"), diag: filt.filter((x) => x.f.k === "diag"), conf: filt.filter((x) => x.f.k === "conf"), parto: filt.filter((x) => x.f.k === "parto"), enc: filt.filter((x) => x.f.k === "enc") };
   const prevDe = (p) => p.previsaoParto || (p.dataTE ? somaDias(p.dataTE, PARTO_DIAS) : "9999");
-  const ord = tab === "enc" ? (a, b) => (b.p.dataParto || b.p.dataTE || "").localeCompare(a.p.dataParto || a.p.dataTE || "")
-    : ordem === "te" ? (a, b) => (b.p.dataTE || "").localeCompare(a.p.dataTE || "") : (a, b) => prevDe(a.p).localeCompare(prevDe(b.p));
-  const lst = [...grupos[tab]].sort(ord);
+  const ord = sit === "concluido" || sit === "cancelado" ? (a, b) => (b.p.dataParto || b.p.dataTE || "").localeCompare(a.p.dataParto || a.p.dataTE || "")
+    : ordem === "te" ? (a, b) => (b.p.dataTE || "").localeCompare(a.p.dataTE || "") : (a, b) => (a.grupo === "concluido" || a.grupo === "cancelado") - (b.grupo === "concluido" || b.grupo === "cancelado") || prevDe(a.p).localeCompare(prevDe(b.p));
+  const lst = filtraSituacao(filt, sit, ocultar).sort(ord);
   const ativas = base.filter((x) => x.f.k !== "enc");
-  const TABS = [["ativas", "Ativas"], ["diag", "Aguardando diagnóstico"], ["conf", "Confirmadas"], ["parto", "Parto próximo"], ["enc", "Encerradas"]];
   return (
     <section className="wrap rp-pag">
       <div className="rp-kpis">
@@ -2908,18 +3029,16 @@ function PaginaPrenhezes({ lista, onAbrir }) {
         <KPI label="Partos atrasados" value={base.filter((x) => x.f.d < 0).length} tone={base.some((x) => x.f.d < 0) ? "neg" : ""} sub="previsão já passou" />
         <KPI label="Nascimentos registrados" value={base.reduce((s, { p }) => s + qtdConvertidos(p), 0)} sub="animais cadastrados a partir de prenhezes" />
       </div>
-      <div className="rp-tabs" role="tablist" aria-label="Fases">{TABS.map(([k, l]) => (
-        <button key={k} type="button" role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{l}<b>{grupos[k].length}</b></button>
-      ))}</div>
+      <FiltroSituacao itens={filt} valor={sit} setValor={setSit} ocultar={ocultar} setOcultar={setOcultar} />
       <div className="rp-filtros">
         <select value={origem} onChange={(e) => setOrigem(e.target.value)} aria-label="Origem"><option value="">Todas as origens</option><option value="aspiracao">Aspiração da SM</option><option value="banco">Banco de Embriões</option><option value="compra">Adquirida / direta</option></select>
         <select value={cri} onChange={(e) => setCri(e.target.value)} aria-label="Criatório"><option value="">Todos os criatórios</option>{criatorios.map((c) => <option key={c} value={c}>{c}</option>)}</select>
-        {tab !== "enc" && <select value={ordem} onChange={(e) => setOrdem(e.target.value)} aria-label="Ordenar"><option value="parto">Ordenar por previsão de parto</option><option value="te">Ordenar pela TE mais recente</option></select>}
+        {sit !== "concluido" && sit !== "cancelado" && <select value={ordem} onChange={(e) => setOrdem(e.target.value)} aria-label="Ordenar"><option value="parto">Ordenar por previsão de parto</option><option value="te">Ordenar pela TE mais recente</option></select>}
       </div>
       <div className="cards-grid rp-grid">
-        {lst.map(({ p, f }) => (
-          <button type="button" className="rp-card" key={p.id} onClick={() => onAbrir(p)}>
-            <div className="rp-card-h"><span className="rp-t">{p.doadora || "Doadora não informada"}{p.pai || p.touro ? ` × ${p.pai || p.touro}` : ""}</span><Badge tone={f.tone}>{f.txt}</Badge></div>
+        {lst.map(({ p, f, s }) => (
+          <button type="button" className={`rp-card ${s.destaque}`} key={p.id} onClick={() => onAbrir(p)}>
+            <div className="rp-card-h"><span className="rp-t">{p.doadora || "Doadora não informada"}{p.pai || p.touro ? ` × ${p.pai || p.touro}` : ""}</span><Badge tone={s.tone}>{s.destaque === "ok" ? "✓ " : ""}{s.txt}</Badge></div>
             <span className="rp-meta">{[p.receptora ? `Receptora ${p.receptora}` : "Receptora não informada", p.ondeEsta].filter(Boolean).join(" · ")}</span>
             <div className="rp-chips">
               <span className={`rp-chip o-${origemPrenhez(p)}`}>{ORIGEM_PREN_TXT[origemPrenhez(p)]}</span>
@@ -2928,10 +3047,10 @@ function PaginaPrenhezes({ lista, onAbrir }) {
             </div>
             {(f.k === "conf" || f.k === "parto") ? <BarraGestacao p={p} />
               : f.k === "diag" ? <span className="rp-prox">{p.dataTE ? `Próxima ação: lançar diagnóstico (sugerido ${dataBR(somaDias(p.dataTE, DIAG_DIAS))})` : "Próxima ação: lançar diagnóstico"}</span>
-              : <span className="rp-meta">{p.dataParto ? `Parto em ${dataBR(p.dataParto)}` : p.perda ? `Perda em ${dataBR(p.perda.data)} · ${p.perda.motivo}` : p.dataTE ? `TE em ${dataBR(p.dataTE)}` : ""}</span>}
+              : <span className="rp-meta">{p.dataParto ? `Nascimento em ${dataBR(p.dataParto)}` : p.perda ? `Perda em ${dataBR(p.perda.data)} · ${p.perda.motivo}` : s.motivo ? `Motivo: ${s.motivo}` : p.dataTE ? `TE em ${dataBR(p.dataTE)}` : ""}</span>}
           </button>
         ))}
-        {lst.length === 0 && <div className="empty">Nenhuma prenhez nesta fase{origem || cri ? " com esses filtros" : ""}.</div>}
+        {lst.length === 0 && <div className="empty">Nenhuma prenhez nesta situação{origem || cri ? " com esses filtros" : ""}.</div>}
       </div>
     </section>
   );
@@ -2939,40 +3058,36 @@ function PaginaPrenhezes({ lista, onAbrir }) {
 
 /* ---------------- página: Aspirações ---------------- */
 function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir }) {
-  const [tab, setTab] = useState("andamento");
-  const base = (lista || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia" && !a.arquivada).map((a) => ({ a, D: dadosAsp(a, ativos, embrioes) }));
-  const conc = ({ D }) => D.st[0] === "Concluída" || D.st[0] === "Cancelada";
-  const grupos = { andamento: base.filter((x) => !conc(x)), concluidas: base.filter(conc), todas: base };
-  const lst = [...grupos[tab]].sort((x, y) => (y.a.dataAspiracao || y.a.dataAsp || "").localeCompare(x.a.dataAspiracao || x.a.dataAsp || ""));
+  const [sit, setSit] = useState("todos");
+  const [ocultar, setOcultar] = useState(false);
+  const base = (lista || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia" && !a.arquivada).map((a) => { const D = dadosAsp(a, ativos, embrioes); return { a, D, grupo: D.grupo }; });
+  const lst = filtraSituacao(base, sit, ocultar).sort((x, y) => (x.grupo === "concluido" || x.grupo === "cancelado") - (y.grupo === "concluido" || y.grupo === "cancelado") || (y.a.dataAspiracao || y.a.dataAsp || "").localeCompare(x.a.dataAspiracao || x.a.dataAsp || ""));
   const soma = (k) => base.reduce((s, x) => s + (x.D[k] || 0), 0);
   const ooComE = base.filter((x) => x.D.E != null).reduce((s, x) => s + x.D.oocitos, 0);
-  const TABS = [["andamento", "Em andamento"], ["concluidas", "Concluídas"], ["todas", "Todas"]];
   return (
     <section className="wrap rp-pag">
       <div className="rp-kpis">
-        <KPI label="Aspirações em andamento" value={grupos.andamento.length} sub={`${base.length} no total`} />
+        <KPI label="Aspirações em andamento" value={base.filter((x) => x.grupo === "andamento").length} sub={`${base.length} no total · ${base.filter((x) => x.grupo === "pendente").length} pendente(s)`} />
         <KPI label="Embriões produzidos" value={soma("E")} sub={ooComE ? `aproveitamento ${Math.round((soma("E") / ooComE) * 100)}%` : "embriões ÷ oócitos"} />
         <KPI label="Embriões a transferir" value={soma("disp")} sub="frescos, aguardando TE" />
         <KPI label="No Banco de Embriões" value={soma("saldoBanco")} sub="congelados destas aspirações" />
         <KPI label="Taxa de prenhez" value={soma("diag") ? Math.round((soma("conf") / soma("diag")) * 100) + "%" : "—"} sub="confirmadas ÷ diagnosticadas" />
       </div>
-      <div className="rp-tabs" role="tablist" aria-label="Situação">{TABS.map(([k, l]) => (
-        <button key={k} type="button" role="tab" aria-selected={tab === k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>{l}<b>{grupos[k].length}</b></button>
-      ))}</div>
+      <FiltroSituacao itens={base} valor={sit} setValor={setSit} ocultar={ocultar} setOcultar={setOcultar} />
       <div className="cards-grid rp-grid">
         {lst.map(({ a, D }) => {
           const w = (v) => `${D.E ? (v / D.E) * 100 : 0}%`;
           return (
-            <button type="button" className="rp-card" key={a.id} onClick={() => onAbrir(a)}>
-              <div className="rp-card-h"><span className="rp-t">{a.doadora || a.nome}{a.pai || a.touro ? ` × ${a.pai || a.touro}` : ""}</span><Badge tone={D.st[1]}>{D.st[0]}</Badge></div>
+            <button type="button" className={`rp-card ${D.destaque}`} key={a.id} onClick={() => onAbrir(a)}>
+              <div className="rp-card-h"><span className="rp-t">{a.doadora || a.nome}{a.pai || a.touro ? ` × ${a.pai || a.touro}` : ""}</span><Badge tone={D.st[1]}>{D.destaque === "ok" ? "✓ " : ""}{D.st[0]}</Badge></div>
               <span className="rp-meta">{[a.dataAspiracao || a.dataAsp ? dataBR(a.dataAspiracao || a.dataAsp) : "data não informada", a.ondeEsta].filter(Boolean).join(" · ")}</span>
               {D.E != null && <div className="rp-dest" aria-hidden="true"><i style={{ width: w(D.transf), background: "var(--em)" }} /><i style={{ width: w(D.congelados), background: "#C9AE74" }} /><i style={{ width: w(D.disp), background: "#9CC5AF" }} /></div>}
-              <span className="rp-meta tab-num">{D.E == null ? `${D.oocitos || "—"} oócitos · embriões aguardando laboratório` : `${D.oocitos} oócitos · ${D.E} embriões · ${D.transf} transferidos · ${D.conf} prenhez(es) · ${D.nasc} nascido(s)`}</span>
+              <span className="rp-meta tab-num">{D.E == null ? `${D.oocitos || "—"} oócitos · resultado do laboratório não lançado${D.ps.length ? ` · ${D.transf} transferido(s) · ${D.conf} prenhez(es)` : ""}` : `${D.oocitos} oócitos · ${D.E} embriões · ${D.transf} transferidos · ${D.conf} prenhez(es) · ${D.nasc} nascido(s)`}</span>
               {D.prox && <span className="rp-prox">{D.prox}</span>}
             </button>
           );
         })}
-        {lst.length === 0 && <div className="empty">Nenhuma aspiração {tab === "andamento" ? "em andamento" : tab === "concluidas" ? "concluída" : "cadastrada"}.</div>}
+        {lst.length === 0 && <div className="empty">Nenhuma aspiração nesta situação.</div>}
       </div>
       {base.some((x) => x.D.E != null) && <div className="rp-legenda"><span><i style={{ background: "var(--em)" }} />transferidos</span><span><i style={{ background: "#C9AE74" }} />congelados</span><span><i style={{ background: "#9CC5AF" }} />a transferir</span></div>}
     </section>
@@ -3138,7 +3253,9 @@ function DetalheEmbriao({ l, embrioes, ativos, onAcao, onAbrir, onSel }) {
 }
 
 /* ---------------- folhas de ação ---------------- */
-function FolhaTransferencia({ asp, lote, ativos, embrioes, onConfirm, onClose, onFormCompleto }) {
+function FolhaTransferencia({ asp, lote, ativos, embrioes, localNames, onQuickLocal, onConfirm, onClose, onFormCompleto }) {
+  const [conf, setConf] = useState(false);
+  const [dataConf, setDataConf] = useState(today());
   const D = asp ? dadosAsp(asp, ativos, embrioes) : null;
   const loteAsp = D ? D.lotes.find((l) => saldoLote(l) > 0 && !l.arquivado) : null;
   const [fonte, setFonte] = useState(lote ? "l" : D && D.disp > 0 ? "f" : loteAsp ? "c" : "f");
@@ -3153,11 +3270,11 @@ function FolhaTransferencia({ asp, lote, ativos, embrioes, onConfirm, onClose, o
   const src = lote || asp;
   const pode = max >= 1 && q <= max;
   return (
-    <Folha eyebrow={lote ? `Banco de Embriões · embrião ${lote.cod}` : "Aspiração"} titulo={lote ? "Usar embriões em transferência" : "Registrar transferência de embriões"}
+    <Folha eyebrow={lote ? `Banco de Embriões · embrião ${lote.cod}` : "Aspiração"} titulo={lote ? "Usar embriões em transferência" : "Gerar prenhez (transferência de embriões)"}
       sub={`${src.doadora || src.nome || ""}${src.pai || src.touro ? ` × ${src.pai || src.touro}` : ""}. Cria uma prenhez para cada receptora${usaLote ? ` e baixa 1 embrião por receptora${lote ? `, começando pelo ${lote.cod} e seguindo pelos cadastrados junto com ele` : ` (cadastro ${codLote(usaLote)})`}` : ", já ligada a esta aspiração"}.`}
       onClose={onClose}
       rodape={<>{onFormCompleto && <button className="btn btn-ghost rp-esq" onClick={onFormCompleto}>Formulário completo</button>}<button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
-        <button className="btn btn-gold" disabled={!pode} onClick={() => onConfirm({ asp, lote: usaLote, n: q, dataTE, receptoras: recs.slice(0, q).map((r) => r.trim()), criatorio: cri.trim() })}>Criar {q} prenhez{q > 1 ? "es" : ""}</button></>}>
+        <button className="btn btn-gold" disabled={!pode} onClick={() => onConfirm({ asp, lote: usaLote, n: q, dataTE, receptoras: recs.slice(0, q).map((r) => r.trim()), criatorio: cri.trim(), confirmada: conf, dataConf })}>Criar {q} prenhez{q > 1 ? "es" : ""}</button></>}>
       {!lote && (
         <div className="field wide"><span>Embriões usados</span>
           <div className="segmented">
@@ -3170,8 +3287,12 @@ function FolhaTransferencia({ asp, lote, ativos, embrioes, onConfirm, onClose, o
       <div className="grid">
         <label className="field"><span>Quantidade de receptoras {lote && <em className="new-hint">· até {max} (embriões em estoque cadastrados junto)</em>}</span><Passo v={q} set={setN} max={Math.max(1, max)} rotulo="Quantidade de receptoras" /></label>
         <label className="field"><span>Data da transferência (TE)</span><input type="date" value={dataTE} onChange={(e) => setDataTE(e.target.value)} /></label>
-        <label className="field wide"><span>Criatório onde estão as receptoras</span><input value={cri} onChange={(e) => setCri(e.target.value)} placeholder="ex.: Fazenda Santa Maria" /></label>
+        <label className="field wide"><span>Criatório onde estão as receptoras</span><AutoField value={cri} onChange={setCri} suggestions={localNames} onCreate={onQuickLocal} placeholder="buscar ou cadastrar criatório" /></label>
       </div>
+      <div className="field wide"><span>Diagnóstico</span>
+        <div className="segmented"><button type="button" className={`seg ${!conf ? "on" : ""}`} onClick={() => setConf(false)}>Aguardando diagnóstico</button><button type="button" className={`seg ${conf ? "on" : ""}`} onClick={() => setConf(true)}>Prenhez já confirmada</button></div>
+        <em className="new-hint">Transferência não é prenhez confirmada. Marque “já confirmada” só se o diagnóstico positivo já foi feito.</em></div>
+      {conf && <div className="grid"><label className="field"><span>Data do diagnóstico positivo</span><input type="date" value={dataConf} onChange={(e) => setDataConf(e.target.value)} /></label></div>}
       <div className="field wide"><span>Identificação das receptoras <em className="new-hint">· opcional, pode completar depois</em></span>
         <div className="rp-recs">{Array.from({ length: q }, (_, i) => (
           <input key={i} value={recs[i]} onChange={(e) => { const v = e.target.value; setRecs((r) => r.map((x, j) => (j === i ? v : x))); }} placeholder={`Receptora ${i + 1}`} aria-label={`Receptora ${i + 1}`} />
@@ -3179,7 +3300,7 @@ function FolhaTransferencia({ asp, lote, ativos, embrioes, onConfirm, onClose, o
       <div className="rp-herda">
         <b>Preenchido automaticamente em cada prenhez</b>
         <span>Mãe doadora, pai, genealogia e sociedade {lote ? "do embrião" : "da aspiração"}. Nenhum valor financeiro é copiado: o custo continua na origem.</span>
-        <span>Status inicial <b>Aguardando diagnóstico</b> · diagnóstico sugerido em <b>{dataBR(somaDias(dataTE, DIAG_DIAS))}</b> · previsão de parto <b>{dataBR(somaDias(dataTE, PARTO_DIAS))}</b> (TE + {PARTO_DIAS} dias, editável).</span>
+        <span>Status inicial <b>{conf ? "Confirmada" : "Aguardando diagnóstico"}</b> · diagnóstico sugerido em <b>{dataBR(somaDias(dataTE, DIAG_DIAS))}</b> · previsão de parto <b>{dataBR(somaDias(dataTE, PARTO_DIAS))}</b> (TE + {PARTO_DIAS} dias, editável).</span>
         {usaLote && <span>O embrião sai do saldo na transferência, mesmo que o diagnóstico dê negativo.</span>}
       </div>
     </Folha>
@@ -3201,7 +3322,7 @@ function FolhaDiagnostico({ p, onConfirm, onClose }) {
         {res === "positivo" && <label className="field"><span>Sexagem <em className="new-hint">· opcional</em></span><select value={sexagem} onChange={(e) => setSexagem(e.target.value)}><option value="">Não informada</option><option>Fêmea</option><option>Macho</option></select></label>}
         {res === "positivo" && <label className="field"><span>Previsão de parto</span><input type="date" value={prev} onChange={(e) => setPrev(e.target.value)} /></label>}
       </div>
-      <p className="muted small">{res === "positivo" ? "A prenhez passa para Confirmadas e entra no acompanhamento de parto." : "A ficha vai para Encerradas como “Não confirmada” e entra na taxa de prenhez da origem. Os valores financeiros não são alterados."}</p>
+      <p className="muted small">{res === "positivo" ? "A prenhez passa para Confirmadas e entra no acompanhamento de parto." : "A ficha fica como “Encerrada sem nascimento” (diagnóstico negativo) e entra na taxa de prenhez da origem. Os valores financeiros não são alterados."}</p>
     </Folha>
   );
 }
@@ -3738,7 +3859,7 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, embr
             <h2 className="serif">{a.nome}</h2>
             <div className="chips">
               {fase && <Badge tone="fase">{fase}</Badge>}
-              {a.tipo === "prenhez" && a.origem !== "genealogia" ? (() => { const fz = faseReprod(a); return <Badge tone={fz.tone}>{fz.txt}</Badge>; })()
+              {a.tipo === "prenhez" && a.origem !== "genealogia" ? (() => { const fz = statusPrenhez(a); return <Badge tone={fz.tone}>{fz.txt}</Badge>; })()
                 : a.tipo === "aspiracao" && a.origem !== "genealogia" ? (() => { const D = dadosAsp(a, ativos, embrioes); return <Badge tone={D.st[1]}>{D.st[0]}</Badge>; })()
                 : a.status && a.tipo !== "animal" && <Badge tone={statusTone(a.status)}>{a.status}</Badge>}
               {a.registro && <Badge tone="gold">Reg. {a.registro}</Badge>}
@@ -3750,7 +3871,7 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, embr
               {a.origemLabel && (() => { const org = a.origemId && (ativos || []).find((x) => x.id === a.origemId); return <span onClick={() => org && onAbrir && onAbrir(org)} style={{ cursor: org ? "pointer" : "default" }}><Badge tone="gold">Origem: {a.origemLabel}{org ? " ↗" : ""}</Badge></span>; })()}
             </div>
             <div className="ficha-actions"><button className={`btn ${a.tipo === "animal" ? "btn-gold" : "btn-ghost"}`} onClick={onEdit}>Editar</button>
-              {a.tipo === "aspiracao" && a.origem !== "genealogia" && onRepro && <button className="btn btn-gold" onClick={() => onRepro("transf", a)}>Registrar transferência</button>}
+              {a.tipo === "aspiracao" && a.origem !== "genealogia" && onRepro && <button className="btn btn-gold" onClick={() => onRepro("transf", a)}>Gerar prenhez</button>}
               {a.tipo === "prenhez" && a.origem !== "genealogia" && onRepro && (() => {
                 const fz = faseReprod(a);
                 const filhos = (ativos || []).filter((x) => x && x.tipo === "animal" && x.origemId === a.id);
@@ -5720,8 +5841,12 @@ function aplicarNovoRegistro(p, d, profileNome, veioDeOrigem, origemId) {
       return { ...a, ...extra, convertidos: conv, arquivada, animaisIds: [...(a.animaisIds || []), d.id], historico: [...(a.historico || []), h] };
     });
   }
+  // prenhez nova gerada a partir de uma aspiração: registra no histórico da aspiração
+  if (veioDeOrigem && origemId && d.tipo === "prenhez" && !exists) {
+    list = list.map((a) => (a && a.id === origemId ? { ...a, historico: [...(a.historico || []), { id: uid(), data: today(), tipo: "Prenhez gerada", desc: `Prenhez ${d.receptora ? `na receptora ${d.receptora} ` : ""}gerada a partir desta aspiração`, responsavel: profileNome, refId: d.id }] } : a));
+  }
   let leiloes = [...(p.leiloes || [])]; if (d.leilao && !leiloes.some((l) => l && lc(l.nome) === lc(d.leilao))) leiloes = [...leiloes, { id: uid(), nome: d.leilao }];
-  let locais = [...(p.locais || [])]; if (d.ondeEsta && !locais.some((l) => lc(l) === lc(d.ondeEsta))) locais = [...locais, d.ondeEsta];
+  let locais = [...(p.locais || [])]; if (d.ondeEsta && !locais.some((l) => chaveNome(l) === chaveNome(d.ondeEsta))) locais = [...locais, d.ondeEsta];
   let vendedores = [...(p.vendedores || [])]; if (d.vendedor && !vendedores.some((v) => v && lc(v.nome) === lc(d.vendedor))) vendedores = [...vendedores, { id: uid(), nome: d.vendedor, tipo: "Outro", doc: "", tel: "", email: "", obs: "" }];
   let socios = [...(p.socios || [])]; (d.socios || []).forEach((s) => { if (s && s.nome && !socios.some((x) => x && lc(x.nome) === lc(s.nome))) socios = [...socios, { id: uid(), nome: s.nome, doc: "", tel: "", email: "", endereco: "", obs: "" }]; });
   return { ...p, ativos: list, leiloes, locais, vendedores, socios };
@@ -6216,16 +6341,29 @@ export default function App() {
       return d || t ? { ...u, ...(d ? { doadora: d.nome || u.doadora, regDoadora: d.registro || "" } : {}), ...(t ? { pai: t.nome || u.pai, regPai: t.registro || "" } : {}) } : u;
     });
   }, [db.embrioes, ativos]);
+  // grava no próprio registro a situação calculada (aspirações e prenhezes), para ficar salva no banco e servir a relatórios
+  useEffect(() => {
+    if (!dataReady) return;
+    const lista = db.ativos || [], mud = new Map();
+    lista.forEach((a) => {
+      if (!a || a.origem === "genealogia" || (a.tipo !== "aspiracao" && a.tipo !== "prenhez")) return;
+      let txt, grupo;
+      if (a.tipo === "aspiracao") { const D = dadosAsp(a, lista, embrioes); txt = D.st[0]; grupo = D.grupo; }
+      else { const sp = statusPrenhez(a); grupo = sp.grupo; txt = /^Parto em|^Parto previsto hoje/.test(sp.txt) ? "Confirmada" : /^Parto atrasado/.test(sp.txt) ? "Parto atrasado" : sp.txt; }
+      if (a.statusAuto !== txt || a.statusGrupo !== grupo) mud.set(a.id, [txt, grupo]);
+    });
+    if (mud.size) setDb((p) => ({ ...p, ativos: (p.ativos || []).map((a) => { const m = a && mud.get(a.id); return m ? { ...a, statusAuto: m[0], statusGrupo: m[1] } : a; }) }));
+  }, [db.ativos, embrioes, dataReady]);
   const abertoAtual = aberto ? ((ativos || []).find((x) => x && x.id === aberto.id) || aberto) : null;   // ficha sempre com os dados mais recentes
   const quemReg = () => (profile && profile.nome) || "";
   const nomesAnimais = useMemo(() => (ativos || []).filter((x) => x && x.tipo === "animal" && x.nome).map((x) => x.nome), [ativos]);
   const genCompleta = (np) => { const sug = new Set(); fillArvore(np, "pat", np.pai, "", genIndex, sug, false); fillArvore(np, "mat", np.doadora, np.regDoadora, genIndex, sug, false); return np; };
   const proxCodLote = (lista) => "EMB-" + String((lista || []).reduce((m, l) => Math.max(m, parseInt(String((l && (l.loteCod || l.cod)) || "").replace(/\D/g, ""), 10) || 0), 0) + 1).padStart(4, "0");
 
-  const registrarTransferencia = ({ asp, lote, n, dataTE, receptoras, criatorio }) => {
+  const registrarTransferencia = ({ asp, lote, n, dataTE, receptoras, criatorio, confirmada, dataConf }) => {
     flushNext.current = true;
     const quem = quemReg();
-    const criatorioTE = criatorio;
+    const criatorioTE = nomeCanonico(localNames, criatorio);
     setDb((p) => {
       const lotes = p.embrioes || [];
       const L = lote ? lotes.find((x) => x && x.id === lote.id) : null;
@@ -6242,7 +6380,7 @@ export default function App() {
           origemId: A ? A.id : "", aspiracaoOrigemId: A ? A.id : "", loteOrigemId: L ? grupoDe(L) : "", embriaoId: L ? us[i].id : "",
           origemLabel: A ? rotuloReprod(A) : `Embrião ${us[i].cod} (Banco de Embriões)`,
           doadora: src.doadora || "", regDoadora: src.regDoadora || "", pai: src.pai || src.touro || "", regPai: src.regPai || "",
-          qtd: 1, status: "Aguardando confirmação", ondeEsta: criatorioTE || (A && A.ondeEsta) || (L && L.propriedade) || "", criatorio: (A && A.criatorio) || "",
+          qtd: 1, status: confirmada ? "Confirmada" : "Aguardando confirmação", ...(confirmada ? { diagnostico: "positivo", dataDiagnostico: dataConf || dataTE, dataConfirmacao: dataConf || dataTE } : {}), ondeEsta: criatorioTE || (A && A.ondeEsta) || (L && L.propriedade) || "", criatorio: (A && A.criatorio) || "",
           receptora: rec, dataTE, previsaoParto: somaDias(dataTE, PARTO_DIAS), responsavel: (A && A.responsavel) || "",
           avoPaterno: (A && A.avoPaterno) || "", avoPaterna: (A && A.avoPaterna) || "", avoMaterno: (A && A.avoMaterno) || "", avoMaterna: (A && A.avoMaterna) || "", obsGen: (A && A.obsGen) || "",
           socios: (src.socios || []).filter((x) => x && x.nome).map((x) => ({ id: uid(), nome: x.nome, pct: x.pct, obs: x.obs || "" })),
@@ -6265,7 +6403,7 @@ export default function App() {
       return { ...st, embrioes: embr };
     });
     setRepro(null);
-    setToast(`${n} prenhez(es) criada(s)${lote ? " com embriões do banco" : ""}. Status: aguardando diagnóstico.`);
+    setToast(`${n} prenhez(es) criada(s)${lote ? " com embriões do banco" : ""}. Status: ${confirmada ? "prenhez confirmada" : "aguardando diagnóstico"}.`);
   };
   const registrarDiagnostico = (p, { res, data, sexagem, prev }) => {
     const pos = res === "positivo";
@@ -6274,7 +6412,7 @@ export default function App() {
       previsaoParto: pos ? (prev || p.previsaoParto || "") : (p.previsaoParto || ""),
       historico: [...(p.historico || []), { id: uid(), data, tipo: "Diagnóstico", desc: pos ? `Positivo${sexagem ? ` · sexagem: ${lc(sexagem)}` : ""}` : "Negativo (não confirmada)", responsavel: quemReg() }] };
     setRepro(null); updateAtivo(np);
-    setToast(pos ? "Diagnóstico positivo registrado." : "Diagnóstico negativo registrado. A ficha foi para Encerradas.");
+    setToast(pos ? "Diagnóstico positivo registrado." : "Diagnóstico negativo registrado. Prenhez encerrada sem nascimento.");
   };
   const registrarPerda = (p, { data, motivo, obs }) => {
     const perdas = qtdPerdas(p) + 1;
@@ -7201,7 +7339,7 @@ export default function App() {
       {repro && repro.tipo === "transf" && (() => {
         const asp = repro.alvo ? ((ativos || []).find((x) => x && x.id === repro.alvo.id) || repro.alvo) : null;
         const lote = repro.lote ? (embrioes.find((l) => l.id === repro.lote.id) || repro.lote) : null;
-        return <FolhaTransferencia asp={asp} lote={lote} ativos={ativos} embrioes={embrioes} onConfirm={registrarTransferencia} onClose={() => setRepro(null)}
+        return <FolhaTransferencia asp={asp} lote={lote} ativos={ativos} embrioes={embrioes} localNames={localNames} onQuickLocal={quickLocal} onConfirm={registrarTransferencia} onClose={() => setRepro(null)}
           onFormCompleto={asp ? () => { setRepro(null); gerarPrenhez(asp); } : null} />;
       })()}
       {repro && repro.tipo === "diag" && <FolhaDiagnostico p={repro.alvo} onConfirm={(v) => registrarDiagnostico(abertoAtual && abertoAtual.id === repro.alvo.id ? abertoAtual : repro.alvo, v)} onClose={() => setRepro(null)} />}
@@ -8016,6 +8154,19 @@ a{color:var(--em)}
 .rp-tl>li.prod::before{border-color:var(--em);background:var(--em)}
 .rp-tl>li.saida::before{border-color:#C9AE74}
 .rp-tl-h{font-size:13.5px}
+.rp-card.ok{background:linear-gradient(180deg,rgba(23,107,70,.085),rgba(23,107,70,.045));border-color:rgba(23,107,70,.30);box-shadow:0 1px 2px rgba(23,107,70,.07),inset 0 1px 0 rgba(255,255,255,.65)}
+.rp-card.ok:hover{border-color:rgba(23,107,70,.45);box-shadow:0 10px 24px rgba(23,107,70,.10)}
+.rp-card.atencao{border-color:rgba(164,68,58,.26);background:rgba(164,68,58,.028)}
+.rp-card.cancel{background:#F3F2EE;border-style:dashed;box-shadow:none}
+.rp-card.cancel .rp-t{color:var(--muted)}
+.rp-sitbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;margin:16px 0 8px}
+.rp-sitbar .rp-tabs{margin:0}
+.rp-ocultar{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);cursor:pointer}
+.rp-tl-reg{margin-top:6px}
+.rp-tl-reg>li.futuro::before{border-style:dashed;border-color:#9CC5AF;background:var(--surf)}
+.rp-tl-links{display:flex;flex-wrap:wrap;gap:5px;margin-top:5px}
+.rp-tl-links button{font:inherit;font-size:12px;padding:2px 9px;border-radius:999px;border:1px solid rgba(23,107,70,.22);background:rgba(23,107,70,.06);color:var(--em);cursor:pointer}
+.rp-tl-links button:hover{background:rgba(23,107,70,.12)}
 .rp-grupo{background:var(--surf);border:1px solid var(--line);border-radius:var(--r3);padding:14px 16px;box-shadow:var(--sh1);display:flex;flex-direction:column;gap:10px}
 .rp-grupo-h{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
 .rp-grupo-h>div{display:flex;flex-direction:column;gap:2px;min-width:0}
