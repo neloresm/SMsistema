@@ -19,6 +19,9 @@ const parseMoney = (s) => { s = String(s ?? '').trim().replace(/^R\$\s*/, ''); i
 const moneyInput = (c) => (c / 100).toFixed(2).replace('.', ',');
 const Badge = (cls, txt) => html`<span class=${'badge b-' + cls}>${txt}</span>`;
 const stBadge = (s) => Badge(s, C.STATUS_LABEL[s] || s);
+// ícones iguais aos do SM sistema
+const ICONS = { dashboard: 'M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z', recebimentos: 'M12 3v18M16.5 7.2c-.6-1.4-2.3-2.2-4.5-2.2-2.6 0-4.5 1.3-4.5 3.1 0 4.1 9 2.3 9 6.4 0 1.8-1.9 3.1-4.5 3.1-2.3 0-4.1-.9-4.6-2.4', parcelas: 'M5 2.5v19l2.3-1.5 2.3 1.5 2.4-1.5 2.4 1.5 2.3-1.5 2.3 1.5v-19l-2.3 1.5-2.3-1.5-2.4 1.5-2.4-1.5-2.3 1.5zM9 9h6M9 13h6', pendencias: 'M10.3 3.9 1.9 18a2 2 0 0 0 1.7 3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0zM12 9.5v4M12 17h.01', relatorios: 'M3.5 3.5v17h17M7.5 15.5l4-4.5 3 3 5-6', importar: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12', usuarios: 'M12 3.5 4.5 6.5v5c0 4.6 3.2 8 7.5 9.5 4.3-1.5 7.5-4.9 7.5-9.5v-5zM9 12l2 2 4-4', menu: 'M4 7h16M4 12h16M4 17h16', voltar: 'M15 18l-6-6 6-6' };
+function Ico({ n, size = 18 }) { const d = ICONS[n]; return d ? html`<svg class="ico" width=${size} height=${size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d=${d} /></svg>` : null; }
 const go = (p) => { location.hash = p; };
 const sevLabel = { critico: 'Crítico', atencao: 'Atenção', info: 'Informativo' };
 const formas = ['PIX', 'TED', 'Boleto', 'Depósito', 'Dinheiro', 'Encontro de contas', 'Pagamento direto ao vendedor', 'Outro'];
@@ -102,10 +105,11 @@ function App() {
   const ctx = { model, raw, isAdmin, profile, reload, act, notify, session };
   const pend = model ? model.contratos.filter((c) => !c.arquivado && c.revisao_status !== 'aprovado').length : 0;
   const pendRep = model ? C.conferencia(model, C.mesesConferencia(model)[0]).pendencias : 0;
-  const nav = [
-    ['', '◆', 'Painel'], ['repasses', '◈', 'Repasses MECOB'], ['contratos', '▤', 'Contratos de venda'], ['inadimplencia', '⬣', 'Inadimplência'],
-    ['revisao', '✓', 'Central de revisão', pend], ...(isAdmin ? [['importar', '⇪', 'Novo contrato / importar']] : []),
-    ['relatorios', '▦', 'Relatórios'],
+  // mesmo formato do menu do SM sistema: grupos + ícones desenhados
+  const navGrupos = [
+    ['', [['', 'dashboard', 'Painel']]],
+    ['Vendas', [['repasses', 'recebimentos', 'Repasses MECOB', pendRep], ['contratos', 'parcelas', 'Contratos de venda'], ['inadimplencia', 'pendencias', 'Inadimplência']]],
+    ['Operação', [['revisao', 'usuarios', 'Central de revisão', pend], ...(isAdmin ? [['importar', 'importar', 'Novo contrato / importar']] : []), ['relatorios', 'relatorios', 'Relatórios']]],
   ];
   const r0 = route[0] || '';
   let page;
@@ -120,16 +124,17 @@ function App() {
   else page = html`<${Dashboard} ctx=${ctx} />`;
 
   return html`
-    <div class="topbar"><b>Recebimentos</b><button class="btn-sm" onClick=${() => setMenu(!menu)}>Menu</button></div>
+    <div class="topbar"><button class="burger" onClick=${() => setMenu(!menu)} aria-label="Abrir menu"><${Ico} n="menu" size=${20} /></button><img class="topbar-logo" src="/brand/sm-logo-260.png" alt="" /><div class="brand-mini">Recebimentos</div></div>
     <div class="shell">
       <aside class=${'side' + (menu ? ' open' : '')}>
-        <div class="brand"><div class="brand-mark">SM</div><div class="brand-txt"><b>SM sistema</b><span>Recebimentos</span></div></div>
+        <div class="brand"><img class="side-logo" src="/brand/sm-logo-260.png" alt="SM Agropecuária" /><div class="brand-name">SM Agropecuária</div><div class="brand-sub">Recebimentos</div></div>
         <nav class="nav">
-          ${nav.map(([k, ic, t, b]) => html`<a href=${'#/' + k} class=${r0 === k || (k === 'contratos' && r0 === 'contrato') ? 'on' : ''}><span class="nav-ic">${ic}</span>${t}${b ? html`<span class="badge b-pendente">${b}</span>` : ''}</a>`)}
+          ${navGrupos.map(([g, itens]) => html`<div class="nav-grp">${g ? html`<div class="nav-grp-t">${g}</div>` : ''}
+            ${itens.map(([k, ic, t, b]) => html`<a href=${'#/' + k} class=${'nav-item' + (r0 === k || (k === 'contratos' && r0 === 'contrato') ? ' on' : '')}><span class="nav-ic"><${Ico} n=${ic} /></span>${t}${b ? html`<span class="nav-count">${b}</span>` : ''}</a>`)}</div>`)}
+          <div class="nav-grp"><div class="nav-grp-t">SM sistema</div><a class="nav-item" href="/"><span class="nav-ic"><${Ico} n="voltar" /></span>Voltar ao sistema</a></div>
         </nav>
-        <a class="voltar" href="/">← Voltar ao SM sistema</a>
         <div class="side-foot">
-          ${profile.nome || profile.email}<br /><span class="muted">${isAdmin ? 'Administrador' : 'Consulta'}</span>
+          <div class="user-box"><div class="user-av">${((profile.nome || profile.email || '?').trim()[0] || '?').toUpperCase()}</div><div><div class="user-name">${profile.nome || profile.email}</div><div class="user-role">${profile.role || (isAdmin ? 'Administrador' : 'Usuário')}</div></div></div>
         </div>
       </aside>
       <main class="main">${err && model ? html`<div class="banner err">${err}</div>` : ''}${page}</main>
@@ -167,16 +172,16 @@ function BarChart({ series, onPick }) {
       data: {
         labels: series.map((s) => s.label),
         datasets: [
-          { type: 'bar', label: 'Bruto previsto', data: series.map((s) => C.toReais(s.previsto)), backgroundColor: fut('#0f5c45', 'rgba(15,92,69,.32)'), borderRadius: 3, order: 2 },
-          { type: 'bar', label: 'Real recebido', data: series.map((s) => C.toReais(s.recebido)), backgroundColor: '#b8954a', borderRadius: 3, order: 3 },
-          { type: 'line', label: 'Diferença (previsto − recebido)', data: series.map((s) => C.toReais(s.diferenca)), borderColor: '#a94438', backgroundColor: '#a94438', pointRadius: 2.5, borderWidth: 2, tension: 0.25, order: 1 },
+          { type: 'bar', label: 'Bruto previsto', data: series.map((s) => C.toReais(s.previsto)), backgroundColor: fut('#176B46', 'rgba(23,107,70,.28)'), borderRadius: 3, order: 2 },
+          { type: 'bar', label: 'Real recebido', data: series.map((s) => C.toReais(s.recebido)), backgroundColor: '#B89A5E', borderRadius: 3, order: 3 },
+          { type: 'line', label: 'Diferença (previsto − recebido)', data: series.map((s) => C.toReais(s.diferenca)), borderColor: '#C2412D', backgroundColor: '#C2412D', pointRadius: 2.5, borderWidth: 2, tension: 0.25, order: 1 },
         ],
       },
       options: {
         responsive: true, maintainAspectRatio: false, interaction: { mode: 'index', intersect: false },
         onClick: (e) => { const els = ch.current.getElementsAtEventForMode(e, 'index', { intersect: false }, true); if (els.length) onPick(series[els[0].index].key); },
         onHover: (e, els) => { e.native.target.style.cursor = els.length ? 'pointer' : 'default'; },
-        scales: { x: { grid: { display: false } }, y: { ticks: { callback: (v) => C.brlCompact(v) }, grid: { color: '#eef1ef' } } },
+        scales: { x: { grid: { display: false } }, y: { ticks: { callback: (v) => C.brlCompact(v) }, grid: { color: 'rgba(28,40,33,.08)' } } },
         plugins: {
           legend: { position: 'bottom', labels: { usePointStyle: true, boxWidth: 8 } },
           tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${C.brl(Math.round(c.raw * 100))}`, footer: () => 'Clique para detalhar' } },

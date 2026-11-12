@@ -170,3 +170,62 @@ details summary{cursor:pointer;color:var(--em-700);font-weight:500}
 @media (max-width: 820px){ .cat-row{grid-template-columns:auto 1fr} .cat-row .num{grid-column:2} }
 .kpi-click{display:block}
 .kpi-click > div{display:block}
+
+/* =====================================================================
+   Tema igual ao SM sistema atual (cores, menu, cartões, botões)
+   ===================================================================== */
+:root{
+  --bg:#F6F4EF; --card:#FFFFFF; --ink:#1C2621; --ink-2:#5C6761; --ink-3:#8A938E; --line:rgba(28,40,33,.09);
+  --em-950:#0F3B2A; --em-900:#0F3B2A; --em-800:#145C3C; --em-700:#176B46; --em-600:#1E7F53; --em-100:#E6F1EB; --em-50:#F3F7F4;
+  --gold:#B89A5E; --gold-600:#8A6F35; --gold-100:#F4EEDF;
+  --red:#C2412D; --red-100:#FBECE8; --amber:#B7791F; --amber-100:#FBF2E2; --blue:#3F6E8C; --blue-100:#E9F1F6;
+  --radius:16px; --shadow:0 1px 2px rgba(20,30,25,.06),0 1px 1px rgba(20,30,25,.03);
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Inter","Segoe UI",system-ui,sans-serif;
+  --serif:var(--font);
+}
+html,body{font-size:14.5px;background:var(--bg);font-feature-settings:"cv11","ss01"}
+h1{font-family:var(--font);font-size:30px;font-weight:700;letter-spacing:-.03em;color:#111A15}
+h2{font-weight:600;letter-spacing:-.01em}
+.shell{grid-template-columns:248px 1fr}
+.side{background:rgba(239,236,229,.78);color:var(--ink);padding:0;gap:0;border-right:1px solid var(--line);-webkit-backdrop-filter:saturate(180%) blur(22px);backdrop-filter:saturate(180%) blur(22px)}
+.side .brand{display:grid;grid-template-columns:48px minmax(0,1fr);column-gap:11px;align-items:center;padding:20px 18px 16px;border:0;margin:0}
+.side-logo{width:48px;grid-row:span 2}
+.brand-name{font-size:14.5px;font-weight:700;letter-spacing:-.01em;color:#111A15;align-self:end}
+.brand-sub{font-size:12px;color:var(--ink-3);align-self:start}
+.side .nav{padding:0 10px;display:flex;flex-direction:column;gap:2px;flex:1}
+.nav-grp{display:flex;flex-direction:column;gap:1px}
+.nav-grp-t{font-size:11.5px;font-weight:600;color:var(--ink-3);padding:14px 10px 5px}
+.side .nav a.nav-item{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:8px;color:var(--ink);font-size:14px;font-weight:500;box-shadow:none}
+.side .nav a.nav-item:hover{background:rgba(28,40,33,.05);text-decoration:none}
+.side .nav a.nav-item.on{background:var(--em-700);color:#fff;box-shadow:0 1px 2px rgba(15,59,42,.25)}
+.nav-ic{width:20px;display:inline-flex;justify-content:center;color:var(--em-700)}
+.nav-item.on .nav-ic{color:rgba(255,255,255,.9)}
+.nav-count{margin-left:auto;font-size:12px;font-weight:500;color:var(--ink-3)}
+.nav-item.on .nav-count{color:rgba(255,255,255,.8)}
+.ico{display:inline-block;vertical-align:middle;flex:none}
+.side .side-foot{margin-top:auto;padding:12px 14px;border-top:1px solid var(--line);color:var(--ink)}
+.user-box{display:flex;gap:10px;align-items:center}
+.user-av{width:32px;height:32px;flex:none;display:grid;place-items:center;border-radius:50%;background:linear-gradient(135deg,#1E7F53,#0F3B2A);color:#fff;font-weight:600;font-size:13px}
+.user-name{font-weight:600;font-size:13.5px;color:#111A15}
+.user-role{color:var(--ink-3);font-size:12px}
+.main{padding:26px 32px 64px}
+.page-head p{color:var(--ink-3)}
+.card,.kpi{border-radius:16px;border:1px solid var(--line);box-shadow:var(--shadow)}
+.kpi{padding:14px 16px}
+.kpi .lbl{font-size:12.5px;color:var(--ink-3)}
+.kpi .val{font-size:22px;font-weight:700;letter-spacing:-.02em;color:#111A15}
+.kpi.accent,.kpi.gold,.kpi.red,.kpi.gray{border-top:1px solid var(--line)}
+button,.btn{border-radius:10px;font-weight:600;border:1px solid rgba(28,40,33,.14);background:#fff;box-shadow:0 1px 2px rgba(20,30,25,.06)}
+.btn-primary{background:var(--em-700);border-color:var(--em-700);color:#fff}
+.btn-primary:hover{background:var(--em-600)}
+th{background:#FBFAF7;color:var(--ink-2);text-transform:none;letter-spacing:0;font-size:12px}
+.tbl-wrap{border-radius:12px}
+.mes-chip.on{border-color:var(--em-700);box-shadow:0 0 0 2px var(--em-100)}
+.topbar{background:rgba(246,244,239,.9);color:var(--ink);border-bottom:1px solid var(--line);gap:10px;justify-content:flex-start}
+.topbar .burger{background:transparent;border:0;box-shadow:none;padding:4px;color:var(--ink)}
+.topbar-logo{width:30px}
+.brand-mini{font-weight:700}
+@media (max-width: 820px){ .side.open{background:rgba(244,242,236,.97)} .main{padding:16px 16px 60px} }
+.grid > .card + .card{margin-top:0}
+.kpi-click{white-space:normal}
+.kpi .sub{overflow-wrap:anywhere}
