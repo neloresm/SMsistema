@@ -94,7 +94,7 @@ export function gerarRelatorio(tipo, model, contratos, f) {
       vencimento: g.parcela.vencimento, valor: g.valorC, forma: g.forma || '', origem: g.origem === 'importacao' ? 'Importado' : 'Manual',
     }));
     return {
-      titulo: 'Pagamentos dos compradores (realizado)', subtitulo: sub(`${linhas.length} pagamentos registrados, pela data do pagamento à MECOB (o crédito na conta da SM está em Repasses MECOB)`),
+      titulo: 'Pagamentos dos compradores (realizado)', subtitulo: sub(`${linhas.length} pagamentos registrados, pela data do pagamento (o crédito na conta da SM está em Repasses da Contabilidade)`),
       colunas: [col('data', 'Data pgto.', 'date'), col('comprador', 'Comprador'), col('contrato', 'Contrato', 'int'), col('leilao', 'Leilão'), col('parcela', 'Parcela'), col('vencimento', 'Vencimento', 'date'), col('valor', 'Valor', 'money'), col('forma', 'Forma'), col('origem', 'Origem')],
       linhas, total: { data: 'Total', ...somar(linhas, ['valor']) },
     };

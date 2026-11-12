@@ -5,6 +5,7 @@ import * as C from './calc.js';
 import { parseCobranca, pdfParaTexto, parseRelatorioMecob, inferirTipo, extrairAnimal } from './parser.js';
 import { RELATORIOS, gerarRelatorio, exportarExcel, exportarPDF } from './relatorios.js';
 import { baixarPDF, conferenciaExcel, conferenciaPDF } from './exportar-repasse.js';
+import { compararLote, montarCorrecao } from './comparar.js';
 
 // Modo de teste local: só em localhost e com ?mock na URL (o arquivo de teste não é publicado).
 const MOCK = ['localhost', '127.0.0.1'].includes(location.hostname) && new URLSearchParams(location.search).has('mock');
@@ -49,9 +50,9 @@ async function fetchAll(table, ordem = 'id') {
   return out;
 }
 async function loadRaw() {
-  const t = ['leiloes', 'compradores', 'contratos', 'parcelas', 'pagamentos', 'revisao_itens', 'repasses', 'repasse_linhas', 'config'].map((x) => 'rcb_' + x);
-  const [leiloes, compradores, contratos, parcelas, pagamentos, revisao, repasses, repasse_linhas, config] = await Promise.all(t.map((x) => fetchAll(x, x === 'rcb_config' ? 'chave' : 'id')));
-  return { leiloes, compradores, contratos, parcelas, pagamentos, revisao, repasses, repasse_linhas, config };
+  const t = ['leiloes', 'compradores', 'contratos', 'parcelas', 'pagamentos', 'revisao_itens', 'repasses', 'repasse_linhas', 'config', 'contabilidades'].map((x) => 'rcb_' + x);
+  const [leiloes, compradores, contratos, parcelas, pagamentos, revisao, repasses, repasse_linhas, config, contabilidades] = await Promise.all(t.map((x) => fetchAll(x, x === 'rcb_config' ? 'chave' : 'id')));
+  return { leiloes, compradores, contratos, parcelas, pagamentos, revisao, repasses, repasse_linhas, config, contabilidades };
 }
 async function uploadAnexo(file, { contrato_id, parcela_id = null, pagamento_id = null, descricao = '' }) {
   const path = `contratos/${contrato_id}/${Date.now()}_${safeName(file.name)}`;
@@ -109,8 +110,8 @@ function App() {
   // mesmo formato do menu do SM sistema: grupos + ícones desenhados
   const navGrupos = [
     ['', [['', 'dashboard', 'Painel']]],
-    ['Vendas', [['repasses', 'recebimentos', 'Repasses MECOB', pendRep], ['contratos', 'parcelas', 'Contratos de venda'], ['inadimplencia', 'pendencias', 'Inadimplência']]],
-    ['Operação', [['revisao', 'usuarios', 'Central de revisão', pend], ...(isAdmin ? [['importar', 'importar', 'Novo contrato / importar']] : []), ['relatorios', 'relatorios', 'Relatórios']]],
+    ['Vendas', [['repasses', 'recebimentos', 'Repasses da Contabilidade', pendRep], ['contratos', 'parcelas', 'Contratos de venda'], ['inadimplencia', 'pendencias', 'Inadimplência']]],
+    ['Operação', [['revisao', 'usuarios', 'Central de revisão', pend], ...(isAdmin ? [['importar', 'importar', 'Importar novos contratos'], ['comparar', 'parcelas', 'Comparar contratos']] : []), ['relatorios', 'relatorios', 'Relatórios']]],
   ];
   const r0 = route[0] || '';
   let page;
@@ -121,6 +122,7 @@ function App() {
   else if (r0 === 'inadimplencia') page = html`<${InadPage} ctx=${ctx} />`;
   else if (r0 === 'revisao') page = html`<${RevisaoPage} ctx=${ctx} />`;
   else if (r0 === 'importar' && isAdmin) page = html`<${ImportarPage} ctx=${ctx} />`;
+  else if (r0 === 'comparar' && isAdmin) page = html`<${CompararPage} ctx=${ctx} />`;
   else if (r0 === 'relatorios') page = html`<${RelatoriosPage} ctx=${ctx} />`;
   else page = html`<${Dashboard} ctx=${ctx} />`;
 
@@ -242,7 +244,7 @@ function Dashboard({ ctx }) {
     ${k.fora !== 0 ? html`<div class="banner info" style="margin-top:14px"><span><b>${C.brl(k.fora)}</b> do valor contratado não está no cronograma de parcelas: são entradas/parcelas que o sistema de cobrança mostra como “liquidadas no cadastro” ou pagas direto ao vendedor, <b>sem valor e data registrados</b> (${k.parcelasExternas} parcelas). Esses valores não entram como recebidos até serem comprovados.</span></div>` : ''}
     <div class="card" style="margin-top:16px">
       <div class="card-head"><div><h2>${f.modo === 'contratual' ? 'Previsto × recebido por vencimento' : 'Previsto × pago pelos compradores'}</h2>
-        <div class="small muted">${f.modo === 'contratual' ? 'Cada parcela fica no período do seu vencimento; “recebido” é quanto já foi pago dessas parcelas, mesmo que depois.' : '“Recebido” é o que os compradores pagaram à MECOB no período, pela data do pagamento. O que caiu na conta da SM está em Repasses MECOB.'}</div></div>
+        <div class="small muted">${f.modo === 'contratual' ? 'Cada parcela fica no período do seu vencimento; “recebido” é quanto já foi pago dessas parcelas, mesmo que depois.' : '“Recebido” é o que os compradores pagaram no período, pela data do pagamento. O que caiu na conta da SM está em Repasses da Contabilidade.'}</div></div>
         <div class="small muted">Barras claras = períodos futuros</div></div>
       ${ser.length ? html`<${BarChart} series=${ser} onPick=${setPick} />` : html`<div class="empty">Sem dados para o filtro.</div>`}
     </div>
@@ -586,13 +588,14 @@ function ArquivarModal({ ctx, c, onClose }) {
 }
 
 // ---------------------------------------------------------------------------
-// Repasses MECOB — conferência mensal
+// Repasses da Contabilidade — conferência mensal
 // ---------------------------------------------------------------------------
 const CATM = Object.fromEntries(C.CONF_CATS.map((c) => [c.id, c]));
 const SEV = { bad: 'critico', warn: 'atencao', info: 'info', gold: 'pendente', ok: 'ok', gray: 'cancelada' };
 const nomeMes = (m) => `${C.MESES_LONGOS[+m.slice(5) - 1]}/${m.slice(0, 4)}`;
-const EXTRATO = { sem_relatorio: ['cancelada', 'Sem relatório'], pendente: ['cancelada', 'Repasse informado pela MECOB'], confirmado: ['ok', 'Confirmado no extrato'], divergente: ['critico', 'Divergente no extrato'] };
-const STATUS_MES = { sem_relatorio: ['cancelada', 'Sem relatório'], pendencias: ['atencao', 'Com pendências'], fechado: ['ok', 'Fechado'] };
+const EXTRATO = { sem_relatorio: ['cancelada', 'Sem relatório'], pendente: ['cancelada', 'Transferência informada pela contabilidade'], confirmado: ['ok', 'Confirmado no extrato'], divergente: ['critico', 'Divergente no extrato'] };
+const STATUS_MES = { sem_relatorio: ['cancelada', 'Sem relatório'], parcial: ['info', 'Só linhas de outros relatórios'], pendencias: ['atencao', 'Com pendências'], fechado: ['ok', 'Fechado'] };
+const pct = (x) => (x == null ? '—' : C.pctTxt(x));
 
 function RepassesPage({ ctx, mes }) {
   const { model, isAdmin } = ctx;
@@ -605,70 +608,101 @@ function RepassesPage({ ctx, mes }) {
   const [sel, setSel] = useState(null);
   const [modal, setModal] = useState(null);
   useEffect(() => { setCat(null); setSel(null); }, [m]);
-  const lista = cat === null ? null : cat === '' ? conf.itens.filter((i) => !CATM[i.cat].neutro) : conf.itens.filter((i) => i.cat === cat);
-  const base = conf.itens.filter((i) => !CATM[i.cat].fora && i.esp > 0);
-  const brutoBase = base.reduce((s, i) => s + i.bruto, 0), honBase = base.reduce((s, i) => s + i.honEsp, 0);
+  const lista = cat === null ? null : cat === '' ? conf.itens.filter((i) => !CATM[i.cat].neutro) : cat === 'taxa_fora' ? conf.foraPadrao : conf.itens.filter((i) => i.cat === cat);
   const [exCls, exTxt] = EXTRATO[conf.extrato];
-  const nCred = conf.itens.filter((i) => i.linha?.tipo === 'credito').reduce((s, i) => s + (i.linha.parcelas || []).length, 0);
   const abrirLista = (c) => { setCat(c); setTimeout(() => document.getElementById('lista-rep')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); };
-  const exportar = (tipo) => {
-    try { tipo === 'pdf' ? baixarPDF(conf, model) : conferenciaExcel(conf, model); } catch (e) { ctx.notify('Não foi possível gerar o arquivo: ' + e.message, 'err'); }
-  };
+  const exportar = (tipo) => { try { tipo === 'pdf' ? baixarPDF(conf, model) : conferenciaExcel(conf, model); } catch (e) { ctx.notify('Não foi possível gerar o arquivo: ' + e.message, 'err'); } };
+  const cob = conf.taxaCobertura;
 
   return html`
-    <div class="page-head"><div><h1>Repasses MECOB</h1><p>Confira se a MECOB repassou tudo o que deveria em cada mês</p></div>
-      <div class="stack no-print">${isAdmin ? html`<button class="btn-primary" onClick=${() => setModal({ t: 'enviar' })}>Enviar relatório da MECOB</button>` : ''}
+    <div class="page-head"><div><h1>Repasses da Contabilidade</h1><p>Confira se a contabilidade transferiu tudo o que deveria em cada mês</p></div>
+      <div class="stack no-print">${isAdmin ? html`<button class="btn-primary" onClick=${() => setModal({ t: 'enviar' })}>Enviar relatório da contabilidade</button>` : ''}
         <button onClick=${() => exportar('xlsx')} disabled=${!conf.itens.length}>Excel</button><button onClick=${() => exportar('pdf')} disabled=${!conf.itens.length}>PDF</button></div></div>
+    <div class="banner info" style="justify-content:space-between;align-items:center"><span>Contabilidade atual: <b>${model.contabAtual?.nome || 'não cadastrada'}</b>. Cada relatório guarda a empresa que o emitiu.</span>
+      ${isAdmin ? html`<button class="btn-sm" onClick=${() => setModal({ t: 'contab' })}>Cadastrar / trocar contabilidade</button>` : ''}</div>
     <div class="mes-chips">${resumoMeses.map(({ mes: x, c }) => html`<a href=${'#/repasses/' + x} class=${'mes-chip' + (x === m ? ' on' : '')}><b>${nomeMes(x)}</b>${Badge(STATUS_MES[c.status][0], STATUS_MES[c.status][1] + (c.pendencias ? ` · ${c.pendencias}` : ''))}</a>`)}</div>
-    ${!conf.reps.length ? html`<div class="banner warn"><span><b>Nenhum relatório da MECOB enviado para ${nomeMes(m)}.</b> ${conf.aguardando ? html`Pagamentos de compradores aguardando o relatório: <b>${C.brl(conf.aguardando)}</b> esperados (já sem o honorário).` : ''} ${isAdmin ? html`<a href="#" onClick=${(e) => { e.preventDefault(); setModal({ t: 'enviar' }); }}>Enviar agora</a>` : ''}</span></div>` : ''}
+    ${!conf.reps.length ? html`<div class="banner warn"><span><b>Nenhum relatório da contabilidade enviado para ${nomeMes(m)}.</b> ${conf.aguardando ? html`Pagamentos de compradores aguardando o relatório: <b>${C.brl(conf.aguardando)}</b> (estimado, já sem a taxa média).` : ''} ${isAdmin ? html`<a href="#" onClick=${(e) => { e.preventDefault(); setModal({ t: 'enviar' }); }}>Enviar agora</a>` : ''}</span></div>` : ''}
     <div class="grid kpis">
-      <${Kpi} cls="accent" lbl="Deveria repassar" val=${C.brl(conf.esperado)} sub=${`${nCred + conf.itens.filter((i) => i.cat === 'faltou').length} parcelas pagas − ${model.honorarioPct}%${conf.diretoEsp ? ' − honorário de pagamentos diretos' : ''}`} />
-      <div class="kpi gold"><div class="lbl">MECOB informou</div><div class="val num">${C.brl(conf.informado)}</div><div class="sub">${Badge(exCls, exTxt)}</div></div>
-      <${Kpi} cls="gray" lbl="Taxas descontadas" val=${C.brl(conf.honInf + conf.taxasInf)} sub=${`honorários ${C.brl(conf.honInf)} + avulsas ${C.brl(conf.taxasInf)}`} />
+      <${Kpi} cls="accent" lbl="Repasse líquido esperado" val=${C.brl(conf.esperado)} sub=${`Pago pelos compradores no mês − taxas cobradas${conf.taxasEstimadas ? ' (parte estimada)' : ''}`} />
+      <div class="kpi gold"><div class="lbl">Transferido pela contabilidade</div><div class="val num">${C.brl(conf.informado)}</div><div class="sub">${Badge(exCls, exTxt)}${conf.confirmadoConta ? html` <span class="small">Confirmado na conta: <b>${C.brl(conf.confirmadoConta)}</b></span>` : ''}</div></div>
+      <${Kpi} cls="gray" lbl="Taxas descontadas" val=${C.brl(conf.taxas + conf.outrosDescontos)} sub=${`Taxa sobre parcelas ${C.brl(conf.taxas)} + outros descontos ${C.brl(conf.outrosDescontos)}`} />
       <button class=${'kpi kpi-click ' + (conf.dif < 0 ? 'red' : conf.dif > 0 ? 'gold' : 'accent')} onClick=${() => abrirLista('')}>
         <div class="lbl">Diferença · clique para ver</div><div class="val num" style=${conf.dif ? 'color:var(--red)' : ''}>${C.brl(conf.dif)}</div>
-        <div class="sub">${conf.dif < 0 ? 'a SM recebeu menos que o esperado' : conf.dif > 0 ? 'a MECOB informou mais que o esperado' : 'bate com o esperado'}${conf.pendencias ? ` · ${conf.pendencias} pendência(s)` : ''}</div></button>
+        <div class="sub">${conf.dif < 0 ? 'A SM recebeu menos que o esperado' : conf.dif > 0 ? 'Transferido acima do esperado' : 'Bate com o esperado'}${conf.pendencias ? ` · ${conf.pendencias} pendência(s)` : ''}</div></button>
     </div>
-    ${conf.reps.length ? html`<div class="grid cols-2" style="margin-top:16px">
-      <div class="card"><h2 style="margin-bottom:10px">De onde sai cada número</h2><dl class="bridge">
-        <dt>Pago pelos compradores (parcelas do mês)</dt><dd>${C.brl(brutoBase)}</dd>
-        <dt>− honorário de ${model.honorarioPct}%</dt><dd class="neg">−${C.brl(honBase)}</dd>
-        ${conf.diretoEsp ? html`<dt>− ${model.honorarioPct}% sobre pagamentos diretos ao vendedor</dt><dd class="neg">−${C.brl(conf.diretoEsp)}</dd>` : ''}
-        <dt class="tot">= Deveria repassar</dt><dd class="tot">${C.brl(conf.esperado)}</dd>
-        ${conf.reps.map((r) => html`<dt>${r.titulo || 'Relatório'} <span class="muted small">(${C.fmtD(r.periodo_inicio)} a ${C.fmtD(r.periodo_fim)})</span></dt><dd>${C.brl(C.cents(r.valor_final))}</dd>`)}
-        <dt class="tot">Diferença</dt><dd class=${'tot' + (conf.dif ? ' neg' : '')}>${C.brl(conf.dif)}</dd></dl>
-        ${conf.aguardando ? html`<p class="small muted" style="margin:10px 0 0">Fora da conta: ${C.brl(conf.aguardando)} de pagamentos do fim do mês que podem vir no próximo relatório.</p>` : ''}</div>
+    ${conf.itens.some((i) => i.linha) ? html`<div class="grid cols-2" style="margin-top:16px">
+      <div class="card"><h2 style="margin-bottom:10px">Taxa média da contabilidade</h2>
+        <div style="display:flex;gap:18px;align-items:baseline;flex-wrap:wrap"><div class="num" style="font-size:30px;font-weight:700">${pct(conf.taxaMedia)}</div>
+          <div class="small muted">Soma das taxas (${C.brl(conf.taxas)}) ÷ soma das bases brutas (${C.brl(conf.itens.filter((i) => i.linha?.tipo === 'credito' && !CATM[i.cat].fora && i.base).reduce((s, i) => s + i.base, 0))}) × 100.<br />Cada parcela pesa pelo seu valor.</div></div>
+        <p class="small" style="margin:10px 0 0">${cob.n === cob.total ? html`Cobre <b>todas as ${cob.total} linhas</b> de parcelas deste mês.` : html`<b style="color:var(--amber)">Cobre ${cob.n} de ${cob.total} linhas</b>: as demais não têm taxa e base identificadas.`}
+          ${cob.semBase ? html` <span style="color:var(--amber)">${cob.semBase} desconto(s) avulso(s) não informam base e ficaram fora da média.</span>` : ''}</p>
+        ${conf.predominante != null ? html`<p class="small" style="margin:6px 0 0">Taxa mais frequente: <b>${conf.predominante.toLocaleString('pt-BR')}%</b>.
+          ${conf.foraPadrao.length ? html`<a href="#" onClick=${(e) => { e.preventDefault(); abrirLista('taxa_fora'); }}>${conf.foraPadrao.length} parcela(s) com taxa diferente</a>` : 'Todas as parcelas com a mesma taxa.'}</p>` : ''}
+        ${conf.porRelatorio.length ? html`<div class="sep"></div><table><thead><tr><th>Relatório</th><th class="num">Linhas</th><th class="num">Taxa média</th></tr></thead><tbody>
+          ${conf.porRelatorio.map((x) => html`<tr><td class="small">${x.r.titulo || x.r.arquivo_nome}<div class="muted">${C.fmtD(x.r.periodo_inicio)} a ${C.fmtD(x.r.periodo_fim)}</div></td><td class="num">${x.n}/${x.nLinhas}</td><td class="num"><b>${pct(x.media)}</b></td></tr>`)}
+          <tr><td><b>Consolidado do mês</b> <span class="small muted">(sem repetições, pelo mês do pagamento)</span></td><td class="num">${cob.n}</td><td class="num"><b>${pct(conf.taxaMedia)}</b></td></tr></tbody></table>` : ''}</div>
       <div class="card"><h2 style="margin-bottom:10px">${conf.problemas.length ? `Por que ${conf.dif < 0 ? 'faltaram' : 'a diferença de'} ${C.brl(Math.abs(conf.dif))}` : 'Nenhuma divergência'}</h2>
         <div class="cats">${conf.problemas.map((c) => html`<button class=${'cat-row ' + c.sev} onClick=${() => abrirLista(c.id)}>${Badge(SEV[c.sev], c.qtd)}<span><b>${c.t}</b><br /><span class="small muted">${c.d}</span></span><span class="num">${C.brl(c.dif)}</span></button>`)}</div>
-        ${conf.problemas.length ? html`<p class="small muted" style="margin:10px 0 0">A soma dos motivos (${C.brl(conf.problemas.reduce((s, c) => s + c.dif, 0))}) fecha com a diferença.</p>` : html`<p class="small muted">Todos os créditos e taxas conferem com a regra.</p>`}
-        <div class="sep"></div><h3>Conferido sem diferença</h3>
-        <div class="cats" style="margin-top:8px">${conf.cats.filter((c) => c.neutro).map((c) => html`<button class=${'cat-row ' + c.sev} onClick=${() => abrirLista(c.id)}>${Badge(SEV[c.sev], c.qtd)}<span><b>${c.t}</b><br /><span class="small muted">${c.d}</span></span><span class="num">${c.id === 'encargo' ? '+' + C.brl(conf.encargos) : c.id === 'aguardando' ? C.brl(conf.aguardando) : 'OK'}</span></button>`)}</div></div>
-    </div>` : ''}
-    ${lista ? html`<div class="card" id="lista-rep"><div class="card-head"><h2>${cat ? CATM[cat].t : 'Itens que formam a diferença'}</h2>
-        <div class="stack"><select value=${cat} onChange=${(e) => setCat(e.target.value)}><option value="">Itens que formam a diferença</option>${conf.cats.map((c) => html`<option value=${c.id}>${c.t} (${c.qtd})</option>`)}</select><button class="btn-sm" onClick=${() => setCat(null)}>Fechar</button></div></div>
-      <div class="tbl-wrap"><table><thead><tr><th>Contrato · lote</th><th>Parcela</th><th>Comprador</th><th>Crédito / pago em</th><th class="num">Esperado</th><th class="num">Informado</th><th class="num">Diferença</th><th>Por quê</th></tr></thead>
+        ${conf.problemas.length ? html`<p class="small muted" style="margin:10px 0 0">A soma dos motivos (${C.brl(conf.problemas.reduce((s, c) => s + c.dif, 0))}) fecha com a diferença.</p>` : html`<p class="small muted">Todos os créditos e descontos conferem.</p>`}
+        <div class="sep"></div><h3>Conferido sem diferença ou fora da conta</h3>
+        <div class="cats" style="margin-top:8px">${conf.cats.filter((c) => c.neutro).map((c) => html`<button class=${'cat-row ' + c.sev} onClick=${() => abrirLista(c.id)}>${Badge(SEV[c.sev], c.qtd)}<span><b>${c.t}</b><br /><span class="small muted">${c.d}</span></span><span class="num">${c.id === 'encargo' ? '+' + C.brl(conf.encargos) : c.id === 'aguardando' ? C.brl(conf.aguardando) : c.fora ? 'fora' : 'OK'}</span></button>`)}</div></div>
+    </div>
+    <div class="card"><h2 style="margin-bottom:10px">De onde sai cada número</h2><dl class="bridge">
+      <dt>Pago pelos compradores no mês (parcelas da 2ª em diante)</dt><dd>${C.brl(conf.bruto)}</dd>
+      <dt>− taxas cobradas sobre essas parcelas${conf.taxasEstimadas ? ` (inclui ${C.brl(conf.taxasEstimadas)} estimados pela taxa média)` : ''}</dt><dd class="neg">−${C.brl(conf.taxas + conf.taxasEstimadas)}</dd>
+      <dt class="tot">= Repasse líquido esperado</dt><dd class="tot">${C.brl(conf.esperado)}</dd>
+      <dt>Relatórios enviados para ${nomeMes(m)} (valor final)</dt><dd>${C.brl(conf.totalRelatoriosMes)}</dd>
+      ${conf.paraOutrosMeses ? html`<dt>− linhas desses relatórios pagas em outros meses</dt><dd class="neg">−${C.brl(conf.paraOutrosMeses)}</dd>` : ''}
+      ${conf.deOutrosRelatorios ? html`<dt>+ parcelas pagas neste mês que vieram em relatórios de outros meses</dt><dd>${C.brl(conf.deOutrosRelatorios)}</dd>` : ''}
+      <dt class="tot">= Transferido referente a ${nomeMes(m)}</dt><dd class="tot">${C.brl(conf.informado)}</dd>
+      <dt class="tot">Diferença</dt><dd class=${'tot' + (conf.dif ? ' neg' : '')}>${C.brl(conf.dif)}</dd></dl>
+      ${conf.aguardando ? html`<p class="small muted" style="margin:10px 0 0">Fora da conta: ${C.brl(conf.aguardando)} esperados de pagamentos que ainda aguardam relatório.</p>` : ''}</div>` : ''}
+    ${lista ? html`<div class="card" id="lista-rep"><div class="card-head"><h2>${cat === 'taxa_fora' ? 'Parcelas com taxa diferente da mais frequente' : cat ? CATM[cat].t : 'Itens que formam a diferença'}</h2>
+        <div class="stack"><select value=${cat} onChange=${(e) => setCat(e.target.value)}><option value="">Itens que formam a diferença</option>${conf.foraPadrao.length ? html`<option value="taxa_fora">Taxa diferente da mais frequente (${conf.foraPadrao.length})</option>` : ''}${conf.cats.map((c) => html`<option value=${c.id}>${c.t} (${c.qtd})</option>`)}</select><button class="btn-sm" onClick=${() => setCat(null)}>Fechar</button></div></div>
+      <div class="tbl-wrap"><table><thead><tr><th>Contrato · lote</th><th>Parcela</th><th>Comprador</th><th>Pago em</th><th class="num">Taxa</th><th class="num">Esperado</th><th class="num">Transferido</th><th class="num">Diferença</th><th>Por quê</th></tr></thead>
         <tbody>${lista.map((i) => html`<tr class="click" onClick=${() => setSel(i)}><td><b>${i.ctr}</b> · ${i.lote}${i.ref ? html`<div class="small muted">${i.ref}</div>` : ''}</td><td>${i.parcelasTxt}</td><td>${i.comprador}</td>
-          <td class="num small">${C.fmtD(i.data_credito || i.pagoEm)}</td><td class="num">${C.brl(i.esp)}</td><td class="num">${C.brl(i.inf)}</td>
+          <td class="num small">${C.fmtD(i.pagoEm || i.data_credito)}</td><td class="num small">${i.taxaPct != null ? pct(i.taxaPct) : i.desconto ? C.brl(i.desconto) : i.estimado && i.taxa ? '~' + C.brl(i.taxa) : '—'}</td>
+          <td class="num">${C.brl(i.esp)}</td><td class="num">${C.brl(i.inf)}</td>
           <td class="num" style=${i.dif < 0 ? 'color:var(--red);font-weight:600' : ''}>${i.dif ? (i.dif > 0 ? '+' : '') + C.brl(i.dif) : '—'}</td>
           <td class="small" style="max-width:380px">${i.resolvido ? html`${Badge('ok', 'Resolvido')} ` : ''}${i.why}</td></tr>`)}</tbody>
-        <tfoot><tr><td colspan="4">Soma</td><td class="num">${C.brl(lista.reduce((s, i) => s + i.esp, 0))}</td><td class="num">${C.brl(lista.reduce((s, i) => s + i.inf, 0))}</td><td class="num">${C.brl(lista.reduce((s, i) => s + i.dif, 0))}</td><td></td></tr></tfoot></table></div></div>` : ''}
+        <tfoot><tr><td colspan="5">Soma</td><td class="num">${C.brl(lista.reduce((s, i) => s + i.esp, 0))}</td><td class="num">${C.brl(lista.reduce((s, i) => s + i.inf, 0))}</td><td class="num">${C.brl(lista.reduce((s, i) => s + i.dif, 0))}</td><td></td></tr></tfoot></table></div></div>` : ''}
     ${conf.reps.length ? html`<div class="card"><div class="card-head"><h2>Relatórios enviados para ${nomeMes(m)}</h2></div>
-      <div class="tbl-wrap"><table><thead><tr><th>Relatório</th><th>Créditos de</th><th class="num">Créditos</th><th class="num">Taxas</th><th class="num">Valor final</th><th>Conta da SM</th><th></th></tr></thead><tbody>
-      ${conf.reps.map((r) => html`<tr><td>${r.titulo || '—'}<div class="small muted">${r.arquivo_nome || ''} · ${r.linhas.length} linhas</div></td><td class="small">${C.fmtD(r.periodo_inicio)} a ${C.fmtD(r.periodo_fim)}</td>
-        <td class="num">${C.brl(C.cents(r.creditos))}</td><td class="num">${C.brl(C.cents(r.taxas))}</td><td class="num"><b>${C.brl(C.cents(r.valor_final))}</b></td>
+      <div class="tbl-wrap"><table><thead><tr><th style="min-width:240px">Relatório</th><th>Contabilidade</th><th>Créditos de</th><th class="num">Taxa média</th><th class="num">Créditos</th><th class="num">Descontos</th><th class="num">Valor final</th><th>Conta da SM</th><th></th></tr></thead><tbody>
+      ${conf.reps.map((r) => { const t = conf.porRelatorio.find((x) => x.r.id === r.id); return html`<tr><td>${r.titulo || '—'}<div class="small muted">${r.arquivo_nome || ''} · ${r.linhas.length} linhas</div></td><td>${r.contabilidade?.nome || '—'}</td><td class="small" style="white-space:nowrap">${C.fmtD(r.periodo_inicio)}<br />a ${C.fmtD(r.periodo_fim)}</td>
+        <td class="num">${pct(t?.media)}</td><td class="num">${C.brl(C.cents(r.creditos))}</td><td class="num">${C.brl(C.cents(r.taxas) + C.cents(r.debitos))}</td><td class="num"><b>${C.brl(C.cents(r.valor_final))}</b></td>
         <td>${Badge(EXTRATO[r.extrato_status][0], EXTRATO[r.extrato_status][1])}${r.extrato_data ? html`<div class="small muted">${C.fmtD(r.extrato_data)} · ${C.brl(C.cents(r.extrato_valor))}</div>` : ''}</td>
         <td class="right"><div class="stack" style="justify-content:flex-end">${r.storage_path && r.storage_path !== 'teste' ? html`<button class="btn-sm" onClick=${() => abrirAnexo(r.storage_path).catch((e) => ctx.notify(e.message, 'err'))}>Abrir PDF</button>` : ''}
-          ${isAdmin ? html`<button class="btn-sm" onClick=${() => setModal({ t: 'extrato', r })}>Conferir no extrato</button><button class="btn-sm" onClick=${() => setModal({ t: 'enviar', substitui: r })}>Substituir</button>` : ''}</div></td></tr>`)}
-      </tbody></table></div>
-      ${conf.reps.length > 1 && new Set(conf.reps.map((r) => r.titulo)).size < conf.reps.length ? html`<p class="small" style="color:var(--amber);margin:10px 0 0">Atenção: há relatórios com o mesmo título neste mês, mas com períodos diferentes. Confirme com a MECOB.</p>` : ''}</div>` : ''}
+          ${isAdmin ? html`<button class="btn-sm" onClick=${() => setModal({ t: 'extrato', r })}>Conferir no extrato</button><button class="btn-sm" onClick=${() => setModal({ t: 'enviar', substitui: r })}>Substituir</button>` : ''}</div></td></tr>`; })}
+      </tbody></table></div></div>` : ''}
     ${sel ? html`<${ItemRepasse} ctx=${ctx} i=${sel} mes=${m} onClose=${() => setSel(null)} />` : ''}
     ${modal?.t === 'enviar' ? html`<${EnviarRelatorio} ctx=${ctx} mesAtual=${m} substitui=${modal.substitui} onClose=${() => setModal(null)} />` : ''}
-    ${modal?.t === 'extrato' ? html`<${ExtratoModal} ctx=${ctx} r=${modal.r} onClose=${() => setModal(null)} />` : ''}`;
+    ${modal?.t === 'extrato' ? html`<${ExtratoModal} ctx=${ctx} r=${modal.r} onClose=${() => setModal(null)} />` : ''}
+    ${modal?.t === 'contab' ? html`<${ContabilidadeModal} ctx=${ctx} onClose=${() => setModal(null)} />` : ''}`;
+}
+
+function ContabilidadeModal({ ctx, onClose }) {
+  const { model } = ctx;
+  const [nome, setNome] = useState(''); const [sel, setSel] = useState(String(model.contabAtual?.id || ''));
+  const salvar = async () => {
+    if (await ctx.act(async () => {
+      let id = sel;
+      if (nome.trim()) { const r = chk(await sb.from('rcb_contabilidades').insert({ nome: nome.trim() }).select().single()); id = String(r.id); }
+      if (!id) throw new Error('Escolha ou cadastre uma contabilidade.');
+      const existe = (ctx.raw.config || []).some((c) => c.chave === 'contabilidade_atual');
+      chk(existe ? await sb.from('rcb_config').update({ valor: id }).eq('chave', 'contabilidade_atual') : await sb.from('rcb_config').insert({ chave: 'contabilidade_atual', valor: id }));
+    }, 'Contabilidade atualizada. Os relatórios antigos continuam com a empresa que os emitiu.')) onClose();
+  };
+  return html`<${Modal} title="Contabilidade" onClose=${onClose}>
+    <p class="small muted">A contabilidade atual é usada nos próximos relatórios enviados. Os relatórios já enviados continuam vinculados à empresa que os emitiu.</p>
+    <label class="f">Contabilidade atual<select value=${sel} onChange=${(e) => setSel(e.target.value)}>${model.contabilidades.map((c) => html`<option value=${c.id}>${c.nome}</option>`)}</select></label>
+    <label class="f" style="margin-top:10px">Ou cadastrar nova empresa (passa a ser a atual)<input value=${nome} onInput=${(e) => setNome(e.target.value)} placeholder="Nome da contabilidade" /></label>
+    ${model.contabilidades.length ? html`<div class="sep"></div><table><thead><tr><th>Empresa</th><th class="num">Relatórios</th></tr></thead><tbody>${model.contabilidades.map((c) => html`<tr><td>${c.nome}${c.id === model.contabAtual?.id ? html` ${Badge('ok', 'atual')}` : ''}</td><td class="num">${model.repasses.filter((r) => r.contabilidade_id === c.id && !r.substituido).length}</td></tr>`)}</tbody></table>` : ''}
+    <div class="modal-actions"><button onClick=${onClose}>Cancelar</button><button class="btn-primary" onClick=${salvar}>Salvar</button></div><//>`;
 }
 
 function ItemRepasse({ ctx, i, mes, onClose }) {
   const [nota, setNota] = useState('');
-  const c = CATM[i.cat];
+  const c = CATM[i.cat] || { t: 'Taxa diferente da mais frequente', sev: 'warn' };
   useEffect(() => { const f = (e) => e.key === 'Escape' && onClose(); addEventListener('keydown', f); return () => removeEventListener('keydown', f); }, []);
   const credito = i.linha?.tipo === 'credito';
   return html`<div class="overlay" onClick=${(e) => e.target === e.currentTarget && onClose()}><div class="drawer">
@@ -678,68 +712,79 @@ function ItemRepasse({ ctx, i, mes, onClose }) {
     <div class="grid cols-2">
       <div class="card"><h2 style="margin-bottom:10px">Valores</h2><dl class="dl">
         ${i.vencimento ? html`<dt>Vencimento</dt><dd>${C.fmtD(i.vencimento)}</dd>` : ''}
-        ${i.pagoEm ? html`<dt>Comprador pagou</dt><dd>${C.fmtD(i.pagoEm)}</dd>` : ''}
-        ${i.data_credito ? html`<dt>Crédito na MECOB</dt><dd>${C.fmtD(i.data_credito)}</dd>` : ''}
-        ${i.bruto ? html`<dt>Valor pago</dt><dd class="num">${C.brl(i.bruto)}${i.encargo ? ` (inclui ${C.brl(i.encargo)} de juros/multa)` : ''}</dd>` : ''}
-        ${credito ? html`<dt>Honorário esperado (${ctx.model.honorarioPct}%)</dt><dd class="num">${C.brl(i.honEsp)}</dd><dt>Honorário descontado</dt><dd class="num">${C.brl(i.honInf)}</dd>` : ''}
-        ${i.taxa ? html`<dt>Taxa cobrada</dt><dd class="num">${C.brl(i.taxa)} · ${i.desc || ''}</dd>` : ''}
-        <dt>Esperado</dt><dd class="num">${C.brl(i.esp)}</dd><dt>Informado pela MECOB</dt><dd class="num">${i.linha ? C.brl(i.inf) : '— (fora do relatório)'}</dd>
+        ${i.pagoEm ? html`<dt>Comprador pagou</dt><dd>${C.fmtD(i.pagoEm)} <span class="small muted">(define o mês do repasse)</span></dd>` : ''}
+        ${i.data_credito ? html`<dt>Crédito na contabilidade</dt><dd>${C.fmtD(i.data_credito)}</dd>` : ''}
+        ${i.bruto ? html`<dt>Valor pago pelo comprador</dt><dd class="num">${C.brl(i.bruto)}${i.encargo ? ` (inclui ${C.brl(i.encargo)} de juros/multa)` : ''}</dd>` : ''}
+        ${credito ? html`<dt>Base bruta no relatório</dt><dd class="num">${C.brl(i.base)}</dd><dt>Taxa cobrada</dt><dd class="num">${C.brl(i.taxa)} (${pct(i.taxaPct)})</dd>` : ''}
+        ${i.estimado && i.taxa ? html`<dt>Taxa estimada</dt><dd class="num">${C.brl(i.taxa)} (taxa média)</dd>` : ''}
+        ${i.desconto ? html`<dt>Desconto</dt><dd class="num">${C.brl(i.desconto)} · ${i.desc || ''}</dd>` : ''}
+        <dt>Esperado</dt><dd class="num">${C.brl(i.esp)}</dd><dt>Transferido pela contabilidade</dt><dd class="num">${i.linha ? C.brl(i.inf) : '— (fora dos relatórios)'}</dd>
         <dt>Diferença</dt><dd class="num" style=${i.dif < 0 ? 'color:var(--red);font-weight:600' : ''}>${i.dif ? C.brl(i.dif) : '—'}</dd>
-        ${i.repasse ? html`<dt>Relatório</dt><dd>${i.repasse.titulo} (${C.fmtD(i.repasse.periodo_inicio)} a ${C.fmtD(i.repasse.periodo_fim)})</dd>` : ''}
+        ${i.repasse ? html`<dt>Relatório</dt><dd>${i.repasse.titulo} (${C.fmtD(i.repasse.periodo_inicio)} a ${C.fmtD(i.repasse.periodo_fim)})${i.repasse.contabilidade ? ' · ' + i.repasse.contabilidade.nome : ''}</dd>` : ''}
       </dl></div>
       <div class="card"><h2 style="margin-bottom:10px">Situação</h2>
-        <p>${Badge(SEV[c.sev], c.t)} ${i.resolvido ? Badge('ok', 'Resolvido') : ''}</p>
+        <p>${Badge(SEV[c.sev] || 'atencao', c.t)} ${i.resolvido ? Badge('ok', 'Resolvido') : ''}</p>
         ${i.resolvido ? html`<p class="small"><b>Resolução:</b> ${i.resolucao}</p>` : ''}
-        ${!i.resolvido && i.linha && ctx.isAdmin && !c.neutro ? html`<div class="sep"></div><label class="f">Explicação / resposta da MECOB<input value=${nota} onInput=${(e) => setNota(e.target.value)} placeholder="Ex.: MECOB confirmou honorário de 5% neste contrato" /></label>
+        ${!i.resolvido && i.linha && ctx.isAdmin && !c.neutro ? html`<div class="sep"></div><label class="f">Explicação / resposta da contabilidade<input value=${nota} onInput=${(e) => setNota(e.target.value)} placeholder="Ex.: contabilidade confirmou a taxa de negativação" /></label>
           <div class="modal-actions" style="justify-content:flex-start"><button class="btn-primary" disabled=${nota.trim().length < 3} onClick=${async () => { if (await ctx.act(() => sb.rpc('rcb_resolver_linha', { p_id: i.linha.id, p_nota: nota.trim() }).then(chk), 'Item marcado como resolvido')) onClose(); }}>Marcar como resolvido</button></div>
           <p class="small muted">O valor continua na diferença do mês; o item só sai da lista de pendências.</p>` : ''}
-        ${!i.linha && !c.neutro ? html`<p class="small muted">Este pagamento não está em nenhum relatório. Quando a MECOB repassar, ele aparece no relatório do mês do crédito; se ela confirmar que não vai repassar, registre a explicação no contrato.</p>` : ''}
+        ${!i.linha && !c.neutro ? html`<p class="small muted">Este pagamento não está em nenhum relatório. Quando a contabilidade repassar, a linha é vinculada a este mês automaticamente, pelo mês do pagamento.</p>` : ''}
         ${i.contrato ? html`<div class="sep"></div><a class="btn" href=${'#/contrato/' + i.contrato.id} onClick=${onClose}>Abrir contrato ${i.contrato.id}</a>` : ''}
       </div></div>
   </div></div>`;
 }
 
 function EnviarRelatorio({ ctx, mesAtual, substitui, onClose }) {
+  const { model } = ctx;
   const [file, setFile] = useState(null); const [lido, setLido] = useState(null); const [erro, setErro] = useState(null);
   const [busy, setBusy] = useState(false); const [mes, setMes] = useState(mesAtual); const [forcar, setForcar] = useState(false);
+  const [contab, setContab] = useState(String(substitui?.contabilidade_id || model.contabAtual?.id || ''));
   const ler = async (f) => {
     setFile(f); setErro(null); setLido(null); setBusy(true);
     try {
       const txt = await pdfParaTexto(f); const r = parseRelatorioMecob(txt);
-      if (!r.linhas.length) setErro('Não encontrei linhas de repasse neste arquivo. Ele é o PDF "Prestação de Contas / Relatório de movimentações" da MECOB?');
+      if (!r.linhas.length) setErro('Não encontrei linhas de repasse neste arquivo. Ele é o relatório de repasse ("Prestação de Contas / Relatório de movimentações") da contabilidade?');
       setLido(r); if (r.mes_sugerido) setMes(r.mes_sugerido);
     } catch (e) { setErro('Não foi possível ler o PDF: ' + e.message); }
     setBusy(false);
   };
-  const semCadastro = lido ? [...new Set(lido.linhas.filter((l) => !ctx.model.cmap.has(l.contrato_id)).map((l) => l.contrato_id))] : [];
-  const duplicado = lido && !substitui && ctx.model.repasses.find((r) => !r.substituido && r.mes === mes && r.titulo === lido.titulo && C.cents(r.valor_final) === C.cents(lido.valor_final));
+  const ativos = model.repasses.filter((r) => !r.substituido && r.id !== substitui?.id);
+  const chave = (l) => [l.tipo, l.contrato_id, (l.parcelas || []).join('+'), l.data_credito || '', C.cents(l.valor), C.cents(l.honorario || 0), l.referencia || ''].join('|');
+  const existentes = new Set(ativos.flatMap((r) => r.linhas.map(chave)));
+  const repetidas = lido ? lido.linhas.filter((l) => existentes.has(chave(l))).length : 0;
+  const mesmoArquivo = lido && ativos.find((r) => r.titulo === lido.titulo && C.cents(r.valor_final) === C.cents(lido.valor_final) && r.periodo_inicio === lido.periodo_inicio && r.periodo_fim === lido.periodo_fim);
+  const semCadastro = lido ? [...new Set(lido.linhas.filter((l) => !model.cmap.has(l.contrato_id)).map((l) => l.contrato_id))] : [];
+  const tm = lido ? (() => { const ls = lido.linhas.filter((l) => l.tipo === 'credito'); const b = ls.reduce((s, l) => s + C.cents(l.valor) + C.cents(l.honorario), 0), t = ls.reduce((s, l) => s + C.cents(l.honorario), 0); return b ? t / b : null; })() : null;
   const salvar = async () => {
     setBusy(true);
     const ok = await ctx.act(async () => {
       const path = `repasses/${mes}/${Date.now()}_${safeName(file.name)}`;
       chk(await sb.storage.from('recebimentos').upload(path, file, { contentType: 'application/pdf', upsert: false }));
       chk(await sb.rpc('rcb_salvar_repasse', { p: { mes, titulo: lido.titulo, periodo_inicio: lido.periodo_inicio, periodo_fim: lido.periodo_fim, creditos: lido.creditos, debitos: lido.debitos || 0,
-        taxas: lido.taxas || 0, valor_final: lido.valor_final, arquivo_nome: file.name, storage_path: path, linhas: lido.linhas, forcar, substitui: substitui?.id || null } }));
+        taxas: lido.taxas || 0, valor_final: lido.valor_final, arquivo_nome: file.name, storage_path: path, linhas: lido.linhas, forcar, substitui: substitui?.id || null, contabilidade_id: contab || null } }));
     }, 'Relatório salvo. Conferência atualizada.');
     setBusy(false);
     if (ok) { onClose(); go('#/repasses/' + mes); }
   };
-  return html`<${Modal} wide title=${substitui ? 'Substituir relatório da MECOB' : 'Enviar relatório da MECOB'} onClose=${onClose}>
-    <p class="small muted">Envie o PDF "Prestação de Contas" que a MECOB manda a cada quinzena. O sistema lê as linhas, confere com os contratos e gera a conferência do mês. O PDF fica guardado como comprovante.</p>
+  return html`<${Modal} wide title=${substitui ? 'Substituir relatório da contabilidade' : 'Enviar relatório da contabilidade'} onClose=${onClose}>
+    <p class="small muted">Envie o PDF do relatório de repasse que a contabilidade manda (pode ser um por quinzena). O sistema lê a base bruta, a taxa e o valor transferido de cada parcela, além dos outros descontos.</p>
     <input type="file" accept="application/pdf" onChange=${(e) => e.target.files[0] && ler(e.target.files[0])} />
     ${busy && !lido ? html`<p>Lendo o PDF…</p>` : ''}
     ${erro ? html`<div class="banner err" style="margin-top:12px">${erro}</div>` : ''}
     ${lido && lido.linhas.length ? html`<div class="card" style="margin-top:12px"><dl class="dl">
         <dt>Título</dt><dd>${lido.titulo || '—'}</dd><dt>Créditos de</dt><dd>${C.fmtD(lido.periodo_inicio)} a ${C.fmtD(lido.periodo_fim)}</dd>
-        <dt>Linhas lidas</dt><dd>${lido.linhas.filter((l) => l.tipo === 'credito').length} créditos · ${lido.linhas.filter((l) => l.tipo === 'taxa').length} taxas · ${lido.linhas.filter((l) => l.tipo === 'debito').length} débitos</dd>
-        <dt>Créditos / taxas</dt><dd class="num">${C.brl(C.cents(lido.creditos))} / ${C.brl(C.cents(lido.taxas))}</dd><dt>Valor final</dt><dd class="num"><b>${C.brl(C.cents(lido.valor_final))}</b></dd>
-        <dt>Mês da conferência</dt><dd><input type="month" value=${mes} onInput=${(e) => setMes(e.target.value)} /> <span class="small muted">sugerido pela data de crédito das linhas</span></dd></dl>
+        <dt>Linhas lidas</dt><dd>${lido.linhas.filter((l) => l.tipo === 'credito').length} parcelas · ${lido.linhas.filter((l) => l.tipo === 'taxa').length} outros descontos · ${lido.linhas.filter((l) => l.tipo === 'debito').length} débitos</dd>
+        <dt>Transferido / descontos</dt><dd class="num">${C.brl(C.cents(lido.creditos))} / ${C.brl(C.cents(lido.taxas))}</dd><dt>Valor final</dt><dd class="num"><b>${C.brl(C.cents(lido.valor_final))}</b></dd>
+        <dt>Taxa média deste relatório</dt><dd class="num"><b>${pct(tm)}</b> <span class="small muted">soma das taxas ÷ soma das bases das parcelas</span></dd>
+        <dt>Contabilidade</dt><dd><select value=${contab} onChange=${(e) => setContab(e.target.value)}>${model.contabilidades.map((c) => html`<option value=${c.id}>${c.nome}</option>`)}</select></dd>
+        <dt>Mês do relatório</dt><dd><input type="month" value=${mes} onInput=${(e) => setMes(e.target.value)} /> <span class="small muted">cada parcela ainda é conferida no mês em que o comprador pagou</span></dd></dl>
       ${lido.avisos.length ? html`<div class="banner warn" style="margin-top:10px"><div>${lido.avisos.map((a) => html`<div>${a}</div>`)}<label style="display:flex;gap:6px;margin-top:6px"><input type="checkbox" checked=${forcar} onChange=${(e) => setForcar(e.target.checked)} /> Conferi o arquivo e quero salvar mesmo assim</label></div></div>` : html`<div class="banner info" style="margin-top:10px">As linhas lidas fecham com o resumo do relatório.</div>`}
-      ${semCadastro.length ? html`<div class="banner warn">Contrato(s) do relatório que não estão cadastrados: <b>${semCadastro.join(', ')}</b>. As linhas aparecerão como pendência até o contrato ser importado.</div>` : ''}
-      ${duplicado ? html`<div class="banner err">Este relatório parece já ter sido enviado para ${nomeMes(mes)} (mesmo título e valor). Use "Substituir" na lista de relatórios se quiser trocar o arquivo.</div>` : ''}
+      ${semCadastro.length ? html`<div class="banner warn">Contrato(s) do relatório que não estão cadastrados: <b>${semCadastro.join(', ')}</b>. As linhas ficam como pendência até o contrato ser importado.</div>` : ''}
+      ${mesmoArquivo ? html`<div class="banner err">Este relatório já foi enviado (mesmo título, período e valor). Para trocar o arquivo, use "Substituir" na lista de relatórios.</div>`
+        : repetidas ? html`<div class="banner warn">${repetidas} de ${lido.linhas.length} linha(s) já constam em outro relatório enviado. Elas serão contadas uma vez só.</div>` : ''}
     </div>` : ''}
     <div class="modal-actions"><button onClick=${onClose}>Cancelar</button>
-      <button class="btn-primary" disabled=${busy || !lido || !lido.linhas.length || !!duplicado || (lido.avisos.length && !forcar)} onClick=${salvar}>${busy && lido ? 'Salvando…' : 'Salvar e conferir'}</button></div><//>`;
+      <button class="btn-primary" disabled=${busy || !lido || !lido.linhas.length || !!mesmoArquivo || (lido.avisos.length && !forcar)} onClick=${salvar}>${busy && lido ? 'Salvando…' : 'Salvar e conferir'}</button></div><//>`;
 }
 
 function ExtratoModal({ ctx, r, onClose }) {
@@ -759,13 +804,120 @@ function ExtratoModal({ ctx, r, onClose }) {
     }, 'Conferência do extrato registrada')) onClose();
   };
   return html`<${Modal} title="Conferir no extrato bancário" onClose=${onClose}>
-    <p class="small muted">${r.titulo} · valor final informado pela MECOB: <b>${C.brl(esperado)}</b>. Registre o crédito que apareceu no extrato da SM.</p>
+    <p class="small muted">${r.titulo} · valor final informado pela contabilidade: <b>${C.brl(esperado)}</b>. Registre o crédito que apareceu no extrato da SM.</p>
     <div class="form-grid"><label class="f">Resultado<select value=${f.status} onChange=${s('status')}><option value="confirmado">Caiu na conta (confirmado)</option><option value="divergente">Valor diferente ou não caiu</option><option value="pendente">Ainda não conferido</option></select></label>
       <label class="f">Data do crédito<input type="date" value=${f.data} onInput=${s('data')} /></label><label class="f">Valor no extrato (R$)<input inputmode="decimal" value=${f.valor} onInput=${s('valor')} /></label>
       <label class="f span3">Observação<input value=${f.obs} onInput=${s('obs')} /></label><label class="f span3">Extrato (opcional)<input type="file" onChange=${(e) => setFile(e.target.files[0])} /></label></div>
     ${v !== esperado ? html`<div class="banner warn" style="margin-top:10px">Diferença entre extrato e relatório: ${C.brl(v - esperado)}</div>` : ''}
     <div class="modal-actions"><button onClick=${onClose}>Cancelar</button><button class="btn-primary" onClick=${salvar}>Salvar</button></div><//>`;
 }
+
+// ---------------------------------------------------------------------------
+// Comparar contratos (arquivos enviados x cadastro)
+// ---------------------------------------------------------------------------
+const GRUPOS_CMP = [['batendo', 'Batendo', 'ok'], ['faltando', 'Faltando no sistema', 'info'], ['semArquivo', 'Sem arquivo correspondente', 'cancelada'], ['divergencia', 'Com divergência', 'atencao'], ['revisao', 'Precisa de revisão', 'critico']];
+function CompararPage({ ctx }) {
+  const { model } = ctx;
+  const [registros, setRegistros] = useState(null); const [lendo, setLendo] = useState(''); const [texto, setTexto] = useState('');
+  const [escolhas, setEscolhas] = useState({}); const [aba, setAba] = useState('divergencia');
+  const [selImp, setSelImp] = useState({}); const [selCor, setSelCor] = useState({}); const [selPag, setSelPag] = useState({});
+  const [confirmar, setConfirmar] = useState(false); const [log, setLog] = useState([]); const [busy, setBusy] = useState(false);
+  const res = useMemo(() => (registros ? compararLote(model, registros, escolhas) : null), [model, registros, escolhas]);
+  useEffect(() => {
+    if (!res) return;
+    setSelImp((o) => { const n = { ...o }; res.faltando.forEach((x) => { if (n[x.chave] === undefined) n[x.chave] = true; }); return n; });
+    setSelCor((o) => { const n = { ...o }; res.divergencia.forEach((x) => { if (!n[x.chave]) n[x.chave] = { campos: x.campos.map((c) => c.id), parcelas: x.parcelas.length > 0, ativo: false }; }); return n; });
+    setSelPag((o) => { const n = { ...o }; [...res.batendo, ...res.divergencia].forEach((x) => { if (x.pagamentosNovos.length && n[x.chave] === undefined) n[x.chave] = true; }); return n; });
+  }, [res]);
+  const lerArquivos = async (files) => {
+    const out = []; let k = 0;
+    for (const f of files) {
+      setLendo(`Lendo ${f.name}…`);
+      try {
+        const t = /\.pdf$/i.test(f.name) || f.type === 'application/pdf' ? await pdfParaTexto(f) : await f.text();
+        const regs = parseCobranca(t);
+        if (!regs.length) out.push({ chave: `${f.name}#0`, arquivo: f.name, erro: 'Arquivo ilegível ou em formato não reconhecido (nenhum contrato encontrado).' });
+        regs.forEach((d, i) => out.push(d.erro ? { chave: `${f.name}#${i}`, arquivo: f.name, erro: `${d.erro}. Trecho: ${d.trecho.slice(0, 120)}…` } : { chave: `${f.name}#${i}#${k++}`, arquivo: f.name, dados: d }));
+      } catch (e) { out.push({ chave: `${f.name}#err`, arquivo: f.name, erro: 'Não foi possível ler o arquivo: ' + e.message }); }
+    }
+    setLendo(''); setEscolhas({}); setSelImp({}); setSelCor({}); setSelPag({}); setLog([]); setRegistros(out);
+  };
+  const lerTexto = () => lerArquivos([new File([texto], 'texto colado.txt', { type: 'text/plain' })]);
+  const acoes = res ? [
+    ...res.faltando.filter((x) => selImp[x.chave]).map((x) => ({ tipo: 'importar', x, txt: `Importar contrato ${x.dados.id || '(sem número)'} · ${x.dados.comprador?.nome} · lote ${x.dados.lote || '—'} · ${C.brl(C.cents(x.dados.valor_total))}` })),
+    ...res.divergencia.filter((x) => selCor[x.chave]?.ativo && (selCor[x.chave].campos.length || selCor[x.chave].parcelas)).map((x) => ({ tipo: 'corrigir', x, txt: `Corrigir contrato ${x.cad.id}: ${[...selCor[x.chave].campos.map((id) => x.campos.find((c) => c.id === id)?.label), selCor[x.chave].parcelas ? `${x.parcelas.length} parcela(s)` : null].filter(Boolean).join(', ')}` })),
+    ...[...res.batendo, ...res.divergencia].filter((x) => x.pagamentosNovos.length && selPag[x.chave]).map((x) => ({ tipo: 'pagamentos', x, txt: `Registrar ${x.pagamentosNovos.length} pagamento(s) novo(s) no contrato ${x.cad.id} (${C.brl(x.pagamentosNovos.reduce((s, p) => s + p.valor, 0))})` })),
+  ] : [];
+  const gravar = async () => {
+    setBusy(true); const out = [];
+    for (const a of acoes) {
+      const { _sel, _dup, _edit, avisos, status_origem_contrato, ...payload } = a.x.dados;
+      let r;
+      if (a.tipo === 'importar') r = await sb.rpc('rcb_importar_contrato', { p: { ...payload, revisao: (avisos || []).map((m) => ({ severidade: 'atencao', mensagem: 'Importação: ' + m })), revisao_status_se_ok: 'pendente' } });
+      else if (a.tipo === 'corrigir') r = await sb.rpc('rcb_corrigir_contrato', { p_id: a.x.cad.id, p: montarCorrecao(a.x, selCor[a.x.chave].campos, selCor[a.x.chave].parcelas) });
+      else r = await sb.rpc('rcb_atualizar_contrato', { p: { ...payload, id: a.x.cad.id } });
+      out.push({ ok: !r.error, txt: a.txt, msg: r.error ? r.error.message : 'feito' });
+    }
+    setLog(out); setBusy(false); setConfirmar(false); await ctx.reload();
+    ctx.notify(`${out.filter((x) => x.ok).length} de ${out.length} alteração(ões) gravada(s).`, out.every((x) => x.ok) ? 'ok' : 'err');
+  };
+  const n = res ? Object.fromEntries(GRUPOS_CMP.map(([k]) => [k, res[k].length])) : {};
+  const marcar = (setFn, chave, v) => setFn((o) => ({ ...o, [chave]: v }));
+  return html`
+    <div class="page-head"><div><h1>Comparar contratos</h1><p>Envie todos os arquivos de uma vez e compare com os contratos cadastrados. Nada é gravado sem a sua confirmação.</p></div>
+      <a class="btn" href="#/importar">Importar novos contratos</a></div>
+    <div class="card"><div class="filters" style="align-items:center">
+      <label class="btn btn-primary">Selecionar arquivos<input type="file" multiple accept=".pdf,.txt,application/pdf,text/plain" hidden onChange=${(e) => e.target.files.length && lerArquivos([...e.target.files])} /></label>
+      <span class="small muted">PDF ou texto do extrato de contratos. Pode selecionar vários arquivos juntos.</span>${lendo ? html`<b>${lendo}</b>` : ''}</div>
+      <details style="margin-top:10px"><summary class="small">Ou colar o texto dos contratos</summary><textarea value=${texto} onInput=${(e) => setTexto(e.target.value)}></textarea><button class="btn-sm" disabled=${!texto.trim()} onClick=${lerTexto}>Comparar texto colado</button></details></div>
+    ${res ? html`
+      <div class="grid kpis" style="grid-template-columns:repeat(5,minmax(0,1fr));margin-top:16px">${GRUPOS_CMP.map(([k, t, cls]) => html`<button class=${'kpi kpi-click' + (aba === k ? ' accent' : '')} onClick=${() => setAba(k)}><div class="lbl">${t}</div><div class="val num">${n[k]}</div><div class="sub">${Badge(cls, 'ver lista')}</div></button>`)}</div>
+      <p class="small muted">${registros.length} registro(s) lidos de ${new Set(registros.map((r) => r.arquivo)).size} arquivo(s). Referência: número do contrato; sem número, comprador + leilão + lote + data.</p>
+      <div class="card">
+        ${aba === 'batendo' ? html`<h2>Batendo (${n.batendo})</h2><p class="small muted">Contrato encontrado e dados conferem.</p>
+          <div class="tbl-wrap"><table><thead><tr><th>Contrato</th><th>Comprador</th><th>Leilão · lote</th><th>Arquivo</th><th>Pagamentos novos</th></tr></thead><tbody>
+          ${res.batendo.map((x) => html`<tr><td><a href=${'#/contrato/' + x.cad.id}>${x.cad.id}</a></td><td>${x.cad.comprador.nome}</td><td class="small">${x.cad.leilao.nome} · ${x.cad.lote || '—'}</td><td class="small">${x.arquivo}${x.repetidoEm ? html`<div class="muted">também em ${x.repetidoEm.join(', ')}</div>` : ''}</td>
+            <td>${x.pagamentosNovos.length ? html`<label class="small" style="display:flex;gap:6px"><input type="checkbox" checked=${!!selPag[x.chave]} onChange=${(e) => marcar(setSelPag, x.chave, e.target.checked)} />Registrar ${x.pagamentosNovos.length} (${C.brl(x.pagamentosNovos.reduce((s, p) => s + p.valor, 0))})</label>` : html`<span class="small muted">—</span>`}</td></tr>`)}</tbody></table></div>` : ''}
+        ${aba === 'faltando' ? html`<h2>Faltando no sistema (${n.faltando})</h2><p class="small muted">Marque os contratos que deseja importar. Entram como "pendente de revisão".</p>
+          <div class="tbl-wrap"><table><thead><tr><th></th><th>Contrato</th><th>Comprador</th><th>Leilão · lote</th><th>Animal</th><th class="num">Valor</th><th>Entrada</th><th class="num">Parcelas</th><th>Arquivo</th></tr></thead><tbody>
+          ${res.faltando.map((x) => { const d = x.dados, e1 = d.parcelas.find((p) => p.numero === 1); return html`<tr><td><input type="checkbox" checked=${!!selImp[x.chave]} onChange=${(e) => marcar(setSelImp, x.chave, e.target.checked)} /></td>
+            <td>${d.id || html`<i>sem número</i>`}</td><td>${d.comprador?.nome || '—'}</td><td class="small">${d.leilao?.nome} · ${d.lote || '—'}</td><td class="small">${d.animal || '—'}</td><td class="num">${C.brl(C.cents(d.valor_total))}</td>
+            <td class="small">${e1 ? `${C.brl(C.cents(e1.valor_previsto))} · ${C.fmtD(e1.vencimento)}` : '—'}</td><td class="num">${d.parcelas.length}</td><td class="small">${x.arquivo}</td></tr>`; })}</tbody></table></div>` : ''}
+        ${aba === 'semArquivo' ? html`<h2>Sem arquivo correspondente (${n.semArquivo})</h2><p class="small muted">Contratos cadastrados que ficaram fora deste envio. Nada é alterado neles.</p>
+          <div class="tbl-wrap"><table><thead><tr><th>Contrato</th><th>Comprador</th><th>Leilão · lote</th><th class="num">Valor</th><th>Situação</th></tr></thead><tbody>
+          ${res.semArquivo.map((c) => html`<tr><td><a href=${'#/contrato/' + c.id}>${c.id}</a></td><td>${c.comprador.nome}</td><td class="small">${c.leilao.nome} · ${c.lote || '—'}</td><td class="num">${C.brl(c.valorC)}</td><td>${Badge(c.situacao, C.SITUACAO_LABEL[c.situacao])}</td></tr>`)}</tbody></table></div>` : ''}
+        ${aba === 'divergencia' ? html`<h2>Com divergência (${n.divergencia})</h2><p class="small muted">Arquivo e cadastro lado a lado. Marque "Corrigir este contrato" e os campos que devem receber o valor do arquivo.</p>
+          ${!res.divergencia.length ? html`<div class="empty">Nenhuma divergência.</div>` : ''}
+          ${res.divergencia.map((x) => { const s = selCor[x.chave] || { campos: [], parcelas: false, ativo: false }; const upd = (v) => setSelCor((o) => ({ ...o, [x.chave]: { ...s, ...v } }));
+            return html`<div class="card" style="margin-top:12px"><div class="card-head"><div><h3>Contrato <a href=${'#/contrato/' + x.cad.id}>${x.cad.id}</a> · ${x.cad.comprador.nome} · lote ${x.cad.lote || '—'}</h3><div class="small muted">Arquivo: ${x.arquivo}${x.porEscolha ? ' · correspondência escolhida por você' : ''}</div></div>
+              <label style="display:flex;gap:6px;font-weight:600"><input type="checkbox" checked=${s.ativo} onChange=${(e) => upd({ ativo: e.target.checked })} />Corrigir este contrato</label></div>
+              ${x.campos.length ? html`<div class="tbl-wrap"><table><thead><tr><th>Campo</th><th>No arquivo</th><th>No cadastro</th><th>Corrigir</th></tr></thead><tbody>
+                ${x.campos.map((c) => html`<tr><td>${c.label}</td><td><b>${c.arquivo}</b></td><td>${c.cadastro}</td><td><input type="checkbox" disabled=${!s.ativo} checked=${s.campos.includes(c.id)} onChange=${(e) => upd({ campos: e.target.checked ? [...s.campos, c.id] : s.campos.filter((y) => y !== c.id) })} /></td></tr>`)}</tbody></table></div>` : ''}
+              ${x.parcelas.length ? html`<details open=${x.parcelas.length <= 6} style="margin-top:10px"><summary>${x.parcelas.length} parcela(s) com valor ou vencimento diferente</summary>
+                <div class="tbl-wrap"><table><thead><tr><th>Parcela</th><th>Arquivo</th><th>Cadastro</th></tr></thead><tbody>${x.parcelas.map((p) => html`<tr><td>${p.numero}${p.nova ? ' (nova)' : ''}</td><td><b>${C.brl(p.arquivo.valor)} · ${C.fmtD(p.arquivo.venc)}</b></td><td>${p.cadastro ? `${C.brl(p.cadastro.valor)} · ${C.fmtD(p.cadastro.venc)}` : '—'}</td></tr>`)}</tbody></table></div>
+                <label class="small" style="display:flex;gap:6px;margin-top:6px"><input type="checkbox" disabled=${!s.ativo} checked=${s.parcelas} onChange=${(e) => upd({ parcelas: e.target.checked })} />Corrigir essas parcelas com os valores do arquivo</label></details>` : ''}
+              ${x.pagamentosNovos.length ? html`<label class="small" style="display:flex;gap:6px;margin-top:8px"><input type="checkbox" checked=${!!selPag[x.chave]} onChange=${(e) => marcar(setSelPag, x.chave, e.target.checked)} />Registrar ${x.pagamentosNovos.length} pagamento(s) novo(s) do arquivo (${C.brl(x.pagamentosNovos.reduce((t, p) => t + p.valor, 0))})</label>` : ''}
+            </div>`; })}` : ''}
+        ${aba === 'revisao' ? html`<h2>Precisa de revisão (${n.revisao})</h2>
+          ${!res.revisao.length ? html`<div class="empty">Nada para revisar.</div>` : ''}
+          ${res.revisao.map((r) => html`<div class="rev-item">${Badge(r.tipo === 'ilegivel' ? 'critico' : 'atencao', r.tipo === 'ilegivel' ? 'Arquivo ilegível' : r.tipo === 'duplicidade' ? 'Possível duplicidade' : 'Correspondência incerta')}
+            <div class="msg small"><b>${r.arquivo || ''}</b> ${r.msg}
+              ${r.tipo === 'incerta' ? html`<div class="stack" style="margin-top:6px">${r.opcoes.map((o) => html`<button class="btn-sm" onClick=${() => setEscolhas((e) => ({ ...e, [r.chave]: o.c.id }))}>É o contrato ${o.c.id} · ${o.c.comprador.nome} · lote ${o.c.lote || '—'} (${o.s.total}/4 dados iguais)</button>`)}
+                <button class="btn-sm" onClick=${() => setEscolhas((e) => ({ ...e, [r.chave]: 'novo' }))}>É um contrato novo</button></div>` : ''}
+              ${r.tipo === 'duplicidade' && r.registros ? html`<div class="stack" style="margin-top:6px">${r.registros.map((x) => html`<button class="btn-sm" onClick=${() => setEscolhas((e) => ({ ...e, ['dup:' + r.id]: x.chave }))}>Usar ${x.arquivo} (${C.brl(C.cents(x.dados.valor_total))}, ${x.dados.parcelas.length} parcelas)</button>`)}</div>` : ''}
+            </div></div>`)}` : ''}
+      </div>
+      <div class="card" style="position:sticky;bottom:0;z-index:5"><div class="card-head"><span><b>${acoes.length}</b> alteração(ões) selecionada(s)</span>
+        ${ctx.isAdmin ? html`<button class="btn-primary" disabled=${!acoes.length || busy} onClick=${() => setConfirmar(true)}>Revisar e gravar</button>` : html`<span class="small muted">Somente administradores gravam alterações.</span>`}</div>
+        ${log.length ? html`<div class="sep"></div>${log.map((l) => html`<div class="small" style=${l.ok ? 'color:var(--em-700)' : 'color:var(--red)'}>${l.ok ? '✓' : '✗'} ${l.txt} — ${l.msg}</div>`)}` : ''}</div>
+      ${confirmar ? html`<${Modal} wide title="Confirmar alterações" onClose=${() => setConfirmar(false)}>
+        <p>Estas alterações serão gravadas. Tudo fica registrado no histórico.</p>
+        <ul class="items">${acoes.map((a) => html`<li>${a.txt}</li>`)}</ul>
+        ${acoes.some((a) => a.tipo === 'corrigir' && selCor[a.x.chave].campos.some((c) => c === 'comprador' || c === 'documento')) ? html`<div class="banner warn">Correções de comprador valem para todos os contratos desse comprador.</div>` : ''}
+        <div class="modal-actions"><button onClick=${() => setConfirmar(false)}>Voltar</button><button class="btn-primary" disabled=${busy} onClick=${gravar}>${busy ? 'Gravando…' : 'Confirmar e gravar'}</button></div><//>` : ''}
+    ` : html`<div class="empty">Selecione os arquivos para comparar.</div>`}`;
+}
+
 // ---------------------------------------------------------------------------
 // Inadimplência
 // ---------------------------------------------------------------------------
@@ -908,7 +1060,8 @@ function ImportarPage({ ctx }) {
     setItens((xs) => xs.map((x) => (out.find((o) => o.ok && o.id === x.id) ? { ...x, _sel: false, _dup: true, _feito: true } : x)));
   };
   return html`
-    <div class="page-head"><div><h1>Novo contrato / importação</h1><p>Contratos novos entram como “pendente de revisão” até serem conferidos</p></div></div>
+    <div class="page-head"><div><h1>Importar novos contratos</h1><p>Contratos novos entram como “pendente de revisão” até serem conferidos</p></div>
+      <a class="btn btn-primary" href="#/comparar">Comparar contratos</a></div>
     <div class="pill-tabs">${[['texto', 'Colar texto da cobrança'], ['pdf', 'Upload de PDF'], ['manual', 'Cadastro manual']].map(([k, t]) => html`<button class=${aba === k ? 'on' : ''} onClick=${() => setAba(k)}>${t}</button>`)}</div>
     ${aba === 'manual' ? html`<${CadastroManual} ctx=${ctx} />` : html`
     <div class="card">

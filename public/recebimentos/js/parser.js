@@ -32,7 +32,7 @@ export function parseCobranca(text) {
     const leilao = evM ? { nome: evM[1].trim().replace(/\s*-\s*$/, ''), data: dmy(evM[2]), local: (evM[3] || '').trim() } : { nome: evLine, data: '', local: '' };
     if (!evM) avisos.push('Data do leilão não encontrada.');
 
-    const h = bloco.match(/Contrato\s+(\d+)\s+-\s+(.+?)\s+-\s+(\d{4}-\d{2}-\d{2})\s+-\s+Valor:\s*R\$\s*([\d.,]+)\s*\(Status:\s*([^\s-]+)\s*-\s*Pagto:\s*(\d+)\s*\/\s*(\d+)/);
+    const h = bloco.match(/Contrato\s+(?:(\d+)\s+)?-\s+(.+?)\s+-\s+(\d{4}-\d{2}-\d{2})\s+-\s+Valor:\s*R\$\s*([\d.,]+)\s*\(Status:\s*([^\s-]+)\s*-\s*Pagto:\s*(\d+)\s*\/\s*(\d+)/);
     if (!h) { out.push({ erro: 'Cabeçalho do contrato não reconhecido', trecho: bloco.slice(0, 300) }); continue; }
     let desc = h[2].trim(); let vendedor = '';
     const vm = desc.match(/\s*\(Vendedor:\s*([^)]+)\)/i);
@@ -94,7 +94,7 @@ export function parseCobranca(text) {
     if (Math.abs(dif) >= 0.05) avisos.push(`Soma das parcelas (R$ ${soma.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}) difere do valor do contrato em R$ ${dif.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}.`);
 
     out.push({
-      id: +h[1], fonte: 'importacao_texto', leilao,
+      id: h[1] ? +h[1] : null, fonte: 'importacao_texto', leilao,
       comprador: { nome, documento, email, telefone: tels.join(' / ') },
       descricao: desc, animal, acasalamento, tipo_venda: inferirTipo(desc),
       percentual: pctM ? anyNum(pctM[1].replace(/,(\d+)$/, '.$1')).toFixed(4) : '', lote: loteM ? loteM[1] : '',
@@ -125,7 +125,7 @@ export function parseRelatorioMecob(texto) {
     creditos: resumo('Créditos'), debitos: resumo('Débitos'), taxas: resumo('Taxas'), valor_final: resumo('Valor final'),
     linhas: [], avisos,
   };
-  if (out.valor_final == null) { avisos.push('Não encontrei o "Resumo do repasse" (Créditos / Taxas / Valor final). O arquivo é um relatório da MECOB?'); return out; }
+  if (out.valor_final == null) { avisos.push('Não encontrei o "Resumo do repasse" (Créditos / Taxas / Valor final). O arquivo é um relatório de repasse da contabilidade?'); return out; }
 
   // seções
   let sec = '';

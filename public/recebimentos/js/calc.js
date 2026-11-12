@@ -137,19 +137,21 @@ export function build(raw, hoje = hojeISO()) {
   for (const p of parcelas) for (const g of p.pags) pagamentos.push({ ...g, parcela: p, contrato: p.contrato });
   pagamentos.sort((a, b) => (a.data_pagamento < b.data_pagamento ? -1 : 1));
 
-  // relatórios de repasse da MECOB
+  // relatórios de repasse da contabilidade
   const linhasPorRep = new Map();
   for (const l of raw.repasse_linhas || []) { if (!linhasPorRep.has(l.repasse_id)) linhasPorRep.set(l.repasse_id, []); linhasPorRep.get(l.repasse_id).push(l); }
   const repasses = (raw.repasses || []).map((r) => ({ ...r, linhas: (linhasPorRep.get(r.id) || []).sort((a, b) => a.id - b.id) }))
     .sort((a, b) => (a.periodo_inicio || '').localeCompare(b.periodo_inicio || '') || a.id - b.id);
   const cfg = Object.fromEntries((raw.config || []).map((x) => [x.chave, x.valor]));
-  const honorarioPct = Number(String(cfg.honorario_pct ?? '4').replace(',', '.')) || 4;
+  const contabilidades = (raw.contabilidades || []).slice().sort((a, b) => a.id - b.id);
+  const contabAtual = contabilidades.find((x) => String(x.id) === String(cfg.contabilidade_atual)) || contabilidades[0] || null;
+  for (const r of repasses) r.contabilidade = contabilidades.find((x) => x.id === r.contabilidade_id) || null;
 
-  return { hoje, contratos, cmap, parcelas, pagamentos, repasses, honorarioPct, leiloes: [...leiloes.values()], compradores: [...compradores.values()] };
+  return { hoje, contratos, cmap, parcelas, pagamentos, repasses, contabilidades, contabAtual, leiloes: [...leiloes.values()], compradores: [...compradores.values()] };
 }
 
 // entrada (parcela 1) | cadastro ("Liquidada no cadastro") | direto (pago ao vendedor) | mecob (repassado pela MECOB)
-export const TIPO_PARCELA_LABEL = { entrada: 'Entrada (direto à SM)', cadastro: 'Liquidada no cadastro', direto: 'Paga direto ao vendedor', mecob: 'Cobrança MECOB' };
+export const TIPO_PARCELA_LABEL = { entrada: 'Entrada (direto à SM)', cadastro: 'Liquidada no cadastro', direto: 'Paga direto ao vendedor', mecob: 'Repasse pela contabilidade' };
 export function tipoParcela(p) {
   if (['entrada', 'direto', 'cadastro'].includes(p.tipo)) return p.tipo; // definido no banco
   if (p.numero === 1) return 'entrada';
@@ -269,34 +271,53 @@ export function inadimplencia(model, contratos) {
 }
 
 // ===========================================================================
-// CONFERÊNCIA DO REPASSE MECOB (por mês)
-//  - Mês do repasse = mês em que o dinheiro caiu na MECOB (coluna "Crédito" do relatório).
-//    Pagamento sem linha no relatório: usa a data de pagamento registrada.
-//  - Esperado por parcela = valor pago pelo comprador − honorário (padrão 4%).
-//  - Entrada, "Liquidada no cadastro" e pagas direto ao vendedor ficam fora; sobre as pagas
-//    direto, a MECOB cobra honorário (desconto esperado = % sobre o valor padrão da parcela).
+// CONFERÊNCIA DO REPASSE DA CONTABILIDADE (por mês)
+//  - Mês esperado = mês em que o comprador pagou (pagamento registrado no contrato).
+//    Linha de relatório sem pagamento registrado: usa o mês do relatório.
+//  - Sem taxa fixa: a taxa de cada linha é a que a contabilidade cobrou (base bruta = taxa + transferido).
+//  - Esperado líquido = valor pago pelo comprador − taxa cobrada sobre essa parcela.
+//    Pagamento sem linha no relatório: esperado estimado pela taxa média do mês.
+//  - Outros descontos (taxas avulsas, débitos) aparecem separados e formam a diferença.
+//  - Entrada, "Liquidada no cadastro" e pagas direto ao vendedor ficam fora.
+//  - Linha repetida em outro relatório é contada uma vez só.
 // ===========================================================================
 export const CONF_CATS = [
-  { id: 'taxa_maior', t: 'Honorário acima do percentual', d: 'A MECOB descontou mais que o honorário combinado', sev: 'bad' },
-  { id: 'taxa_menor', t: 'Honorário abaixo do percentual', d: 'A MECOB descontou menos que o honorário combinado', sev: 'warn' },
-  { id: 'faltou', t: 'Pago pelo comprador, fora do relatório', d: 'Pagamento registrado no mês que não aparece em nenhum relatório', sev: 'bad' },
-  { id: 'sem_regra', t: 'Taxa sem regra documentada', d: 'Desconto avulso fora do honorário', sev: 'bad' },
-  { id: 'debito', t: 'Débito no relatório', d: 'Valor debitado pela MECOB', sev: 'bad' },
-  { id: 'taxa_direto_dif', t: 'Honorário de pagamento direto diferente', d: 'Honorário sobre pagamento direto fora do percentual', sev: 'warn' },
-  { id: 'sem_parcela', t: 'Linha sem parcela no cadastro', d: 'Contrato ou parcela do relatório não encontrado: cadastre ou reimporte o contrato', sev: 'bad' },
-  { id: 'sem_pagamento', t: 'Pagamento não registrado no contrato', d: 'A MECOB informou o pagamento, mas ele não consta no extrato de contratos importado', sev: 'warn' },
+  { id: 'outros_descontos', t: 'Outros descontos da contabilidade', d: 'Descontos discriminados no relatório, fora da taxa sobre as parcelas', sev: 'bad' },
+  { id: 'faltou', t: 'Pago pelo comprador, sem repasse', d: 'Pagamento do mês que não aparece em nenhum relatório', sev: 'bad' },
+  { id: 'base_divergente', t: 'Base diferente do valor pago', d: 'O valor bruto do relatório difere do que o comprador pagou', sev: 'bad' },
+  { id: 'debito', t: 'Débito no relatório', d: 'Valor debitado pela contabilidade', sev: 'bad' },
+  { id: 'sem_parcela', t: 'Linha sem parcela no cadastro', d: 'Contrato ou parcela do relatório não encontrado no cadastro', sev: 'bad' },
+  { id: 'sem_pagamento', t: 'Pagamento não registrado no contrato', d: 'A contabilidade informou o pagamento, mas ele não consta no contrato', sev: 'warn' },
   { id: 'fora_regra', t: 'Parcela que deveria ficar fora', d: 'Entrada, liquidada no cadastro ou paga direto que apareceu como crédito', sev: 'warn' },
-  { id: 'arred', t: 'Arredondamento', d: 'Diferença de centavos no cálculo do honorário', sev: 'warn' },
-  { id: 'direto', t: 'Honorário de pagamento direto (previsto)', d: 'Desconto esperado sobre parcela paga direto ao vendedor', sev: 'info', neutro: true },
-  { id: 'mes_anterior', t: 'Pago no mês anterior, creditado neste', d: 'Entrou neste mês pela data de crédito na MECOB', sev: 'gold', neutro: true },
-  { id: 'encargo', t: 'Juros e multa repassados', d: 'Comprador pagou com atraso; encargo repassado com o mesmo desconto', sev: 'info', neutro: true },
+  { id: 'recebido_outro', t: 'Pago neste mês, repassado em relatório de outro mês', d: 'Vinculado a este mês pelo pagamento do comprador', sev: 'gold', neutro: true },
+  { id: 'encargo', t: 'Juros e multa repassados', d: 'Comprador pagou com atraso; encargo veio no repasse', sev: 'info', neutro: true },
   { id: 'agrupada', t: 'Mais de uma parcela na mesma linha', d: 'Valores conferem', sev: 'ok', neutro: true },
-  { id: 'ok', t: 'Conferidas sem divergência', d: 'Valor pago − honorário = valor informado', sev: 'ok', neutro: true },
-  { id: 'aguardando', t: 'Aguardando relatório', d: 'Pagamentos do fim do mês ou de mês ainda sem relatório: não entram no esperado', sev: 'gray', neutro: true, fora: true },
+  { id: 'ok', t: 'Conferidas sem divergência', d: 'Valor pago − taxa cobrada = valor transferido', sev: 'ok', neutro: true },
+  { id: 'outro_mes', t: 'Neste relatório, mas pago em outro mês', d: 'Conta na conferência do mês em que o comprador pagou', sev: 'gray', neutro: true, fora: true },
+  { id: 'duplicada', t: 'Linha repetida em outro relatório', d: 'Já contada em outro envio; ignorada nos totais', sev: 'warn', neutro: true, fora: true },
+  { id: 'aguardando', t: 'Aguardando relatório', d: 'Pagamentos do mês ainda sem relatório da contabilidade', sev: 'gray', neutro: true, fora: true },
 ];
 const CATMAP = Object.fromEntries(CONF_CATS.map((c) => [c.id, c]));
 const ultimoDia = (mes) => { const [y, m] = mes.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).getUTCDate(); };
-const proxMes = (mes) => { let [y, m] = mes.split('-').map(Number); m++; if (m > 12) { m = 1; y++; } return `${y}-${String(m).padStart(2, '0')}`; };
+export const nomeMesCurto = (mes) => `${MESES[+mes.slice(5) - 1]}/${mes.slice(0, 4)}`;
+const pctTxt = (x) => (x * 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
+
+// linhas de todos os relatórios ativos, com a duplicidade marcada e o mês esperado
+function linhasRelatorios(model) {
+  const vistas = new Map(); const out = [];
+  for (const r of model.repasses.filter((x) => !x.substituido).sort((a, b) => a.id - b.id)) {
+    for (const l of r.linhas) {
+      const chave = [l.tipo, l.contrato_id, (l.parcelas || []).join('+'), l.data_credito || '', cents(l.valor), cents(l.honorario), l.referencia || ''].join('|');
+      const dup = vistas.get(chave);
+      if (!dup) vistas.set(chave, { l, r });
+      const c = model.cmap.get(Number(l.contrato_id));
+      const ps = l.tipo === 'credito' ? (l.parcelas || []).map((n) => c?.parcelas.find((p) => p.numero === n)) : [];
+      const pagoEm = ps.every(Boolean) ? ps.flatMap((p) => p.ativos.map((g) => g.data_pagamento)).sort()[0] || '' : '';
+      out.push({ l, r, c, ps, pagoEm, mesEsperado: (pagoEm || r.mes + '-01').slice(0, 7), duplicadaDe: dup ? dup.r : null });
+    }
+  }
+  return out;
+}
 
 export function mesesConferencia(model) {
   const s = new Set(model.repasses.filter((r) => !r.substituido).map((r) => r.mes));
@@ -305,96 +326,111 @@ export function mesesConferencia(model) {
   return [...s].sort().reverse();
 }
 
+// taxa média = soma das taxas / soma das bases (cada parcela pesa pelo seu valor)
+function taxaMedia(linhas) {
+  const ok = linhas.filter((x) => x.base > 0 && x.taxa >= 0);
+  const base = ok.reduce((s, x) => s + x.base, 0), taxa = ok.reduce((s, x) => s + x.taxa, 0);
+  return { media: base ? taxa / base : null, base, taxa, n: ok.length };
+}
+
 export function conferencia(model, mes) {
-  const pct = model.honorarioPct / 100;
-  const hon = (c) => Math.round(c * pct);
-  const ativos = model.repasses.filter((r) => !r.substituido);
-  const reps = ativos.filter((r) => r.mes === mes);
-  const temProx = ativos.some((r) => r.mes === proxMes(mes));
-  // parcelas já cobertas por qualquer relatório (qualquer mês)
-  const coberta = new Map();
-  for (const r of ativos) for (const l of r.linhas) if (l.tipo === 'credito') for (const n of l.parcelas || []) coberta.set(`${l.contrato_id}-${n}`, r.mes);
+  const todas = linhasRelatorios(model);
+  const repsMes = model.repasses.filter((r) => !r.substituido && r.mes === mes);
+  const temRelatorioProprio = repsMes.length > 0;
+  const coberta = new Set();
+  for (const x of todas) if (x.l.tipo === 'credito' && !x.duplicadaDe) for (const n of x.l.parcelas || []) coberta.add(`${x.l.contrato_id}-${n}`);
   const itens = [];
-  for (const r of reps) for (const l of r.linhas) {
-    const c = model.cmap.get(Number(l.contrato_id));
-    const base = { id: 'L' + l.id, linha: l, repasse: r, contrato: c, ctr: String(l.contrato_id || '—'), lote: c?.lote || '—', comprador: c?.comprador?.nome || l.comprador || '—',
-      parcelasTxt: (l.parcelas || []).join(' e '), data_credito: l.data_credito, vencimento: l.vencimento, resolvido: l.resolvido, resolucao: l.resolucao };
-    const vInf = cents(l.valor), hInf = cents(l.honorario);
-    if (l.tipo === 'credito') {
-      const ps = (l.parcelas || []).map((n) => c?.parcelas.find((p) => p.numero === n));
-      if (!c || ps.some((p) => !p)) {
-        itens.push({ ...base, cat: 'sem_parcela', esp: 0, inf: vInf, dif: vInf, bruto: vInf + hInf, honInf: hInf, honEsp: 0,
-          why: `O relatório traz o contrato ${l.contrato_id}, parcela ${base.parcelasTxt}, mas ${c ? 'essa parcela não existe' : 'o contrato não está cadastrado'} no Recebimentos. Importe ou atualize o contrato.` });
-        continue;
-      }
-      const pags = ps.flatMap((p) => p.ativos);
-      let bruto = ps.reduce((s, p) => s + p.rec, 0); const semPag = bruto === 0;
-      if (semPag) bruto = vInf + hInf;
-      const honEsp = hon(bruto), esp = bruto - honEsp, dif = vInf - esp;
-      const padrao = c.valorPadrao * ps.length, encargo = !semPag && padrao > 0 ? bruto - padrao : 0;
-      const pagoEm = pags.map((g) => g.data_pagamento).sort()[0] || '';
-      const pctInf = bruto ? (hInf / bruto * 100).toLocaleString('pt-BR', { maximumFractionDigits: 2 }) : '—';
-      let cat, why;
-      if (ps.some((p) => !p.elegivel)) { cat = 'fora_regra'; why = `A parcela ${base.parcelasTxt} está marcada como "${ps.map((p) => TIPO_PARCELA_LABEL[p.tipo]).join(', ')}", mas a MECOB a repassou. Conferir o tipo da parcela.`; }
-      else if (hInf - honEsp > 1) { cat = 'taxa_maior'; why = `A MECOB descontou ${brl(hInf)} de honorário (${pctInf}%). Com ${model.honorarioPct}%, seriam ${brl(honEsp)}. Faltaram ${brl(-dif)} no repasse.`; }
-      else if (honEsp - hInf > 1) { cat = 'taxa_menor'; why = `A MECOB descontou ${brl(hInf)} de honorário (${pctInf}%), menos que os ${model.honorarioPct}% (${brl(honEsp)}).`; }
-      else if (dif !== 0) { cat = 'arred'; why = `Honorário de ${brl(hInf)}; ${model.honorarioPct}% exatos dariam ${brl(honEsp)}. Diferença de ${brl(Math.abs(dif))} por arredondamento.`; }
-      else if (semPag) { cat = 'sem_pagamento'; why = `A MECOB informou o pagamento desta parcela, mas ele ainda não consta no extrato de contratos importado. Reimporte o extrato do contrato ${l.contrato_id}.`; }
-      else if (pagoEm && pagoEm < mes + '-01') { cat = 'mes_anterior'; why = `O comprador pagou em ${fmtD(pagoEm)}, mas o dinheiro só caiu na MECOB em ${fmtD(l.data_credito)}. Por isso entrou no repasse de ${MESES[+mes.slice(5) - 1]}/${mes.slice(0, 4)}.`; }
-      else if (encargo > 1) { cat = 'encargo'; why = `O comprador pagou ${brl(encargo)} de juros/multa além do valor da parcela (${brl(padrao)}). A MECOB repassou o encargo com o mesmo desconto.`; }
-      else if (ps.length > 1) { cat = 'agrupada'; why = `A MECOB juntou ${ps.length} parcelas numa linha (${base.parcelasTxt}). Valores conferem.`; }
-      else { cat = 'ok'; why = `Pago ${brl(bruto)} − ${model.honorarioPct}% (${brl(honEsp)}) = ${brl(esp)}, igual ao informado.`; }
-      itens.push({ ...base, cat, esp, inf: vInf, dif, bruto, honInf: hInf, honEsp, encargo: Math.max(0, encargo), pagoEm, parcelas: ps, why });
-    } else if (l.tipo === 'taxa') {
-      const p = c?.parcelas.find((x) => x.numero === (l.parcelas || [])[0]);
-      const ehDireto = /hon/i.test(l.referencia || '') && /diret/i.test(l.descricao || '') && p && p.tipo === 'direto';
-      if (ehDireto) {
-        const esp = -hon(c.valorPadrao), dif = -vInf - esp;
-        itens.push({ ...base, cat: Math.abs(dif) <= 1 ? 'direto' : 'taxa_direto_dif', esp, inf: -vInf, dif, taxa: vInf, ref: l.referencia, desc: l.descricao, parcelas: [p],
-          why: `A parcela ${base.parcelasTxt} (${brl(c.valorPadrao)}) foi paga direto ao vendedor${p.data_liquidacao_externa ? ' em ' + fmtD(p.data_liquidacao_externa) : ''}. Não entra no repasse, mas a MECOB cobra ${model.honorarioPct}% sobre ela: ${brl(-esp)} esperado, ${brl(vInf)} cobrado.` });
-      } else {
-        itens.push({ ...base, cat: 'sem_regra', esp: 0, inf: -vInf, dif: -vInf, taxa: vInf, ref: l.referencia, desc: l.descricao, parcelas: p ? [p] : [],
-          why: `${l.descricao || l.referencia} (${l.referencia}) de ${brl(vInf)} no contrato ${l.contrato_id}, parcela ${base.parcelasTxt}. Não faz parte do honorário e não há regra documentada. Conferir com a MECOB.` });
-      }
-    } else {
-      itens.push({ ...base, cat: 'debito', esp: 0, inf: -vInf, dif: -vInf, why: `Débito de ${brl(vInf)} lançado pela MECOB no contrato ${l.contrato_id}, parcela ${base.parcelasTxt}. Conferir o motivo.` });
+  const base0 = (x) => ({ id: 'L' + x.l.id, linha: x.l, repasse: x.r, contrato: x.c, ctr: String(x.l.contrato_id || '—'), lote: x.c?.lote || '—', comprador: x.c?.comprador?.nome || x.l.comprador || '—',
+    parcelasTxt: (x.l.parcelas || []).join(' e '), data_credito: x.l.data_credito, vencimento: x.l.vencimento, resolvido: x.l.resolvido, resolucao: x.l.resolucao, pagoEm: x.pagoEm });
+
+  // 1) créditos esperados neste mês (pelo pagamento) — em qualquer relatório
+  for (const x of todas.filter((x) => x.l.tipo === 'credito')) {
+    const inf = cents(x.l.valor), taxa = cents(x.l.honorario), baseRel = inf + taxa, b = base0(x);
+    const doMes = x.mesEsperado === mes, relDoMes = x.r.mes === mes;
+    if (!doMes && !relDoMes) continue;
+    if (x.duplicadaDe) { if (relDoMes) itens.push({ ...b, cat: 'duplicada', esp: 0, inf: 0, dif: 0, base: baseRel, taxa, why: `Esta linha (contrato ${b.ctr}, parcela ${b.parcelasTxt}, ${brl(inf)}) já aparece no relatório "${x.duplicadaDe.titulo || x.duplicadaDe.arquivo_nome}". Foi contada uma vez só.` }); continue; }
+    if (!doMes) { itens.push({ ...b, cat: 'outro_mes', esp: 0, inf: 0, dif: 0, base: baseRel, taxa, mesOutro: x.mesEsperado, why: `O comprador pagou em ${fmtD(x.pagoEm)}. Esta linha conta na conferência de ${nomeMesCurto(x.mesEsperado)}, mês do pagamento.` }); continue; }
+    if (!x.c || x.ps.some((p) => !p)) {
+      itens.push({ ...b, cat: 'sem_parcela', esp: 0, inf, dif: inf, base: baseRel, taxa, why: `O relatório traz o contrato ${b.ctr}, parcela ${b.parcelasTxt}, mas ${x.c ? 'essa parcela não existe' : 'o contrato não está cadastrado'}. Importe ou atualize o contrato.` });
+      continue;
     }
+    const pago = x.ps.reduce((s, p) => s + p.rec, 0), semPag = pago === 0;
+    const bruto = semPag ? baseRel : pago;
+    const esp = bruto - taxa, dif = inf - esp;
+    const padrao = x.c.valorPadrao * x.ps.length, encargo = !semPag && padrao > 0 ? bruto - padrao : 0;
+    const rel = x.r.mes !== mes ? ` Veio no relatório de ${nomeMesCurto(x.r.mes)}.` : '';
+    let cat, why;
+    if (x.ps.some((p) => !p.elegivel)) { cat = 'fora_regra'; why = `A parcela ${b.parcelasTxt} está marcada como "${x.ps.map((p) => TIPO_PARCELA_LABEL[p.tipo]).join(', ')}", mas a contabilidade a repassou. Conferir o tipo da parcela.`; }
+    else if (semPag) { cat = 'sem_pagamento'; why = `A contabilidade informou ${brl(baseRel)} pagos nesta parcela, mas o pagamento não consta no contrato. Reimporte o contrato ${b.ctr}.`; }
+    else if (Math.abs(baseRel - pago) > 1) { cat = 'base_divergente'; why = `O comprador pagou ${brl(pago)}, mas o relatório usa ${brl(baseRel)} como base (taxa ${brl(taxa)} + transferido ${brl(inf)}). Diferença de ${brl(baseRel - pago)}.${rel}`; }
+    else if (x.r.mes !== mes) { cat = 'recebido_outro'; why = `O comprador pagou em ${fmtD(x.pagoEm)}, e a contabilidade repassou no relatório de ${nomeMesCurto(x.r.mes)}. Vinculado a este mês.`; }
+    else if (encargo > 1) { cat = 'encargo'; why = `O comprador pagou ${brl(encargo)} de juros/multa além da parcela (${brl(padrao)}). O encargo veio no repasse.`; }
+    else if (x.ps.length > 1) { cat = 'agrupada'; why = `A contabilidade juntou ${x.ps.length} parcelas numa linha (${b.parcelasTxt}). Valores conferem.`; }
+    else { cat = 'ok'; why = `Pago ${brl(bruto)} − taxa ${brl(taxa)} (${bruto ? pctTxt(taxa / bruto) : '—'}) = ${brl(esp)}, igual ao transferido.`; }
+    itens.push({ ...b, cat, esp, inf, dif, bruto, base: baseRel, taxa, taxaPct: baseRel ? taxa / baseRel : null, encargo: Math.max(0, encargo), parcelas: x.ps, why });
   }
-  // pagamentos do mês que não apareceram em nenhum relatório
+  // 2) outros descontos e débitos dos relatórios deste mês
+  for (const x of todas.filter((x) => x.l.tipo !== 'credito' && x.r.mes === mes)) {
+    const v = cents(x.l.valor), b = base0(x);
+    if (x.duplicadaDe) { itens.push({ ...b, cat: 'duplicada', esp: 0, inf: 0, dif: 0, ref: x.l.referencia, why: `Desconto já lançado no relatório "${x.duplicadaDe.titulo || x.duplicadaDe.arquivo_nome}". Contado uma vez só.` }); continue; }
+    const p = x.c?.parcelas.find((y) => y.numero === (x.l.parcelas || [])[0]);
+    let why;
+    if (x.l.tipo === 'debito') why = `Débito de ${brl(v)} lançado pela contabilidade no contrato ${b.ctr}, parcela ${b.parcelasTxt}. Conferir o motivo.`;
+    else if (/diret/i.test(x.l.descricao || '') && p && p.tipo === 'direto') why = `${x.l.descricao} (${x.l.referencia}): ${brl(v)} sobre a parcela ${b.parcelasTxt}, paga direto ao vendedor${p.data_liquidacao_externa ? ' em ' + fmtD(p.data_liquidacao_externa) : ''}. O relatório não informa a base; pelo cadastro a parcela vale ${brl(x.c.valorPadrao)} (${x.c.valorPadrao ? pctTxt(v / x.c.valorPadrao) : '—'}). Desconto discriminado, fora da taxa média.`;
+    else why = `${x.l.descricao || x.l.referencia} (${x.l.referencia}): ${brl(v)} no contrato ${b.ctr}, parcela ${b.parcelasTxt}. O relatório não informa a base de cálculo; desconto separado da taxa sobre as parcelas.`;
+    itens.push({ ...b, cat: x.l.tipo === 'debito' ? 'debito' : 'outros_descontos', esp: 0, inf: -v, dif: -v, desconto: v, ref: x.l.referencia, desc: x.l.descricao, parcelas: p ? [p] : [], why });
+  }
+  // 3) taxa média: do mês (créditos vinculados) e de cada relatório
+  const creditosMes = itens.filter((i) => i.linha?.tipo === 'credito' && !CATMAP[i.cat].fora && i.base);
+  const tm = taxaMedia(creditosMes);
+  const nCreditosMes = itens.filter((i) => i.linha?.tipo === 'credito' && !CATMAP[i.cat].fora).length;
+  const porRelatorio = repsMes.map((r) => { const ls = r.linhas.filter((l) => l.tipo === 'credito'); const t = taxaMedia(ls.map((l) => ({ base: cents(l.valor) + cents(l.honorario), taxa: cents(l.honorario) })));
+    return { r, ...t, nLinhas: ls.length, semBase: r.linhas.filter((l) => l.tipo !== 'credito').length }; });
+  // taxa predominante (mais frequente) para apontar parcelas fora do padrão
+  const freq = new Map(); for (const i of creditosMes) { const k = Math.round(i.taxaPct * 10000) / 100; freq.set(k, (freq.get(k) || 0) + 1); }
+  const predominante = [...freq.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+  const foraPadrao = predominante == null ? [] : creditosMes.filter((i) => Math.abs(i.taxaPct * 100 - predominante) > 0.05);
+  // 4) pagamentos do mês sem linha em nenhum relatório
+  const mediaEstimativa = tm.media ?? (() => { const all = taxaMedia(todas.filter((x) => x.l.tipo === 'credito' && !x.duplicadaDe).map((x) => ({ base: cents(x.l.valor) + cents(x.l.honorario), taxa: cents(x.l.honorario) }))); return all.media; })();
+  const temRelatorioPosterior = model.repasses.some((r) => !r.substituido && r.mes > mes);
   for (const p of model.parcelas) {
     if (!p.elegivel || p.contrato.arquivado || coberta.has(`${p.contrato_id}-${p.numero}`)) continue;
     for (const g of p.ativos) {
       if (g.data_pagamento.slice(0, 7) !== mes) continue;
-      const bruto = g.valorC, esp = bruto - hon(bruto);
+      const bruto = g.valorC, taxaEst = mediaEstimativa != null ? Math.round(bruto * mediaEstimativa) : 0, esp = bruto - taxaEst;
       const fimDoMes = +g.data_pagamento.slice(8, 10) >= ultimoDia(mes) - 1;
-      const aguardando = !reps.length || (fimDoMes && !temProx);
+      const aguardando = !temRelatorioProprio || (fimDoMes && !temRelatorioPosterior);
       itens.push({ id: 'P' + g.id, contrato: p.contrato, ctr: String(p.contrato_id), lote: p.contrato.lote || '—', comprador: p.contrato.comprador.nome, parcelasTxt: String(p.numero),
-        vencimento: p.vencimento, pagoEm: g.data_pagamento, data_credito: null, parcelas: [p], bruto, honEsp: hon(bruto), cat: aguardando ? 'aguardando' : 'faltou',
+        vencimento: p.vencimento, pagoEm: g.data_pagamento, data_credito: null, parcelas: [p], bruto, taxa: taxaEst, estimado: true, cat: aguardando ? 'aguardando' : 'faltou',
         esp: aguardando ? 0 : esp, inf: 0, dif: aguardando ? 0 : -esp, espPrevisto: esp,
         why: aguardando
-          ? (!reps.length ? `Pago em ${fmtD(g.data_pagamento)}. Ainda não há relatório da MECOB para este mês.` : `Pago em ${fmtD(g.data_pagamento)}, no fim do mês: o crédito pode cair na MECOB no mês seguinte e vir no próximo relatório.`)
-          : `O comprador pagou ${brl(bruto)} em ${fmtD(g.data_pagamento)}, mas a parcela não aparece em nenhum relatório da MECOB. Esperado: ${brl(esp)}.` });
+          ? (!temRelatorioProprio ? `Pago em ${fmtD(g.data_pagamento)}. Ainda não há relatório da contabilidade para ${nomeMesCurto(mes)}.` : `Pago em ${fmtD(g.data_pagamento)}, no fim do mês: pode vir no próximo relatório.`)
+          : `O comprador pagou ${brl(bruto)} em ${fmtD(g.data_pagamento)}, mas a parcela não aparece em nenhum relatório. Esperado: ${brl(esp)}${mediaEstimativa != null ? ` (estimado com a taxa média de ${pctTxt(mediaEstimativa)})` : ''}.` });
     }
   }
   const sum = (a, f) => a.reduce((s, x) => s + f(x), 0);
   const conta = itens.filter((i) => !CATMAP[i.cat].fora);
   const cats = CONF_CATS.map((c) => { const ls = itens.filter((i) => i.cat === c.id); return { ...c, itens: ls, qtd: ls.length, dif: sum(ls, (i) => i.dif) }; }).filter((c) => c.qtd);
-  const creditos = itens.filter((i) => i.linha?.tipo === 'credito');
   const res = {
-    mes, reps, itens, cats,
-    esperado: sum(conta, (i) => i.esp), informado: sum(reps, (r) => cents(r.valor_final)),
-    bruto: sum(creditos, (i) => i.bruto) + sum(itens.filter((i) => i.cat === 'faltou'), (i) => i.bruto),
-    honEsp: sum(creditos, (i) => i.honEsp) + sum(itens.filter((i) => i.cat === 'faltou'), (i) => i.honEsp),
-    honInf: sum(creditos, (i) => i.honInf), taxasInf: sum(reps, (r) => cents(r.taxas)), debitosInf: sum(reps, (r) => cents(r.debitos)),
-    diretoEsp: -sum(itens.filter((i) => i.cat === 'direto' || i.cat === 'taxa_direto_dif'), (i) => i.esp),
+    mes, reps: repsMes, itens, cats,
+    esperado: sum(conta, (i) => i.esp), informado: sum(conta, (i) => i.inf),
+    bruto: sum(conta.filter((i) => i.bruto && i.cat !== 'sem_parcela'), (i) => i.bruto),
+    taxas: sum(conta.filter((i) => i.linha?.tipo === 'credito'), (i) => i.taxa), taxasEstimadas: sum(conta.filter((i) => i.cat === 'faltou'), (i) => i.taxa),
+    outrosDescontos: sum(conta.filter((i) => i.cat === 'outros_descontos' || i.cat === 'debito'), (i) => i.desconto || -i.inf),
+    totalRelatoriosMes: sum(repsMes, (r) => cents(r.valor_final)),
+    deOutrosRelatorios: sum(conta.filter((i) => i.repasse && i.repasse.mes !== mes), (i) => i.inf),
+    paraOutrosMeses: sum(itens.filter((i) => i.cat === 'outro_mes'), (i) => cents(i.linha.valor)),
     aguardando: sum(itens.filter((i) => i.cat === 'aguardando'), (i) => i.espPrevisto),
     encargos: sum(itens, (i) => i.encargo || 0),
+    confirmadoConta: sum(repsMes.filter((r) => r.extrato_status === 'confirmado'), (r) => cents(r.extrato_valor)),
+    taxaMedia: tm.media, taxaCobertura: { n: tm.n, total: nCreditosMes, semBase: itens.filter((i) => i.cat === 'outros_descontos').length },
+    porRelatorio, predominante, foraPadrao,
   };
   res.dif = res.informado - res.esperado;
-  res.somaLinhas = sum(conta, (i) => i.inf);
   res.pendencias = itens.filter((i) => !CATMAP[i.cat].neutro && !i.resolvido).length;
   res.problemas = cats.filter((c) => !c.neutro);
-  res.extrato = !reps.length ? 'sem_relatorio' : reps.every((r) => r.extrato_status === 'confirmado') ? 'confirmado' : reps.some((r) => r.extrato_status === 'divergente') ? 'divergente' : 'pendente';
-  res.status = !reps.length ? 'sem_relatorio' : res.pendencias ? 'pendencias' : 'fechado';
+  res.extrato = !repsMes.length ? 'sem_relatorio' : repsMes.every((r) => r.extrato_status === 'confirmado') ? 'confirmado' : repsMes.some((r) => r.extrato_status === 'divergente') ? 'divergente' : 'pendente';
+  res.status = !repsMes.length ? (conta.some((i) => i.linha) ? 'parcial' : 'sem_relatorio') : res.pendencias ? 'pendencias' : 'fechado';
   return res;
 }
+export { pctTxt };
