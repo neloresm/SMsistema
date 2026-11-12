@@ -168,3 +168,5 @@ details summary{cursor:pointer;color:var(--em-700);font-weight:500}
 .cat-row:hover{border-color:var(--gold)}
 .cat-row.bad{border-left-color:var(--red)} .cat-row.warn{border-left-color:var(--amber)} .cat-row.info{border-left-color:var(--blue)} .cat-row.gold{border-left-color:var(--gold)} .cat-row.ok{border-left-color:var(--em-600)} .cat-row.gray{border-left-color:#bbb}
 @media (max-width: 820px){ .cat-row{grid-template-columns:auto 1fr} .cat-row .num{grid-column:2} }
+.kpi-click{display:block}
+.kpi-click > div{display:block}
