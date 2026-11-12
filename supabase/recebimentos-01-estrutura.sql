@@ -46,7 +46,7 @@ create table if not exists public.rcb_compradores (
 create sequence if not exists public.rcb_contratos_manual_seq start 900000;
 
 create table if not exists public.rcb_contratos (
-  id bigint primary key default nextval('public.contratos_manual_seq'), -- nº do contrato
+  id bigint primary key default nextval('public.rcb_contratos_manual_seq'), -- nº do contrato
   leilao_id bigint not null references public.rcb_leiloes(id),
   comprador_id bigint not null references public.rcb_compradores(id),
   descricao text not null,
@@ -406,7 +406,7 @@ begin
   insert into rcb_contratos (id, leilao_id, comprador_id, descricao, animal, acasalamento, tipo_venda, percentual, lote,
                          data_contrato, valor_total, qtd_parcelas, pagto_origem, vendedor, condicoes, assinatura,
                          documentos_origem, ultima_ocorrencia, fonte, revisao_status, obs)
-  values (coalesce((p->>'id')::bigint, nextval('public.contratos_manual_seq')), v_leilao, v_comp,
+  values (coalesce((p->>'id')::bigint, nextval('public.rcb_contratos_manual_seq')), v_leilao, v_comp,
           p->>'descricao', nullif(p->>'animal',''), nullif(p->>'acasalamento',''),
           coalesce(nullif(p->>'tipo_venda',''),'nao_identificado'), nullif(p->>'percentual','')::numeric, nullif(p->>'lote',''),
           nullif(p->>'data_contrato','')::date, (p->>'valor_total')::numeric, nullif(p->>'qtd_parcelas','')::int,
