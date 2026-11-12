@@ -140,14 +140,16 @@ export function build(raw, hoje = hojeISO()) {
   // relatórios de repasse da contabilidade
   const linhasPorRep = new Map();
   for (const l of raw.repasse_linhas || []) { if (!linhasPorRep.has(l.repasse_id)) linhasPorRep.set(l.repasse_id, []); linhasPorRep.get(l.repasse_id).push(l); }
-  const repasses = (raw.repasses || []).map((r) => ({ ...r, linhas: (linhasPorRep.get(r.id) || []).sort((a, b) => a.id - b.id) }))
+  // relatórios removidos (ex.: para reimportar) saem de todos os cálculos; ficam só no histórico
+  const repassesRemovidos = (raw.repasses || []).filter((r) => r.removido);
+  const repasses = (raw.repasses || []).filter((r) => !r.removido).map((r) => ({ ...r, linhas: (linhasPorRep.get(r.id) || []).sort((a, b) => a.id - b.id) }))
     .sort((a, b) => (a.periodo_inicio || '').localeCompare(b.periodo_inicio || '') || a.id - b.id);
   const cfg = Object.fromEntries((raw.config || []).map((x) => [x.chave, x.valor]));
   const contabilidades = (raw.contabilidades || []).slice().sort((a, b) => a.id - b.id);
   const contabAtual = contabilidades.find((x) => String(x.id) === String(cfg.contabilidade_atual)) || contabilidades[0] || null;
   for (const r of repasses) r.contabilidade = contabilidades.find((x) => x.id === r.contabilidade_id) || null;
 
-  return { hoje, contratos, cmap, parcelas, pagamentos, repasses, contabilidades, contabAtual, leiloes: [...leiloes.values()], compradores: [...compradores.values()] };
+  return { hoje, contratos, cmap, parcelas, pagamentos, repasses, repassesRemovidos, contabilidades, contabAtual, leiloes: [...leiloes.values()], compradores: [...compradores.values()] };
 }
 
 // entrada (parcela 1) | cadastro ("Liquidada no cadastro") | direto (pago ao vendedor) | mecob (repassado pela MECOB)
@@ -430,7 +432,58 @@ export function conferencia(model, mes) {
   res.pendencias = itens.filter((i) => !CATMAP[i.cat].neutro && !i.resolvido).length;
   res.problemas = cats.filter((c) => !c.neutro);
   res.extrato = !repsMes.length ? 'sem_relatorio' : repsMes.every((r) => r.extrato_status === 'confirmado') ? 'confirmado' : repsMes.some((r) => r.extrato_status === 'divergente') ? 'divergente' : 'pendente';
-  res.status = !repsMes.length ? (conta.some((i) => i.linha) ? 'parcial' : 'sem_relatorio') : res.pendencias ? 'pendencias' : 'fechado';
+  // recebimento do arquivo x resultado da conferência
+  const faltamDados = itens.some((i) => ['sem_parcela', 'sem_pagamento'].includes(i.cat) && !i.resolvido) || res.taxaCobertura.n < res.taxaCobertura.total;
+  res.conciliacao = !repsMes.length ? 'aguardando' : faltamDados ? 'faltam_dados' : res.dif === 0 && !res.pendencias ? 'bateu' : 'divergencia';
+  res.status = repsMes.length ? 'enviado' : 'aguardando';
+  res.linhasDeOutros = conta.some((i) => i.linha) && !repsMes.length;
+  res.mudancaRegra = regraAnterior(model, mes, res);
   return res;
 }
 export { pctTxt };
+// ---------------------------------------------------------------------------
+// Comparação com o cálculo anterior (taxa fixa de 4% e mês pela data de crédito)
+// Mostra quais parcelas, datas ou taxas mudaram o resultado.
+// ---------------------------------------------------------------------------
+function regraAnterior(model, mes, conf) {
+  if (!conf.reps.length) return null;
+  const PCT = 0.04, h = (c) => Math.round(c * PCT);
+  let esp = 0, inf = 0;
+  for (const r of conf.reps) {
+    inf += cents(r.valor_final);
+    for (const l of r.linhas) {
+      const c = model.cmap.get(Number(l.contrato_id));
+      if (l.tipo === 'credito') {
+        const ps = (l.parcelas || []).map((n) => c?.parcelas.find((p) => p.numero === n));
+        const base = cents(l.valor) + cents(l.honorario);
+        const bruto = c && ps.every(Boolean) && ps.reduce((s, p) => s + p.rec, 0) > 0 ? ps.reduce((s, p) => s + p.rec, 0) : (c && ps.every(Boolean) ? base : 0);
+        esp += bruto ? bruto - h(bruto) : 0;
+      } else if (l.tipo === 'taxa' && /diret/i.test(l.descricao || '')) {
+        const p = c?.parcelas.find((y) => y.numero === (l.parcelas || [])[0]);
+        if (p && p.tipo === 'direto') esp -= h(c.valorPadrao);
+      }
+    }
+  }
+  const antigo = { esperado: esp, informado: inf, dif: inf - esp };
+  const grupos = [];
+  const movidas = conf.itens.filter((i) => i.cat === 'outro_mes');
+  if (movidas.length) {
+    const efeito = movidas.reduce((s, i) => { const b = i.base; return s - (cents(i.linha.valor) - (b - h(b))); }, 0);
+    grupos.push({ t: 'Parcelas pagas em outro mês', d: 'Antes contavam no mês do crédito na contabilidade; agora contam no mês em que o comprador pagou.', efeito,
+      itens: movidas.map((i) => `Contrato ${i.ctr}, parcela ${i.parcelasTxt}: paga em ${fmtD(i.pagoEm)}, creditada em ${fmtD(i.data_credito)} → vai para ${nomeMesCurto(i.mesOutro)} (${brl(cents(i.linha.valor))} transferidos)`) });
+  }
+  const taxas = conf.itens.filter((i) => i.linha?.tipo === 'credito' && !CATMAP[i.cat].fora && i.base && i.taxa !== h(i.base));
+  if (taxas.length) {
+    const efeito = taxas.reduce((s, i) => s + (i.taxa - h(i.base)), 0);
+    grupos.push({ t: 'Taxa cobrada diferente de 4%', d: 'Antes a diferença para 4% contava como valor faltando; agora a taxa do relatório é usada e entra na taxa média.', efeito,
+      itens: taxas.map((i) => `Contrato ${i.ctr}, parcela ${i.parcelasTxt}: taxa ${brl(i.taxa)} (${pctTxt(i.taxaPct)}) sobre ${brl(i.base)}; 4% seriam ${brl(h(i.base))}`) });
+  }
+  const diretos = conf.itens.filter((i) => i.cat === 'outros_descontos' && /diret/i.test(i.desc || '') && i.parcelas?.[0]?.tipo === 'direto');
+  if (diretos.length) {
+    const efeito = -diretos.reduce((s, i) => s + h(i.contrato.valorPadrao), 0);
+    grupos.push({ t: 'Honorário sobre pagamento direto', d: 'Antes era descontado do valor esperado como previsto; agora aparece como outro desconto da contabilidade, sem base no relatório.', efeito,
+      itens: diretos.map((i) => `Contrato ${i.ctr}, parcela ${i.parcelasTxt}: ${brl(i.desconto)} (${i.desc})`) });
+  }
+  const explicado = grupos.reduce((s, g) => s + g.efeito, 0);
+  return { antigo, grupos, explicado, resto: conf.dif - antigo.dif - explicado };
+}

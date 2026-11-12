@@ -229,3 +229,7 @@ th{background:#FBFAF7;color:var(--ink-2);text-transform:none;letter-spacing:0;fo
 .grid > .card + .card{margin-top:0}
 .kpi-click{white-space:normal}
 .kpi .sub{overflow-wrap:anywhere}
+
+.mes-chip.enviado{border-color:#9fd3b4;background:#eefaf2}
+.mes-chip.enviado.on{border-color:var(--em-700);box-shadow:0 0 0 2px var(--em-100)}
+@media (prefers-color-scheme:dark){.mes-chip.enviado{background:rgba(46,160,90,.14)}}
