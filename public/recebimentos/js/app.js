@@ -4,6 +4,7 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../config.js';
 import * as C from './calc.js';
 import { parseCobranca, pdfParaTexto, parseRelatorioMecob, inferirTipo, extrairAnimal } from './parser.js';
 import { RELATORIOS, gerarRelatorio, exportarExcel, exportarPDF } from './relatorios.js';
+import { baixarPDF, conferenciaExcel, conferenciaPDF } from './exportar-repasse.js';
 
 // Modo de teste local: só em localhost e com ?mock na URL (o arquivo de teste não é publicado).
 const MOCK = ['localhost', '127.0.0.1'].includes(location.hostname) && new URLSearchParams(location.search).has('mock');
@@ -611,16 +612,7 @@ function RepassesPage({ ctx, mes }) {
   const nCred = conf.itens.filter((i) => i.linha?.tipo === 'credito').reduce((s, i) => s + (i.linha.parcelas || []).length, 0);
   const abrirLista = (c) => { setCat(c); setTimeout(() => document.getElementById('lista-rep')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); };
   const exportar = (tipo) => {
-    const rel = {
-      titulo: `Conferência do repasse MECOB · ${nomeMes(m)}`,
-      subtitulo: `Deveria repassar ${C.brl(conf.esperado)} · MECOB informou ${C.brl(conf.informado)} · diferença ${C.brl(conf.dif)} · ${EXTRATO[conf.extrato][1]}`,
-      colunas: [{ k: 'ctr', t: 'Contrato', tipo: 'text' }, { k: 'lote', t: 'Lote', tipo: 'text' }, { k: 'parc', t: 'Parcela', tipo: 'text' }, { k: 'comp', t: 'Comprador', tipo: 'text' },
-        { k: 'cred', t: 'Crédito MECOB', tipo: 'date' }, { k: 'esp', t: 'Esperado', tipo: 'money' }, { k: 'inf', t: 'Informado', tipo: 'money' }, { k: 'dif', t: 'Diferença', tipo: 'money' },
-        { k: 'sit', t: 'Situação', tipo: 'text' }, { k: 'why', t: 'Por quê', tipo: 'text' }],
-      linhas: conf.itens.map((i) => ({ ctr: i.ctr, lote: i.lote, parc: (i.ref ? i.ref + ' · ' : '') + i.parcelasTxt, comp: i.comprador, cred: i.data_credito || i.pagoEm, esp: i.esp, inf: i.inf, dif: i.dif, sit: CATM[i.cat].t + (i.resolvido ? ' (resolvido)' : ''), why: i.why })),
-      total: { ctr: 'Total', esp: conf.esperado, inf: conf.somaLinhas, dif: conf.dif },
-    };
-    tipo === 'pdf' ? exportarPDF(rel) : exportarExcel(rel);
+    try { tipo === 'pdf' ? baixarPDF(conf, model) : conferenciaExcel(conf, model); } catch (e) { ctx.notify('Não foi possível gerar o arquivo: ' + e.message, 'err'); }
   };
 
   return html`
