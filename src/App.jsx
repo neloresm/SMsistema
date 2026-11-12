@@ -795,6 +795,7 @@ const ICONS = {
   zoomMenos: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM20.5 20.5 16 16M8 11h6",
   nascer: "M12 3c-3.5 0-6 4.5-6 9a6 6 0 0 0 12 0c0-4.5-2.5-9-6-9zM9 13l2 2 4-4",
   embriao: "M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17zM9.3 8.6a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM14.7 11.4a2 2 0 1 0 0 4 2 2 0 0 0 0-4z",
+  recebimentos: "M12 3v18M16.5 7.2c-.6-1.4-2.3-2.2-4.5-2.2-2.6 0-4.5 1.3-4.5 3.1 0 4.1 9 2.3 9 6.4 0 1.8-1.9 3.1-4.5 3.1-2.3 0-4.1-.9-4.6-2.4",
 };
 function Ico({ n, size = 18, className = "" }) {
   const d = ICONS[n]; if (!d) return null;
@@ -7086,10 +7087,11 @@ export default function App() {
   const nav = [["dashboard", "dashboard", "Painel"], ["animal", "animal", "Animais"], ["prenhez", "prenhez", "Prenhezes"], ["aspiracao", "aspiracao", "Aspirações"], ["embrioes", "embriao", "Banco de Embriões"],
     ["importar", "importar", "Importar"],
     ["pendencias", "pendencias", "Pendências"], ["criatorios", "criatorios", "Criatórios"], ["socios", "socios", "Sócios"], ["parcelas", "parcelas", "Parcelas"], ["leiloes", "leiloes", "Leilões"], ["relatorios", "relatorios", "Relatórios"], ["lixeira", "lixeira", "Lixeira"],
-    ...(isAdmin ? [["usuarios", "usuarios", "Usuários"]] : [])];
+    ...(isAdmin ? [["usuarios", "usuarios", "Usuários"]] : []),
+    ["recebimentos", "recebimentos", "Recebimentos"]]; // área separada (public/recebimentos), mesmo login
   // agrupamento do menu (só apresentação — as mesmas telas de sempre)
   const NAV_GRUPOS = [["", ["dashboard"]], ["Plantel", ["animal", "prenhez", "aspiracao", "embrioes", "criatorios"]], ["Patrimônio", ["parcelas", "socios", "leiloes"]],
-    ["Operação", ["pendencias", "importar", "relatorios"]], ["Sistema", ["lixeira", "usuarios"]]];
+    ["Operação", ["pendencias", "importar", "relatorios"]], ["Vendas", ["recebimentos"]], ["Sistema", ["lixeira", "usuarios"]]];
   const nLixeira = (db.lixeira || []).length;
   const saldoBancoTotal = embrioes.filter((l) => l && !l.arquivado).reduce((s, l) => s + saldoLote(l), 0);
   const nImport = (db.prefichas || []).filter((x) => x && x.estado !== "aprovado" && x.estado !== "rejeitado").length;
@@ -7135,7 +7137,7 @@ export default function App() {
             <div className="nav-grp" key={g || "inicio"}>
               {g && <div className="nav-grp-t">{g}</div>}
               {itens.map(([k, ic, l]) => (
-                <button key={k} className={`nav-item ${view === k ? "on" : ""}`} onClick={() => { setView(k); setNavOpen(false); }}>
+                <button key={k} className={`nav-item ${view === k ? "on" : ""}`} onClick={() => { if (k === "recebimentos") { window.location.href = "/recebimentos/"; return; } setView(k); setNavOpen(false); }}>
                   <span className="nav-ic"><Ico n={ic} /></span>{l}{["animal", "prenhez", "aspiracao"].includes(k) && <span className="nav-count">{count(k)}</span>}{k === "embrioes" && saldoBancoTotal > 0 && <span className="nav-count">{saldoBancoTotal}</span>}{k === "lixeira" && nLixeira > 0 && <span className="nav-count">{nLixeira}</span>}{k === "importar" && nImport > 0 && <span className="nav-count">{nImport}</span>}</button>
               ))}
             </div>
