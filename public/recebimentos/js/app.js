@@ -2,7 +2,7 @@ import { html, render, useState, useEffect, useMemo, useRef, useCallback } from 
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.50.0/+esm';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../config.js';
 import * as C from './calc.js';
-import { parseCobranca, lerContratos, pdfParaTexto, arquivoParaTexto, ehPlanilha, parseRelatorioMecob, inferirTipo, extrairAnimal } from './parser.js';
+import { parseCobranca, lerContratos, pdfParaTexto, arquivoParaTexto, ehPlanilha, lerRelatoriosRepasse, competenciaPorVencimentos, parseRelatorioMecob, inferirTipo, extrairAnimal } from './parser.js';
 import { RELATORIOS, gerarRelatorio, exportarExcel, exportarPDF } from './relatorios.js';
 import { baixarPDF, conferenciaExcel, conferenciaPDF, baixarContestacao } from './exportar-repasse.js';
 import { compararLote, montarCorrecao } from './comparar.js';
@@ -915,66 +915,109 @@ function ItemRepasse({ ctx, i, mes, onClose }) {
   </div></div>`;
 }
 
+// No modelo "planilha" a coluna Parcela traz "(n/total)"; o número certo vem do vencimento cadastrado no contrato.
+function ajustarParcelasPorVencimento(r, model) {
+  const info = [];
+  if (r.modelo !== 'planilha') return info;
+  for (const l of r.linhas) {
+    if (l.tipo === 'taxa' || !l.vencimento) continue;
+    const c = model.cmap.get(+l.contrato_id); if (!c) continue;
+    const p = c.parcelas.find((x) => x.vencimento === l.vencimento);
+    if (p && !(l.parcelas.length === 1 && l.parcelas[0] === p.numero)) {
+      info.push(`Contrato ${l.contrato_id}: "(${l.pagas_total})" com vencimento ${C.fmtD(l.vencimento)} é a parcela ${p.numero} pelo cadastro.`);
+      l.parcelas = [p.numero];
+    }
+  }
+  return info;
+}
+const quinzenaRange = (mes, q) => { const ult = new Date(Date.UTC(+mes.slice(0, 4), +mes.slice(5, 7), 0)).getUTCDate(); return q === 1 ? [`${mes}-01`, `${mes}-15`] : [`${mes}-16`, `${mes}-${String(ult).padStart(2, '0')}`]; };
+
 function EnviarRelatorio({ ctx, mesAtual, substitui, faltando = [], onClose }) {
   const { model } = ctx;
-  const [file, setFile] = useState(null); const [lido, setLido] = useState(null); const [erro, setErro] = useState(null);
-  const [busy, setBusy] = useState(false); const [mes, setMes] = useState(substitui?.mes || mesAtual); const [quinzena, setQuinzena] = useState(substitui?.quinzena || 0); const [forcar, setForcar] = useState(false);
+  const [file, setFile] = useState(null); const [lidos, setLidos] = useState([]); const [erro, setErro] = useState(null);
+  const [busy, setBusy] = useState(false);
   const [contab, setContab] = useState(String(substitui?.contabilidade_id || model.contabAtual?.id || ''));
   const ler = async (f) => {
-    setFile(f); setErro(null); setLido(null); setBusy(true);
+    setFile(f); setErro(null); setLidos([]); setBusy(true);
     try {
-      const txt = await arquivoParaTexto(f); const r = parseRelatorioMecob(txt);
-      if (!r.linhas.length) setErro(ehPlanilha(f) ? 'A planilha foi aberta, mas não encontrei nela as seções do relatório de repasse (CRÉDITOS e TAXAS, com contrato, parcela, vencimento, crédito, honorário e repasse) nem o resumo (Créditos, Taxas, Valor final). Me envie esta planilha para eu ajustar o leitor a este modelo.' : 'Não encontrei linhas de repasse neste arquivo. Ele é o relatório de repasse ("Prestação de Contas / Relatório de movimentações") da contabilidade?');
-      setLido(r);
-      // competência sugerida pelo período de crédito (o usuário confirma ou troca; a data impressa não define o mês)
-      if (!substitui && r.periodo_inicio) { const mid = new Date((Date.parse(r.periodo_inicio + 'T12:00:00Z') + Date.parse((r.periodo_fim || r.periodo_inicio) + 'T12:00:00Z')) / 2); setMes(mid.toISOString().slice(0, 7)); setQuinzena(mid.getUTCDate() <= 15 ? 1 : 2); }
-    } catch (e) { setErro('Não foi possível ler o PDF: ' + e.message); }
+      const rs = await lerRelatoriosRepasse(f);
+      if (!rs.length) setErro(ehPlanilha(f)
+        ? 'Abri a planilha, mas não encontrei um relatório de repasse em nenhuma aba. Os modelos aceitos têm as seções CRÉDITOS e TAXAS e o resumo ("Valor final" ou "Total de repasse"). Me envie a planilha para eu ajustar o leitor.'
+        : 'Não encontrei linhas de repasse neste arquivo. Ele é o relatório de repasse ("Prestação de Contas") da contabilidade?');
+      setLidos(rs.map((r, i) => {
+        const info = [...(r.info || []), ...ajustarParcelasPorVencimento(r, model)];
+        let mes = mesAtual, q = 0;
+        if (substitui && i === 0) { mes = substitui.mes; q = substitui.quinzena || 0; }
+        else if (r.periodo_inicio) { const mid = new Date((Date.parse(r.periodo_inicio + 'T12:00:00Z') + Date.parse((r.periodo_fim || r.periodo_inicio) + 'T12:00:00Z')) / 2); mes = mid.toISOString().slice(0, 7); q = mid.getUTCDate() <= 15 ? 1 : 2; }
+        else if (r.mes_sugerido) { mes = r.mes_sugerido; q = r.quinzena_sugerida || 0; }
+        else { mes = competenciaPorVencimentos(r) || mesAtual; }
+        return { r: { ...r, info }, mes, q, sel: true, forcar: false };
+      }));
+    } catch (e) { setErro('Não foi possível ler o arquivo: ' + e.message); }
     setBusy(false);
   };
+  const upd = (i, v) => setLidos((xs) => xs.map((x, j) => (j === i ? { ...x, ...v } : x)));
   const ativos = model.repasses.filter((r) => !r.substituido && r.id !== substitui?.id);
   const chave = (l) => [l.tipo, l.contrato_id, (l.parcelas || []).join('+'), l.data_credito || '', C.cents(l.valor), C.cents(l.honorario || 0), l.referencia || ''].join('|');
   const existentes = new Set(ativos.flatMap((r) => r.linhas.map(chave)));
-  const repetidas = lido ? lido.linhas.filter((l) => existentes.has(chave(l))).length : 0;
-  const mesmoArquivo = lido && ativos.find((r) => r.titulo === lido.titulo && C.cents(r.valor_final) === C.cents(lido.valor_final) && r.periodo_inicio === lido.periodo_inicio && r.periodo_fim === lido.periodo_fim);
-  const semCadastro = lido ? [...new Set(lido.linhas.filter((l) => !model.cmap.has(l.contrato_id)).map((l) => l.contrato_id))] : [];
-  const sobrepoe = lido && !mesmoArquivo && quinzena ? ativos.find((r) => r.mes === mes && r.quinzena === quinzena) : null;
-  const tm = lido ? (() => { const ls = lido.linhas.filter((l) => l.tipo === 'credito'); const b = ls.reduce((s, l) => s + C.cents(l.valor) + C.cents(l.honorario), 0), t = ls.reduce((s, l) => s + C.cents(l.honorario), 0); return b ? t / b : null; })() : null;
+  const analise = lidos.map((x) => {
+    const r = x.r;
+    const repetidas = r.linhas.filter((l) => existentes.has(chave(l))).length;
+    const mesmo = ativos.find((a) => C.cents(a.valor_final) === C.cents(r.valor_final) && C.cents(a.creditos) === C.cents(r.creditos) && a.linhas.length === r.linhas.length && (a.titulo === r.titulo || repetidas === r.linhas.length));
+    const sobrepoe = !mesmo && x.q ? ativos.find((a) => a.mes === x.mes && a.quinzena === x.q) : null;
+    const semCadastro = [...new Set(r.linhas.filter((l) => !model.cmap.has(l.contrato_id)).map((l) => l.contrato_id))];
+    const ls = r.linhas.filter((l) => l.tipo === 'credito'); const b = ls.reduce((s, l) => s + C.cents(l.valor) + C.cents(l.honorario), 0), t = ls.reduce((s, l) => s + C.cents(l.honorario), 0);
+    const ok = !x.sel || (!mesmo && x.q && /^\d{4}-\d{2}$/.test(x.mes) && (!r.avisos.length || x.forcar));
+    return { repetidas, mesmo, sobrepoe, semCadastro, tm: b ? t / b : null, ok };
+  });
+  const selecionados = lidos.filter((x, i) => x.sel && !analise[i].mesmo);
+  const podeSalvar = !busy && selecionados.length > 0 && analise.every((a) => a.ok);
   const salvar = async () => {
     setBusy(true);
     const ok = await ctx.act(async () => {
-      const path = `repasses/${mes}/${Date.now()}_${safeName(file.name)}`;
+      const path = `repasses/${selecionados[0].mes}/${Date.now()}_${safeName(file.name)}`;
       chk(await sb.storage.from('recebimentos').upload(path, file, { contentType: file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'application/octet-stream'), upsert: false }));
-      chk(await sb.rpc('rcb_salvar_repasse', { p: { mes, titulo: lido.titulo, periodo_inicio: lido.periodo_inicio, periodo_fim: lido.periodo_fim, creditos: lido.creditos, debitos: lido.debitos || 0,
-        taxas: lido.taxas || 0, valor_final: lido.valor_final, arquivo_nome: file.name, storage_path: path, linhas: lido.linhas, quinzena, data_relatorio: lido.data_repasse || null, forcar, substitui: substitui?.id || null, contabilidade_id: contab || null } }));
-    }, 'Relatório salvo. Conferência atualizada.');
+      for (const [k, x] of selecionados.entries()) {
+        const r = x.r; const [pi, pf] = r.periodo_inicio ? [r.periodo_inicio, r.periodo_fim] : quinzenaRange(x.mes, x.q);
+        chk(await sb.rpc('rcb_salvar_repasse', { p: { mes: x.mes, quinzena: x.q, data_relatorio: r.data_repasse || null, titulo: r.titulo, periodo_inicio: pi, periodo_fim: pf, creditos: r.creditos, debitos: r.debitos || 0,
+          taxas: r.taxas || 0, valor_final: r.valor_final, arquivo_nome: r.aba ? `${file.name} · aba ${r.aba}` : file.name, storage_path: path, linhas: r.linhas, forcar: x.forcar,
+          substitui: k === 0 && substitui ? substitui.id : null, contabilidade_id: contab || null, obs: r.info?.length ? r.info.join(' ') : null } }));
+      }
+    }, selecionados.length > 1 ? `${selecionados.length} relatórios salvos. Conferência atualizada.` : 'Relatório salvo. Conferência atualizada.');
     setBusy(false);
-    if (ok) { onClose(); go('#/repasses/' + mes); }
+    if (ok) { onClose(); go('#/repasses/' + selecionados[0].mes); }
   };
   return html`<${Modal} wide title=${substitui ? 'Substituir relatório da contabilidade' : 'Enviar relatório da contabilidade'} onClose=${onClose}>
-    <p class="small muted">Envie o relatório de repasse que a contabilidade manda, em PDF ou Excel (pode ser um por quinzena). O sistema lê a base bruta, a taxa e o valor transferido de cada parcela, além dos outros descontos.</p>
+    <p class="small muted">Envie o relatório de repasse que a contabilidade manda, em PDF ou Excel. Um arquivo pode ter mais de uma quinzena (uma por aba, ou uma depois da outra no PDF): cada uma vira um relatório com a sua competência.</p>
     ${faltando.length && !substitui ? html`<div class="banner warn">Falta para ${nomeMes(mesAtual)}: <b>${faltando.map(periodoTxt).join(' e ')}</b>.</div>` : ''}
     <input type="file" accept=".pdf,.xlsx,.xls,.xlsm,.csv,application/pdf" onChange=${(e) => e.target.files[0] && ler(e.target.files[0])} />
-    ${busy && !lido ? html`<p>Lendo o PDF…</p>` : ''}
+    ${busy && !lidos.length ? html`<p>Lendo o arquivo…</p>` : ''}
     ${erro ? html`<div class="banner err" style="margin-top:12px">${erro}</div>` : ''}
-    ${lido && lido.linhas.length ? html`<div class="card" style="margin-top:12px"><dl class="dl">
-        <dt>Título</dt><dd>${lido.titulo || '—'}</dd><dt>Créditos de</dt><dd>${C.fmtD(lido.periodo_inicio)} a ${C.fmtD(lido.periodo_fim)}</dd>
-        <dt>Linhas lidas</dt><dd>${lido.linhas.filter((l) => l.tipo === 'credito').length} parcelas · ${lido.linhas.filter((l) => l.tipo === 'taxa').length} outros descontos · ${lido.linhas.filter((l) => l.tipo === 'debito').length} débitos</dd>
-        <dt>Transferido / descontos</dt><dd class="num">${C.brl(C.cents(lido.creditos))} / ${C.brl(C.cents(lido.taxas))}</dd><dt>Valor final</dt><dd class="num"><b>${C.brl(C.cents(lido.valor_final))}</b></dd>
-        <dt>Taxa média deste relatório</dt><dd class="num"><b>${pct(tm)}</b> <span class="small muted">soma das taxas ÷ soma das bases das parcelas</span></dd>
-        <dt>Contabilidade</dt><dd><select value=${contab} onChange=${(e) => setContab(e.target.value)}>${model.contabilidades.map((c) => html`<option value=${c.id}>${c.nome}</option>`)}</select></dd>
-        <dt>Competência</dt><dd><div class="stack" style="gap:8px;align-items:center"><input type="month" value=${mes} onInput=${(e) => setMes(e.target.value)} aria-label="Mês da competência" />
-          <select value=${String(quinzena)} onChange=${(e) => setQuinzena(+e.target.value)} aria-label="Quinzena"><option value="0">escolha a quinzena…</option><option value="1">1ª quinzena</option><option value="2">2ª quinzena</option></select>
-          ${quinzena ? html`<b>${C.competenciaTxt(mes, quinzena)}</b>` : ''}</div>
-          <div class="small muted" style="margin-top:4px">Todos os lançamentos deste arquivo entram na conferência desta competência. As datas de pagamento e de crédito continuam no detalhe.</div></dd>
-        <dt>Data impressa no relatório</dt><dd>${lido.data_repasse ? C.fmtD(lido.data_repasse) : '—'} <span class="small muted">guardada só para consulta; não define a competência</span></dd></dl>
-      ${lido.avisos.length ? html`<div class="banner warn" style="margin-top:10px"><div>${lido.avisos.map((a) => html`<div>${a}</div>`)}<label style="display:flex;gap:6px;margin-top:6px"><input type="checkbox" checked=${forcar} onChange=${(e) => setForcar(e.target.checked)} /> Conferi o arquivo e quero salvar mesmo assim</label></div></div>` : html`<div class="banner info" style="margin-top:10px">As linhas lidas fecham com o resumo do relatório.</div>`}
-      ${semCadastro.length ? html`<div class="banner warn">Contrato(s) do relatório que não estão cadastrados: <b>${semCadastro.join(', ')}</b>. As linhas ficam como pendência até o contrato ser importado.</div>` : ''}
-      ${mesmoArquivo ? html`<div class="banner err">Este relatório já foi enviado (mesmo título, período e valor). Para trocar o arquivo, use "Substituir" na lista de relatórios.</div>`
-        : sobrepoe ? html`<div class="banner warn">Já existe um relatório para ${C.competenciaTxt(mes, quinzena)}: ${sobrepoe.arquivo_nome} (créditos de ${C.fmtD(sobrepoe.periodo_inicio)} a ${C.fmtD(sobrepoe.periodo_fim)}). Se for complementar, pode salvar; linhas iguais contam uma vez só. Se este arquivo é uma versão corrigida, use <b>Substituir arquivo</b> no menu ⋯ do relatório.${repetidas ? ` ${repetidas} linha(s) repetidas seriam contadas uma vez só.` : ''}</div>`
-        : repetidas ? html`<div class="banner warn">${repetidas} de ${lido.linhas.length} linha(s) já constam em outro relatório enviado. Elas serão contadas uma vez só.</div>` : ''}
-    </div>` : ''}
+    ${lidos.length > 1 ? html`<p class="small" style="margin:12px 0 0"><b>${lidos.length} relatórios</b> neste arquivo. Confira a competência de cada um.</p>` : ''}
+    ${lidos.map((x, i) => { const r = x.r, a = analise[i]; return html`<div class="card" style="margin-top:12px">
+      <div class="card-head"><h3 style="margin:0">${r.aba ? `Aba "${r.aba}"` : r.titulo || file?.name}</h3>
+        ${lidos.length > 1 ? html`<label class="small" style="display:flex;gap:6px"><input type="checkbox" checked=${x.sel} onChange=${(e) => upd(i, { sel: e.target.checked })} />Salvar este relatório</label>` : ''}</div>
+      <dl class="dl">
+        ${r.titulo && r.aba ? '' : html`<dt>Título</dt><dd>${r.titulo || '—'}</dd>`}
+        <dt>Créditos de</dt><dd>${r.periodo_inicio ? `${C.fmtD(r.periodo_inicio)} a ${C.fmtD(r.periodo_fim)}` : html`<span class="muted">o arquivo não traz data de crédito; o período será o da quinzena escolhida</span>`}</dd>
+        <dt>Linhas lidas</dt><dd>${r.linhas.filter((l) => l.tipo === 'credito').length} parcelas · ${r.linhas.filter((l) => l.tipo === 'taxa').length} outros descontos · ${r.linhas.filter((l) => l.tipo === 'debito').length} débitos</dd>
+        <dt>Transferido / descontos</dt><dd class="num">${C.brl(C.cents(r.creditos))} / ${C.brl(C.cents(r.taxas) + C.cents(r.debitos || 0))}</dd><dt>Valor final</dt><dd class="num"><b>${C.brl(C.cents(r.valor_final))}</b></dd>
+        <dt>Taxa média</dt><dd class="num"><b>${pct(a.tm)}</b> <span class="small muted">soma das taxas ÷ soma das bases das parcelas</span></dd>
+        <dt>Competência</dt><dd><div class="stack" style="gap:8px;align-items:center"><input type="month" value=${x.mes} onInput=${(e) => upd(i, { mes: e.target.value })} aria-label="Mês da competência" />
+          <select value=${String(x.q)} onChange=${(e) => upd(i, { q: +e.target.value })} aria-label="Quinzena"><option value="0">escolha a quinzena…</option><option value="1">1ª quinzena</option><option value="2">2ª quinzena</option></select>
+          ${x.q ? html`<b>${C.competenciaTxt(x.mes, x.q)}</b>` : html`<span class="small" style="color:var(--amber)">escolha a quinzena</span>`}</div>
+          <div class="small muted" style="margin-top:4px">Todos os lançamentos deste relatório entram nesta competência.</div></dd>
+        ${r.data_repasse ? html`<dt>Data impressa no relatório</dt><dd>${C.fmtD(r.data_repasse)} <span class="small muted">guardada só para consulta</span></dd>` : ''}</dl>
+      ${r.avisos.length ? html`<div class="banner warn" style="margin-top:10px"><div>${r.avisos.map((m) => html`<div>${m}</div>`)}<label style="display:flex;gap:6px;margin-top:6px"><input type="checkbox" checked=${x.forcar} onChange=${(e) => upd(i, { forcar: e.target.checked })} /> Conferi o arquivo e quero salvar mesmo assim</label></div></div>` : html`<div class="banner info" style="margin-top:10px">As linhas lidas fecham com o resumo do relatório.</div>`}
+      ${r.info?.length ? html`<div class="small muted" style="margin-top:6px">${r.info.map((m) => html`<div>• ${m}</div>`)}</div>` : ''}
+      ${a.semCadastro.length ? html`<div class="banner warn">Contrato(s) que não estão cadastrados: <b>${a.semCadastro.join(', ')}</b>. As linhas ficam como pendência até o contrato ser importado.</div>` : ''}
+      ${a.mesmo ? html`<div class="banner err">Este relatório já foi enviado (${a.mesmo.arquivo_nome || a.mesmo.titulo}, ${C.competenciaTxt(a.mesmo.mes, a.mesmo.quinzena)}). Não será salvo de novo; para trocar, use "Substituir arquivo".</div>`
+        : a.sobrepoe ? html`<div class="banner warn">Já existe um relatório para ${C.competenciaTxt(x.mes, x.q)}: ${a.sobrepoe.arquivo_nome}. Se for complementar, pode salvar; linhas iguais contam uma vez só.${a.repetidas ? ` ${a.repetidas} linha(s) repetidas.` : ''}</div>`
+        : a.repetidas ? html`<div class="banner warn">${a.repetidas} de ${r.linhas.length} linha(s) já constam em outro relatório enviado. Serão contadas uma vez só.</div>` : ''}
+    </div>`; })}
+    ${lidos.length ? html`<div class="card" style="margin-top:12px"><dl class="dl"><dt>Contabilidade</dt><dd><select value=${contab} onChange=${(e) => setContab(e.target.value)}>${model.contabilidades.map((c) => html`<option value=${c.id}>${c.nome}</option>`)}</select></dd></dl></div>` : ''}
     <div class="modal-actions"><button onClick=${onClose}>Cancelar</button>
-      <button class="btn-primary" disabled=${busy || !lido || !lido.linhas.length || !!mesmoArquivo || !quinzena || !/^\d{4}-\d{2}$/.test(mes) || (lido.avisos.length && !forcar)} onClick=${salvar}>${busy && lido ? 'Salvando…' : 'Salvar e conferir'}</button></div><//>`;
+      <button class="btn-primary" disabled=${!podeSalvar} onClick=${salvar}>${busy && lidos.length ? 'Salvando…' : selecionados.length > 1 ? `Salvar ${selecionados.length} relatórios e conferir` : 'Salvar e conferir'}</button></div><//>`;
 }
 
 function ExtratoModal({ ctx, r, onClose }) {

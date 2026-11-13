@@ -437,3 +437,123 @@ export async function arquivoParaTexto(file) {
   if (ehPlanilha(file)) return planilhaParaTexto(file);
   return file.text();
 }
+
+// ---------------------------------------------------------------------------
+// Relatório de repasse no modelo "planilha" (Excel, ou PDF impresso dela), uma quinzena por aba:
+//   CRÉDITOS: ID | Comprador/Cedente | Contrato | Parcela "(n/total)" | Vencimento | Honorário descontado | Repasse
+//   DÉBITOS:  ID | Recebedor | Contrato | Parcela | Vencimento | Honorário acrescido | Valor
+//   TAXAS:    Referência | Descrição | Comprador/contrato | Parcela ("2 a 4", 2, "(10/30)") | ID | Valor
+//   Resumo:   Créditos / Débitos (taxas + débitos) / Saldo retido / Total de repasse
+// Não tem data de crédito: o período vem da competência escolhida na importação.
+// ---------------------------------------------------------------------------
+const reCredPlan = /^\s*(?:(.*?)\s{2,})?(\d{4,7})\s+(.*?)\s*\((\d+)\s*\/\s*(\d+)\)\s+(\d{2}\/\d{2}\/\d{4})\s+R\$\s*([\d.]+,\d{2})\s+R\$\s*([\d.]+,\d{2})\s*$/;
+const reTaxaPlan = /^\s*(\S.*?)\s{2,}(.+?)\s{2,}(.+?)\s{2,}(\(?\d+(?:\s*\/\s*\d+)?\)?|\d+\s+a\s+\d+|\d+(?:\s+e\s+\d+)+)\s{2,}(\d{4,7})\s+R\$\s*([\d.]+,\d{2})\s*$/;
+function parcelasDe(s) {
+  const txt = String(s);
+  const a = txt.match(/(\d+)\s+a\s+(\d+)/);
+  if (a) { const o = []; for (let n = +a[1]; n <= +a[2]; n++) o.push(n); return o; }
+  if (/\s+e\s+/.test(txt)) return txt.split(/\s+e\s+/).map((x) => +x.replace(/\D/g, ''));
+  const p = txt.match(/\(?\s*(\d+)/);
+  return p ? [+p[1]] : [];
+}
+
+export function parseRelatorioPlanilha(texto, nome = '') {
+  const t = String(texto || '').replace(/\r/g, '').replace(/ /g, ' ');
+  const resumo = (rot) => { const m = t.match(new RegExp(rot + '\\s*:?\\s+(?:R\\$\\s*)?(-?[\\d.]+,\\d{2})')); return m ? brNum(m[1]) : null; };
+  const out = { modelo: 'planilha', titulo: nome || 'Relatório de repasse', data_repasse: '', linhas: [], avisos: [], info: [],
+    creditos: resumo('Créditos'), debitosResumo: resumo('Débitos'), saldoRetido: resumo('Saldo retido') || 0, valor_final: resumo('Total de repasse') };
+  if (!/CRÉDITOS/.test(t) || out.valor_final == null) return null;
+  const ls = t.split('\n'); let sec = ''; const sobra = { CRÉDITOS: 0, DÉBITOS: 0, TAXAS: 0 };
+  for (let i = 0; i < ls.length; i++) {
+    const l = ls[i], s = l.trim();
+    if (/^CRÉDITOS$/.test(s)) { sec = 'CRÉDITOS'; continue; }
+    if (/^DÉBITOS$/.test(s)) { sec = 'DÉBITOS'; continue; }
+    if (/^TAXAS$/.test(s)) { sec = 'TAXAS'; continue; }
+    if (/^(Créditos|Débitos|Saldo retido|Total de repasse)\s*:/i.test(s)) { sec = ''; continue; }
+    if (!sec || !s || /^Total:/i.test(s) || /^(ID|Referência)\b/.test(s)) continue;
+    if (sec === 'CRÉDITOS' || sec === 'DÉBITOS') {
+      const m = l.match(reCredPlan);
+      if (!m) { if (/R\$\s*[\d.]+,\d{2}\s*$/.test(s)) sobra[sec]++; continue; }
+      const meio = (m[3] || '').split(/\s{2,}/).map((x) => x.trim()).filter(Boolean);
+      const antes = (m[1] || '').trim();
+      const comprador = (antes && !/^\d/.test(antes) ? antes : '') || (meio[0] && !/^[\d.,]+\s*%/.test(meio[0]) ? meio[0] : '');
+      out.linhas.push({ tipo: sec === 'CRÉDITOS' ? 'credito' : 'debito', contrato_id: +m[2], parcelas: [+m[4]], pagas_total: `${m[4]}/${m[5]}`, comprador,
+        vencimento: dmy(m[6]), data_credito: null, honorario: brNum(m[7]).toFixed(2), valor: brNum(m[8]).toFixed(2) });
+    } else {
+      const m = l.match(reTaxaPlan);
+      if (!m) { if (/R\$\s*[\d.]+,\d{2}\s*$/.test(s)) sobra.TAXAS++; continue; }
+      out.linhas.push({ tipo: 'taxa', referencia: m[1].trim(), descricao: m[2].trim(), comprador: m[3].trim(), parcelas: parcelasDe(m[4]), contrato_id: +m[5], valor: brNum(m[6]).toFixed(2) });
+    }
+  }
+  for (const k in sobra) if (sobra[k]) out.avisos.push(`${sobra[k]} linha(s) com valor na seção ${k} não foram reconhecidas. Confira o arquivo antes de salvar.`);
+  const soma = (tipo) => Math.round(out.linhas.filter((l) => l.tipo === tipo).reduce((s, l) => s + Math.round(+l.valor * 100), 0)) / 100;
+  const cred = soma('credito'), tax = soma('taxa'), deb = soma('debito');
+  // planilha com fórmulas: o resumo pode ter frações de centavo; as linhas valem com 2 casas, como no PDF
+  if (out.creditos != null && Math.abs(cred - out.creditos) > 0.009) {
+    if (Math.abs(cred - out.creditos) <= 0.1) out.info.push(`Arredondamento: as linhas somam ${cred.toFixed(2)} e o resumo mostra ${out.creditos.toFixed(2)} em créditos. Vale a soma das linhas.`);
+    else out.avisos.push(`Soma das linhas de créditos (${cred.toFixed(2)}) difere do resumo (${out.creditos.toFixed(2)}).`);
+  }
+  if (out.debitosResumo != null && Math.abs(tax + deb - out.debitosResumo) > 0.1) out.avisos.push(`Taxas + débitos das linhas (${(tax + deb).toFixed(2)}) diferem do resumo "Débitos" (${out.debitosResumo.toFixed(2)}).`);
+  out.creditos = cred; out.taxas = tax; out.debitos = deb;
+  const calc = Math.round((cred - tax - deb - (out.saldoRetido || 0)) * 100) / 100;
+  if (Math.abs(calc - out.valor_final) > 0.009) {
+    if (Math.abs(calc - out.valor_final) <= 0.1) out.info.push(`Total de repasse do resumo ${out.valor_final.toFixed(2)}; pelas linhas ${calc.toFixed(2)} (arredondamento).`);
+    else out.avisos.push(`Créditos − taxas − débitos (${calc.toFixed(2)}) difere do total de repasse (${out.valor_final.toFixed(2)}).`);
+    out.valor_final = calc;
+  }
+  if (out.saldoRetido) out.avisos.push(`Saldo retido de ${out.saldoRetido.toFixed(2)} informado no resumo.`);
+  // competência sugerida pelo nome da aba ("2ª Setembro", "1a quinzena outubro")
+  const MES = ['janeiro', 'fevereiro', 'marco', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+  const nm = String(nome).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const mi = MES.findIndex((x) => nm.includes(x));
+  const qm = nm.match(/(?:^|\D)([12])\s*(?:ª|º|a|o|°)?\s*(?:quinzena)?(?:\D|$)/);
+  const vencs = out.linhas.map((l) => l.vencimento).filter(Boolean).sort();
+  const ano = (nm.match(/20\d{2}/) || [])[0] || (vencs.length ? vencs[vencs.length - 1].slice(0, 4) : String(new Date().getFullYear()));
+  if (mi >= 0) out.mes_sugerido = `${ano}-${String(mi + 1).padStart(2, '0')}`;
+  if (qm) out.quinzena_sugerida = +qm[1];
+  out.periodo_inicio = ''; out.periodo_fim = '';
+  return out.linhas.length ? out : null;
+}
+
+// abas da planilha, cada uma com o próprio texto
+export async function planilhaAbas(file) {
+  const X = window.XLSX; if (!X) throw new Error('Leitor de planilhas não carregou.');
+  const wb = X.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
+  const abas = [];
+  for (const nome of wb.SheetNames) {
+    const um = X.utils.book_new(); X.utils.book_append_sheet(um, wb.Sheets[nome], nome);
+    const bin = X.write(um, { type: 'array', bookType: 'xlsx' });
+    abas.push({ nome, texto: await planilhaParaTexto(new File([bin], nome + '.xlsx')) });
+  }
+  return abas;
+}
+
+// lê um relatório de repasse em qualquer formato; devolve uma lista (um relatório por aba ou arquivo)
+export async function lerRelatoriosRepasse(file) {
+  if (ehPlanilha(file)) {
+    const out = [];
+    for (const a of await planilhaAbas(file)) {
+      let r = parseRelatorioPlanilha(a.texto, a.nome);
+      if (!r) { const x = parseRelatorioMecob(a.texto); if (x.linhas.length) r = { ...x, titulo: x.titulo || a.nome, info: [] }; }
+      if (r) out.push({ ...r, aba: a.nome });
+    }
+    return out;
+  }
+  const t = await arquivoParaTexto(file);
+  const m = parseRelatorioMecob(t);
+  if (m.linhas.length) return [{ ...m, info: [] }];
+  // PDF impresso da planilha: pode trazer mais de uma quinzena (cada uma termina em "Total de repasse")
+  const base = file.name.replace(/\.[^.]+$/, '');
+  const partes = t.split(/(?<=Total de repasse\s*:[^\n]*)\n/).filter((x) => /CRÉDITOS/.test(x));
+  const out = [];
+  partes.forEach((x, i) => { const p = parseRelatorioPlanilha(x, partes.length > 1 ? `${base} (parte ${i + 1} de ${partes.length})` : base); if (p) out.push(p); });
+  // o nome do arquivo só indica a quinzena quando o arquivo traz uma só
+  if (out.length > 1) out.forEach((p) => { delete p.quinzena_sugerida; });
+  return out;
+}
+
+// competência sugerida quando o arquivo não indica: mês dos vencimentos (mediana); quinzena fica para escolher
+export function competenciaPorVencimentos(r) {
+  const v = r.linhas.map((l) => l.vencimento).filter(Boolean).sort();
+  return v.length ? v[Math.floor(v.length / 2)].slice(0, 7) : '';
+}
