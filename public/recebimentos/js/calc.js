@@ -142,7 +142,7 @@ export function build(raw, hoje = hojeISO()) {
   for (const l of raw.repasse_linhas || []) { if (!linhasPorRep.has(l.repasse_id)) linhasPorRep.set(l.repasse_id, []); linhasPorRep.get(l.repasse_id).push(l); }
   // relatórios removidos (ex.: para reimportar) saem de todos os cálculos; ficam só no histórico
   const repassesRemovidos = (raw.repasses || []).filter((r) => r.removido);
-  const repasses = (raw.repasses || []).filter((r) => !r.removido).map((r) => ({ ...r, linhas: (linhasPorRep.get(r.id) || []).sort((a, b) => a.id - b.id) }))
+  const repasses = (raw.repasses || []).filter((r) => !r.removido).map((r) => ({ ...r, quinzena: +r.quinzena || quinzenaPorPeriodo(r), linhas: (linhasPorRep.get(r.id) || []).sort((a, b) => a.id - b.id) }))
     .sort((a, b) => (a.periodo_inicio || '').localeCompare(b.periodo_inicio || '') || a.id - b.id);
   const cfg = Object.fromEntries((raw.config || []).map((x) => [x.chave, x.valor]));
   const contabilidades = (raw.contabilidades || []).slice().sort((a, b) => a.id - b.id);
@@ -291,11 +291,11 @@ export const CONF_CATS = [
   { id: 'sem_parcela', t: 'Linha sem parcela no cadastro', d: 'Contrato ou parcela do relatório não encontrado no cadastro', sev: 'bad' },
   { id: 'sem_pagamento', t: 'Pagamento não registrado no contrato', d: 'A contabilidade informou o pagamento, mas ele não consta no contrato', sev: 'warn' },
   { id: 'fora_regra', t: 'Parcela que deveria ficar fora', d: 'Entrada, liquidada no cadastro ou paga direto que apareceu como crédito', sev: 'warn' },
-  { id: 'recebido_outro', t: 'Pago neste mês, repassado em relatório de outro mês', d: 'Vinculado a este mês pelo pagamento do comprador', sev: 'gold', neutro: true },
+  { id: 'pago_outro', t: 'Pago em outro mês, repassado nesta competência', d: 'Entra neste mês pela competência do relatório; a data do pagamento fica no detalhe', sev: 'info', neutro: true },
   { id: 'encargo', t: 'Juros e multa repassados', d: 'Comprador pagou com atraso; encargo veio no repasse', sev: 'info', neutro: true },
   { id: 'agrupada', t: 'Mais de uma parcela na mesma linha', d: 'Valores conferem', sev: 'ok', neutro: true },
   { id: 'ok', t: 'Conferidas sem divergência', d: 'Valor pago − taxa cobrada = valor transferido', sev: 'ok', neutro: true },
-  { id: 'outro_mes', t: 'Neste relatório, mas pago em outro mês', d: 'Conta na conferência do mês em que o comprador pagou', sev: 'gray', neutro: true, fora: true },
+  { id: 'repassado_outro', t: 'Pago neste mês, repassado em outra competência', d: 'Conta no mês/quinzena escolhido na importação do relatório', sev: 'gray', neutro: true, fora: true },
   { id: 'duplicada', t: 'Linha repetida em outro relatório', d: 'Já contada em outro envio; ignorada nos totais', sev: 'warn', neutro: true, fora: true },
   { id: 'aguardando', t: 'Aguardando relatório', d: 'Pagamentos do mês ainda sem relatório da contabilidade', sev: 'gray', neutro: true, fora: true },
 ];
@@ -315,7 +315,7 @@ function linhasRelatorios(model) {
       const c = model.cmap.get(Number(l.contrato_id));
       const ps = l.tipo === 'credito' ? (l.parcelas || []).map((n) => c?.parcelas.find((p) => p.numero === n)) : [];
       const pagoEm = ps.every(Boolean) ? ps.flatMap((p) => p.ativos.map((g) => g.data_pagamento)).sort()[0] || '' : '';
-      out.push({ l, r, c, ps, pagoEm, mesEsperado: (pagoEm || r.mes + '-01').slice(0, 7), duplicadaDe: dup ? dup.r : null });
+      out.push({ l, r, c, ps, pagoEm, mesEsperado: r.mes, duplicadaDe: dup ? dup.r : null });
     }
   }
   return out;
@@ -339,8 +339,8 @@ export function conferencia(model, mes) {
   const todas = linhasRelatorios(model);
   const repsMes = model.repasses.filter((r) => !r.substituido && r.mes === mes);
   const temRelatorioProprio = repsMes.length > 0;
-  const coberta = new Set();
-  for (const x of todas) if (x.l.tipo === 'credito' && !x.duplicadaDe) for (const n of x.l.parcelas || []) coberta.add(`${x.l.contrato_id}-${n}`);
+  const coberta = new Map();
+  for (const x of todas) if (x.l.tipo === 'credito' && !x.duplicadaDe) for (const n of x.l.parcelas || []) coberta.set(`${x.l.contrato_id}-${n}`, x);
   const itens = [];
   const base0 = (x) => ({ id: 'L' + x.l.id, linha: x.l, repasse: x.r, contrato: x.c, ctr: String(x.l.contrato_id || '—'), lote: x.c?.lote || '—', comprador: x.c?.comprador?.nome || x.l.comprador || '—',
     parcelasTxt: (x.l.parcelas || []).join(' e '), data_credito: x.l.data_credito, vencimento: x.l.vencimento, resolvido: x.l.resolvido, resolucao: x.l.resolucao, pagoEm: x.pagoEm });
@@ -351,7 +351,7 @@ export function conferencia(model, mes) {
     const doMes = x.mesEsperado === mes, relDoMes = x.r.mes === mes;
     if (!doMes && !relDoMes) continue;
     if (x.duplicadaDe) { if (relDoMes) itens.push({ ...b, cat: 'duplicada', esp: 0, inf: 0, dif: 0, base: baseRel, taxa, why: `Esta linha (contrato ${b.ctr}, parcela ${b.parcelasTxt}, ${brl(inf)}) já aparece no relatório "${x.duplicadaDe.titulo || x.duplicadaDe.arquivo_nome}". Foi contada uma vez só.` }); continue; }
-    if (!doMes) { itens.push({ ...b, cat: 'outro_mes', esp: 0, inf: 0, dif: 0, base: baseRel, taxa, mesOutro: x.mesEsperado, why: `O comprador pagou em ${fmtD(x.pagoEm)}. Esta linha conta na conferência de ${nomeMesCurto(x.mesEsperado)}, mês do pagamento.` }); continue; }
+    if (!doMes) continue; // cada linha conta só na competência do seu relatório
     if (!x.c || x.ps.some((p) => !p)) {
       itens.push({ ...b, cat: 'sem_parcela', esp: 0, inf, dif: inf, base: baseRel, taxa, why: `O relatório traz o contrato ${b.ctr}, parcela ${b.parcelasTxt}, mas ${x.c ? 'essa parcela não existe' : 'o contrato não está cadastrado'}. Importe ou atualize o contrato.` });
       continue;
@@ -365,7 +365,7 @@ export function conferencia(model, mes) {
     if (x.ps.some((p) => !p.elegivel)) { cat = 'fora_regra'; why = `A parcela ${b.parcelasTxt} está marcada como "${x.ps.map((p) => TIPO_PARCELA_LABEL[p.tipo]).join(', ')}", mas a contabilidade a repassou. Conferir o tipo da parcela.`; }
     else if (semPag) { cat = 'sem_pagamento'; why = `A contabilidade informou ${brl(baseRel)} pagos nesta parcela, mas o pagamento não consta no contrato. Reimporte o contrato ${b.ctr}.`; }
     else if (Math.abs(baseRel - pago) > 1) { cat = 'base_divergente'; why = `O comprador pagou ${brl(pago)}, mas o relatório usa ${brl(baseRel)} como base (taxa ${brl(taxa)} + transferido ${brl(inf)}). Diferença de ${brl(baseRel - pago)}.${rel}`; }
-    else if (x.r.mes !== mes) { cat = 'recebido_outro'; why = `O comprador pagou em ${fmtD(x.pagoEm)}, e a contabilidade repassou no relatório de ${nomeMesCurto(x.r.mes)}. Vinculado a este mês.`; }
+    else if (x.pagoEm && x.pagoEm.slice(0, 7) !== mes) { cat = 'pago_outro'; why = `O comprador pagou em ${fmtD(x.pagoEm)} e a contabilidade repassou no relatório de ${competenciaTxt(x.r.mes, x.r.quinzena)}. Conta neste mês pela competência do relatório. Pago ${brl(bruto)} − taxa ${brl(taxa)} = ${brl(esp)}.`; }
     else if (encargo > 1) { cat = 'encargo'; why = `O comprador pagou ${brl(encargo)} de juros/multa além da parcela (${brl(padrao)}). O encargo veio no repasse.`; }
     else if (x.ps.length > 1) { cat = 'agrupada'; why = `A contabilidade juntou ${x.ps.length} parcelas numa linha (${b.parcelasTxt}). Valores conferem.`; }
     else { cat = 'ok'; why = `Pago ${brl(bruto)} − taxa ${brl(taxa)} (${bruto ? pctTxt(taxa / bruto) : '—'}) = ${brl(esp)}, igual ao transferido.`; }
@@ -394,32 +394,35 @@ export function conferencia(model, mes) {
   const foraPadrao = predominante == null ? [] : creditosMes.filter((i) => Math.abs(i.taxaPct * 100 - predominante) > 0.05);
   // 4) pagamentos do mês sem linha em nenhum relatório
   const mediaEstimativa = tm.media ?? (() => { const all = taxaMedia(todas.filter((x) => x.l.tipo === 'credito' && !x.duplicadaDe).map((x) => ({ base: cents(x.l.valor) + cents(x.l.honorario), taxa: cents(x.l.honorario) }))); return all.media; })();
-  const temRelatorioPosterior = model.repasses.some((r) => !r.substituido && r.mes > mes);
-  // períodos de crédito cobertos pelos relatórios ativos do mês (pagamentos que aparecem em algum relatório já foram tratados acima)
-  // O crédito na contabilidade sai até 3 dias depois do pagamento: um pagamento só "deveria" estar num relatório
-  // se foi feito entre o início do período e 3 dias antes do fim. Períodos encostados (quinzenas) são unidos.
+  // Pagamento sem linha em relatório: aparece no mês em que o comprador pagou.
+  // "Faltou" só quando algum relatório já cobre aquela data de crédito (o crédito sai em até 3 dias);
+  // caso contrário aguarda o relatório da quinzena correspondente (fora da conta).
   const diasAntes = (iso, n) => { const x = new Date(iso + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() - n); return x.toISOString().slice(0, 10); };
-  const periodos = repsMes.filter((r) => r.periodo_inicio && r.periodo_fim).map((r) => [r.periodo_inicio, r.periodo_fim]).sort((a, b) => (a[0] < b[0] ? -1 : 1))
+  const periodos = model.repasses.filter((r) => !r.substituido && r.periodo_inicio && r.periodo_fim).map((r) => [r.periodo_inicio, r.periodo_fim]).sort((a, b) => (a[0] < b[0] ? -1 : 1))
     .reduce((acc, p) => { const u = acc[acc.length - 1]; if (u && p[0] <= diasAntes(u[1], -4)) { if (p[1] > u[1]) u[1] = p[1]; } else acc.push([...p]); return acc; }, [])
     .map(([a, b]) => [a, diasAntes(b, 3)]);
-  const maxFim = periodos.reduce((s, p) => (p[1] > s ? p[1] : s), '');
-  const coberto = (d) => !periodos.length || periodos.some(([a, b]) => d >= a && d <= b);
+  const coberto = (d) => periodos.some(([a, b]) => d >= a && d <= b);
   for (const p of model.parcelas) {
-    if (!p.elegivel || p.contrato.arquivado || coberta.has(`${p.contrato_id}-${p.numero}`)) continue;
+    if (!p.elegivel || p.contrato.arquivado) continue;
+    const xc = coberta.get(`${p.contrato_id}-${p.numero}`);
     for (const g of p.ativos) {
       if (g.data_pagamento.slice(0, 7) !== mes) continue;
+      if (xc) {
+        // pago neste mês, mas o relatório que traz a parcela é de outra competência: só informativo
+        if (xc.r.mes !== mes) itens.push({ id: 'R' + g.id, contrato: p.contrato, ctr: String(p.contrato_id), lote: p.contrato.lote || '—', comprador: p.contrato.comprador.nome, parcelasTxt: String(p.numero),
+          vencimento: p.vencimento, pagoEm: g.data_pagamento, data_credito: xc.l.data_credito, parcelas: [p], bruto: g.valorC, cat: 'repassado_outro', esp: 0, inf: 0, dif: 0,
+          why: `Pago em ${fmtD(g.data_pagamento)}; a contabilidade repassou no relatório de ${competenciaTxt(xc.r.mes, xc.r.quinzena)} (crédito em ${fmtD(xc.l.data_credito)}). Conta naquela competência.` });
+        continue;
+      }
       const bruto = g.valorC, taxaEst = mediaEstimativa != null ? Math.round(bruto * mediaEstimativa) : 0, esp = bruto - taxaEst;
-      const fimDoMes = +g.data_pagamento.slice(8, 10) >= ultimoDia(mes) - 1;
       const d = g.data_pagamento;
-      const lacuna = temRelatorioProprio && !coberto(d) && d < maxFim; // entre/antes dos períodos enviados: falta um relatório do mês
-      const depois = temRelatorioProprio && !coberto(d) && d > maxFim && !temRelatorioPosterior; // fim do período: pode vir no próximo relatório
-      const aguardando = !temRelatorioProprio || lacuna || depois || (fimDoMes && !temRelatorioPosterior);
+      const aguardando = !coberto(d);
       itens.push({ id: 'P' + g.id, contrato: p.contrato, ctr: String(p.contrato_id), lote: p.contrato.lote || '—', comprador: p.contrato.comprador.nome, parcelasTxt: String(p.numero),
-        vencimento: p.vencimento, pagoEm: g.data_pagamento, data_credito: null, parcelas: [p], bruto, taxa: taxaEst, estimado: true, lacuna, cat: aguardando ? 'aguardando' : 'faltou',
+        vencimento: p.vencimento, pagoEm: d, data_credito: null, parcelas: [p], bruto, taxa: taxaEst, estimado: true, cat: aguardando ? 'aguardando' : 'faltou',
         esp: aguardando ? 0 : esp, inf: 0, dif: aguardando ? 0 : -esp, espPrevisto: esp,
         why: aguardando
-          ? (!temRelatorioProprio ? `Pago em ${fmtD(g.data_pagamento)}. Ainda não há relatório da contabilidade para ${nomeMesCurto(mes)}.` : lacuna || depois ? `Pago em ${fmtD(d)}, fora do período dos relatórios enviados (${repsMes.map((r) => fmtD(r.periodo_inicio) + ' a ' + fmtD(r.periodo_fim)).join('; ')}). Aguarda o relatório que cobre essa data.` : `Pago em ${fmtD(g.data_pagamento)}, no fim do mês: pode vir no próximo relatório.`)
-          : `O comprador pagou ${brl(bruto)} em ${fmtD(g.data_pagamento)}, mas a parcela não aparece em nenhum relatório. Esperado: ${brl(esp)}${mediaEstimativa != null ? ` (estimado com a taxa média de ${pctTxt(mediaEstimativa)})` : ''}.` });
+          ? `Pago em ${fmtD(d)}. Nenhum relatório enviado cobre essa data ainda; entra na conferência quando chegar o relatório da quinzena correspondente.`
+          : `O comprador pagou ${brl(bruto)} em ${fmtD(d)}, data já coberta pelos relatórios enviados, mas a parcela não aparece em nenhum deles. Esperado: ${brl(esp)}${mediaEstimativa != null ? ` (estimado com a taxa média de ${pctTxt(mediaEstimativa)})` : ''}.` });
     }
   }
   const sum = (a, f) => a.reduce((s, x) => s + f(x), 0);
@@ -454,16 +457,30 @@ export function conferencia(model, mes) {
   res.problemas = cats.filter((c) => !c.neutro && !c.ajuste);
   // o Painel ("Pago pelos compradores") soma o valor bruto de todos os pagamentos elegíveis do mês
   res.painelMes = sum(model.parcelas.filter((p) => p.elegivel && !p.contrato.arquivado).flatMap((p) => p.ativos.filter((g) => g.data_pagamento.slice(0, 7) === mes)), (g) => g.valorC);
-  // períodos de crédito do mês sem relatório (ex.: falta a 2ª quinzena)
+  // Painel (por data de pagamento) x conferência (por competência do relatório)
+  res.brutoPagoOutro = sum(itens.filter((i) => i.cat === 'pago_outro'), (i) => i.bruto || 0);
+  res.brutoRepassadoOutro = sum(itens.filter((i) => i.cat === 'repassado_outro'), (i) => i.bruto || 0);
+  res.brutoSemRelatorio = sum(itens.filter((i) => i.cat === 'aguardando' || i.cat === 'faltou'), (i) => i.bruto || 0);
+  // quinzenas do mês (competência escolhida na importação) e o que falta
   const ult = ultimoDia(mes), iso = (d) => `${mes}-${String(d).padStart(2, '0')}`;
-  const dia = (s) => (s.slice(0, 7) < mes ? 0 : s.slice(0, 7) > mes ? ult + 1 : +s.slice(8, 10));
-  const faixas = repsMes.filter((r) => r.periodo_inicio && r.periodo_fim).map((r) => [dia(r.periodo_inicio), dia(r.periodo_fim)]).sort((a, b) => a[0] - b[0]);
-  const fimMesPassou = model.hoje > iso(ult);
+  const nomeQ = (q) => `${q}ª quinzena (${q === 1 ? '1 a 15' : `16 a ${ult}`}/${mes.slice(5)})`;
+  res.porQuinzena = [1, 2].map((q) => {
+    const reps = repsMes.filter((r) => r.quinzena === q), ids = new Set(reps.map((r) => r.id));
+    const its = itens.filter((i) => i.repasse && ids.has(i.repasse.id) && !CATMAP[i.cat].fora);
+    const cred = its.filter((i) => i.linha?.tipo === 'credito');
+    const o = { q, nome: nomeQ(q), reps, bruto: sum(cred.filter((i) => i.bruto), (i) => i.bruto), taxas: sum(cred, (i) => i.taxa || 0), esperado: sum(its, (i) => i.esp),
+      ajustes: sum(its.filter((i) => CATMAP[i.cat].ajuste), (i) => i.ajuste), informado: sum(its, (i) => i.inf), parcelas: cred.length, repetidas: itens.filter((i) => i.cat === 'duplicada' && i.repasse && ids.has(i.repasse.id)).length };
+    o.esperadoAposAjustes = o.esperado - o.ajustes; o.dif = o.informado - o.esperadoAposAjustes;
+    o.taxaMedia = taxaMedia(cred.filter((i) => i.base).map((i) => ({ base: i.base, taxa: i.taxa }))).media;
+    return o;
+  });
+  // falta a 1ª quinzena quando o mês já passou do dia 20 (ou a 2ª chegou); falta a 2ª depois do dia 5 do mês seguinte
+  const seguinte5 = (() => { const [y, m] = mes.split('-').map(Number); const d = new Date(Date.UTC(y, m, 5)); return d.toISOString().slice(0, 10); })();
   res.periodosFaltando = [];
-  if (faixas.length) {
-    let cur = 1;
-    for (const [a, b] of faixas) { if (a - cur > 3) res.periodosFaltando.push({ de: iso(cur), ate: iso(Math.min(a - 1, ult)) }); cur = Math.max(cur, b + 1); }
-    if (ult - cur >= 3 && fimMesPassou) res.periodosFaltando.push({ de: iso(Math.min(cur, ult)), ate: iso(ult) });
+  if (repsMes.length) for (const qq of res.porQuinzena) {
+    if (qq.reps.length) continue;
+    const venceu = qq.q === 1 ? model.hoje >= iso(20) || res.porQuinzena[1].reps.length > 0 : model.hoje > seguinte5;
+    if (venceu) res.periodosFaltando.push({ q: qq.q, txt: `relatório da ${qq.nome}`, de: iso(qq.q === 1 ? 1 : 16), ate: iso(qq.q === 1 ? 15 : ult) });
   }
   res.extrato = !repsMes.length ? 'sem_relatorio' : repsMes.every((r) => r.extrato_status === 'confirmado') ? 'confirmado' : repsMes.some((r) => r.extrato_status === 'divergente') ? 'divergente' : 'pendente';
   // recebimento do arquivo x resultado da conferência
@@ -530,3 +547,12 @@ function regraAnterior(model, mes, conf) {
   const explicado = grupos.reduce((s, g) => s + g.efeito, 0);
   return { antigo, grupos, explicado, resto: conf.dif - antigo.dif - explicado };
 }
+// Competência do relatório: mês + quinzena escolhidos na importação.
+// Relatórios antigos sem quinzena: deduzida pelo meio do período de crédito (até o dia 15 = 1ª).
+export function quinzenaPorPeriodo(r) {
+  const a = r.periodo_inicio, b = r.periodo_fim || a;
+  if (!a) return 1;
+  const meio = new Date((Date.parse(a + 'T12:00:00Z') + Date.parse(b + 'T12:00:00Z')) / 2);
+  return meio.getUTCDate() <= 15 ? 1 : 2;
+}
+export const competenciaTxt = (mes, q) => `${MESES_LONGOS[+mes.slice(5) - 1]} de ${mes.slice(0, 4)} — ${q === 2 ? '2ª' : '1ª'} quinzena`;

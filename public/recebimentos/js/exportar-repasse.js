@@ -103,6 +103,15 @@ export function conferenciaPDF(conf, model) {
     didParseCell: alinhar({ 1: { halign: 'center' }, 2: { halign: 'right' } }, (d) => { if (d.section === 'body' && d.column.index === 2 && typeof d.cell.raw === 'string' && d.cell.raw.startsWith('-R')) d.cell.styles.textColor = VERM; }) });
   y = Math.max(yEsq, doc.lastAutoTable.finalY) + 22;
 
+  // quinzenas
+  titulo('Quinzenas do mês', 'Cada relatório entra na competência (mês e quinzena) escolhida na importação; a data impressa no arquivo não muda o mês.');
+  const qcols = { 1: { halign: 'right' }, 2: { halign: 'right' }, 3: { halign: 'right' }, 4: { halign: 'right' }, 5: { halign: 'right' }, 6: { halign: 'right' } };
+  doc.autoTable({ ...base, startY: y, head: [['Quinzena', 'Parcelas', 'Taxas', 'Esperado', 'Ajustes', 'Transferido', 'Diferença']], columnStyles: { 0: { cellWidth: 'auto' }, ...qcols }, didParseCell: alinhar(qcols),
+    body: conf.porQuinzena.map((q) => [pdfTxt(`${q.q}ª quinzena · ${q.reps.map((r) => r.arquivo_nome || r.titulo).join(', ') || 'sem relatório'}`), String(q.parcelas), `${brl(q.taxas)} (${pct(q.taxaMedia)})`, brl(q.esperado), q.ajustes ? '-' + brl(q.ajustes) : '-', brl(q.informado), q.reps.length ? sg(q.dif) : '-']),
+    foot: [['Total do mês', String(conf.porQuinzena.reduce((s, q) => s + q.parcelas, 0)), `${brl(conf.taxas)} (${pct(conf.taxaMedia)})`, brl(conf.esperado), conf.ajustes ? '-' + brl(conf.ajustes) : '-', brl(conf.informado), sg(conf.dif)]],
+    footStyles: { fillColor: [246, 244, 239], textColor: [17, 26, 21], fontStyle: 'bold' } });
+  y = doc.lastAutoTable.finalY + 22;
+
   // taxa média
   titulo('Taxa média da contabilidade', 'Soma das taxas cobradas ÷ soma das bases brutas × 100. Cada parcela pesa pelo seu valor.');
   const tcols = { 1: { halign: 'right', cellWidth: 70 }, 2: { halign: 'right', cellWidth: 100, overflow: 'visible' }, 3: { halign: 'right', cellWidth: 100, overflow: 'visible' }, 4: { halign: 'right', cellWidth: 80 } };
@@ -159,7 +168,7 @@ export function conferenciaPDF(conf, model) {
   titulo('Relatórios da contabilidade considerados');
   const rcols = { 2: { halign: 'right', cellWidth: 82, overflow: 'visible' }, 3: { halign: 'right', cellWidth: 72, overflow: 'visible' }, 4: { halign: 'right', cellWidth: 86, overflow: 'visible' } };
   doc.autoTable({ ...base, startY: y, head: [['Relatório', 'Créditos de', 'Créditos', 'Descontos', 'Valor final', 'Contabilidade', 'Conta da SM']],
-    body: conf.reps.map((r) => [pdfTxt(r.titulo || '-'), `${C.fmtD(r.periodo_inicio)} a ${C.fmtD(r.periodo_fim)}`, brl(C.cents(r.creditos)), brl(C.cents(r.taxas) + C.cents(r.debitos)), { content: brl(C.cents(r.valor_final)), styles: { fontStyle: 'bold' } },
+    body: conf.reps.map((r) => [pdfTxt(`${r.quinzena}ª quinzena · ${r.arquivo_nome || r.titulo || '-'}${r.data_relatorio ? ' · relatório de ' + C.fmtD(r.data_relatorio) : ''}`), `${C.fmtD(r.periodo_inicio)} a ${C.fmtD(r.periodo_fim)}`, brl(C.cents(r.creditos)), brl(C.cents(r.taxas) + C.cents(r.debitos)), { content: brl(C.cents(r.valor_final)), styles: { fontStyle: 'bold' } },
       pdfTxt(r.contabilidade?.nome || '-'), pdfTxt(r.extrato_status === 'confirmado' ? `Confirmado em ${C.fmtD(r.extrato_data)} (${brl(C.cents(r.extrato_valor))})` : r.extrato_status === 'divergente' ? `Divergente: ${brl(C.cents(r.extrato_valor))}` : 'Aguardando extrato')]),
     foot: [[{ content: 'Total', styles: { fontStyle: 'bold' } }, '', brl(conf.reps.reduce((s, r) => s + C.cents(r.creditos), 0)), brl(conf.reps.reduce((s, r) => s + C.cents(r.taxas) + C.cents(r.debitos), 0)), { content: brl(conf.totalRelatoriosMes), styles: { fontStyle: 'bold' } }, '', '']],
     footStyles: { fillColor: [246, 244, 239], textColor: [17, 26, 21], fontStyle: 'bold' },
@@ -218,6 +227,7 @@ export function conferenciaExcel(conf, model, soGerar = false) {
     ['RESUMO', 'Valor'], ['Repasse líquido esperado', rs(conf.esperado)], ['Transferido pela contabilidade', rs(conf.informado)], ['Confirmado na conta da SM', rs(conf.confirmadoConta)],
     ['Taxas sobre parcelas', rs(conf.taxas)], ['Ajustes informados pela contabilidade', rs(conf.ajustes)], ['Esperado após ajustes', rs(conf.esperadoAposAjustes)],
     ['Diferença (transferido - esperado após ajustes)', rs(conf.dif)], ['Itens para conferir', conf.pendencias], ['Ajustes sem decisão', conf.ajustesPendentes], ['Conta da SM', EXTRATO[conf.extrato]], [],
+    ['QUINZENAS (competência escolhida na importação)', 'Transferido', 'Esperado', 'Taxas', 'Ajustes', 'Diferença'], ...conf.porQuinzena.map((q) => [`${q.q}ª quinzena: ${q.reps.map((r) => r.arquivo_nome || r.titulo).join(', ') || 'sem relatório'}`, rs(q.informado), rs(q.esperado), rs(q.taxas), rs(q.ajustes), rs(q.dif)]), [],
     ['TAXA MÉDIA DA CONTABILIDADE', 'Taxa'], ['Consolidado do mês (soma das taxas ÷ soma das bases)', conf.taxaMedia ?? ''], ['Linhas cobertas', `${cob.n} de ${cob.total}`],
     ...conf.porRelatorio.map((x) => [`Relatório: ${x.r.titulo || x.r.arquivo_nome} (${C.fmtD(x.r.periodo_inicio)} a ${C.fmtD(x.r.periodo_fim)})`, x.media ?? '']),
     ['Taxa mais frequente (%)', conf.predominante ?? ''], [],
