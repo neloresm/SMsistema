@@ -277,5 +277,163 @@ export function lerContratos(text) {
   if (a.length) return a;
   const b = parseNotaLeilao(text);
   if (b.length) return b;
+  const c = parseMapaVenda(text);
+  if (c.length) return c;
   return parseMapaCompra(text);
+}
+
+// ---------------------------------------------------------------------------
+// "MAPA DE VENDA" da leiloeira (um arquivo por leilão; um ou mais lotes, cada lote com um ou mais compradores)
+//   Cabeçalho: leilão - data / local / Vendedor
+//   Lote:      "1 - NOVILHA(S) - Nelore PO (NOBREZA FIV LINCE)" + linha "20  Registro(s) GART 1989  33,33% X 1 X 13.300,00 X 30 = R$ 132.999,87  R$ 16.624,98 (12,50 %)"
+//   Comprador: "HDR Agronegocios LTDA  33,33%  132.999,87  0,00/0,00  0,00  132.999,87  4.433,33" (o último valor é a entrada)
+//   Parcelas:  "2ª  4.433,33  28/02/2026  3ª ..." (o vencimento pode faltar)
+//   Comissão de venda e taxas (catálogo etc.) são despesas do leilão, nunca entram no repasse.
+// Sem número de contrato: localização por leilão + data + lote + comprador (animal e registro ajudam).
+// ---------------------------------------------------------------------------
+export function parseMapaVenda(text) {
+  const t = String(text || '').replace(/\r/g, '').replace(/ /g, ' ');
+  if (!/MAPA DE VENDA/i.test(t)) return [];
+  const ls = t.split('\n').map((l) => l.replace(/\s+$/, ''));
+  const i0 = ls.findIndex((l) => /MAPA DE VENDA/i.test(l));
+  const cab = (ls[i0 + 1] || '').trim();
+  const cm = cab.match(/^(.*?)\s*-\s*(\d{2}\/\d{2}\/\d{4})\s*$/);
+  const leilao = { nome: cm ? cm[1].trim() : cab, data: cm ? dmy(cm[2]) : '', local: (ls[i0 + 2] || '').trim() };
+  const vendedor = ((t.match(/Vendedor\s*:\s*(.+)/) || [])[1] || '').trim();
+  // despesas do arquivo (taxas e defesas), fora de qualquer lote
+  const despesasArquivo = [];
+  const ti = ls.findIndex((l) => /^\s*Taxas\s*$/i.test(l));
+  const tf = ls.findIndex((l, i) => i > ti && /TOTAL GERAL/i.test(l));
+  if (ti >= 0) {
+    for (const l of ls.slice(ti + 1, tf > ti ? tf : ti + 12)) {
+      const m = l.match(/^\s*(\S.*?)\s{2,}R\$\s*([\d.]+,\d{2})\s*$/);
+      if (m && brNum(m[2]) > 0) despesasArquivo.push({ tipo: 'taxa', descricao: m[1].trim(), valor: brNum(m[2]).toFixed(2) });
+    }
+  }
+  for (const nome of ['Defesas Promotor', 'Defesas Leiloeira']) {
+    const m = t.match(new RegExp(nome + '\\s+R\\$\\s*([\\d.]+,\\d{2})'));
+    if (m && brNum(m[1]) > 0) despesasArquivo.push({ tipo: 'defesa', descricao: nome, valor: brNum(m[1]).toFixed(2) });
+  }
+  const totalGeral = (t.match(/TOTAL GERAL\s*:\s*R\$\s*([\d.]+,\d{2})/) || [])[1];
+  const leiloeira = ((t.match(/TOTAL GERAL\s*:\s*R\$\s*[\d.]+,\d{2}\s+(.+?)\s+-\s/) || [])[1] || '').trim();
+
+  const out = [];
+  // linha dos números do lote: "<lote?> <continuação da descrição> [Registro(s) X]  33,33% X 1 X 13.300,00 X 30 = R$ ...  R$ comissão (12,50 %)"
+  const reNums = /^(.*?)\s+([\d.,]+)\s*%\s+X\s+(\d+)\s+X\s+([\d.,]+)\s+X\s+(\d+)\s+=\s+R\$\s*([\d.]+,\d{2})(?:\s+R\$\s*([\d.]+,\d{2})\s*\(([\d.,]+)\s*%\s*\))?/;
+  const reDesc = /^\s*(?:(\S+)\s{2,})?\d+\s+-\s+(\S.*)$/; // "800C    1 - ASPIRAÇÃO - Nelore PO (NANTES FIV AL" (o lote pode vir antes)
+  const reComp = /^\s*(\S.*?)\s{2,}([\d.,]+)\s*%\s+([\d.]+,\d{2})\s+[\d.,]+\/[\d.,]+\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})\s*$/;
+  const reParc = /(\d{1,3})ª\s+([\d.]+,\d{2})(?:\s+(\d{2}\/\d{2}\/\d{4}))?/g;
+  const fimBloco = (l) => reComp.test(l) || reNums.test(l) || /^\s*%\s*Venda|^\s*Totais\s*$/i.test(l) || reDesc.test(l);
+  let lote = null;
+  for (let i = i0 + 1; i < ls.length; i++) {
+    const l = ls[i];
+    if (/^\s*Totais\s*$/i.test(l)) break;
+    const nm = l.match(reNums);
+    if (nm) {
+      let j = i - 1;
+      while (j > i0 && !reDesc.test(ls[j])) j--;
+      const dm = j > i0 ? ls[j].match(reDesc) : null;
+      const ini = dm ? dm[2].replace(/\s{2,}(Valor Venda|Comiss[aã]o de Venda).*$/i, '').trim() : '';
+      let pre = nm[1].trim(); let numero = dm?.[1] || '';
+      if (!numero) { const p = pre.match(/^(\S+)\s*(.*)$/); numero = p ? p[1] : ''; pre = p ? p[2] : ''; }
+      // sufixo do lote na linha seguinte (ex.: "A    CANAL   Descrição" → 1005A)
+      const suf = (ls[i + 1] || '').match(/^\s*(\S{1,4})\s{2,}(?:CANAL\b|Descri)/i);
+      if (suf) numero += suf[1];
+      let resto = pre; let registro = '';
+      const rg = resto.match(/Registro\(s\)\s*(.*)$/i);
+      if (rg) { registro = rg[1].trim(); resto = resto.slice(0, rg.index).trim(); }
+      const desc = `${ini} ${resto}`.replace(/\s+/g, ' ').trim();
+      // "(DILLA FIV CBA X BOBY HRO)" → animal DILLA FIV CBA, acasalamento BOBY HRO
+      const emParen = ((desc.match(/\(([^)]*)\)?\s*$/) || [])[1] || '').trim();
+      const animal = emParen.split(/\s[xX]\s/)[0].trim(), acasalamento = (emParen.split(/\s[xX]\s/)[1] || '').trim();
+      lote = { numero, desc, animal, acasalamento, registro, pctVenda: Number(nm[2].replace(',', '.')), animais: +nm[3], lance: brNum(nm[4]), captacoes: +nm[5], valorVenda: brNum(nm[6]),
+        comissao: nm[7] ? { valor: brNum(nm[7]), pct: Number(nm[8].replace(',', '.')) } : null, compradores: 0 };
+      continue;
+    }
+    const c = lote && l.match(reComp);
+    if (!c) continue;
+    let area = ''; let k = i + 1;
+    for (; k < ls.length; k++) { if (fimBloco(ls[k])) break; area += ' ' + ls[k]; }
+    const avisos = [];
+    const entrada = brNum(c[6]), liquido = brNum(c[5]);
+    const parcelas = [{ numero: 1, valor_previsto: entrada.toFixed(2), vencimento: leilao.data, vencEstimado: true, status_origem: 'Entrada (Mapa de Venda)' }];
+    let m; reParc.lastIndex = 0;
+    while ((m = reParc.exec(area))) parcelas.push({ numero: +m[1], valor_previsto: brNum(m[2]).toFixed(2), vencimento: m[3] ? dmy(m[3]) : '', status_origem: 'A vencer' });
+    parcelas.sort((a, b) => a.numero - b.numero);
+    const semData = parcelas.filter((p) => p.numero > 1 && !p.vencimento);
+    if (semData.length && leilao.data) {
+      for (const p of semData) { p.vencimento = somaMeses(leilao.data, p.numero - 1); p.vencEstimado = true; }
+      avisos.push(`${semData.length} vencimento(s) não aparecem no PDF; estimados mês a mês a partir do leilão e não comparados.`);
+    }
+    avisos.push('Entrada sem data no PDF: usada a data do leilão; na comparação só o valor da entrada é conferido.');
+    const nums = parcelas.map((p) => p.numero); const faltam = [];
+    for (let n = 1; n <= Math.max(...nums); n++) if (!nums.includes(n)) faltam.push(n);
+    if (faltam.length) avisos.push(`Parcela(s) não encontradas no PDF: ${faltam.join(', ')}.`);
+    const soma = parcelas.reduce((s, p) => s + Math.round(+p.valor_previsto * 100), 0) / 100;
+    if (Math.abs(soma - liquido) >= 0.05) avisos.push(`Soma das parcelas (${soma.toFixed(2)}) difere do valor líquido (${liquido.toFixed(2)}).`);
+    lote.compradores++;
+    const r = {
+      id: null, fonte: 'mapa_venda', tipo_doc: 'Mapa de Venda', leilao, vendedor, leiloeira, lote: lote.numero, animal: lote.animal, registro: lote.registro, descricao: lote.desc,
+      tipo_venda: inferirTipo(lote.desc), acasalamento: lote.acasalamento, percentual: Number(c[2].replace(',', '.')).toFixed(4),
+      comprador: { nome: c[1].trim(), documento: '', email: '', telefone: '' }, data_contrato: leilao.data, valor_total: liquido.toFixed(2), qtd_parcelas: parcelas.length,
+      parcelas, avisos, obs: lote.registro ? `Registro do animal: ${lote.registro}` : '',
+      condicoes: `Mapa de Venda: ${lote.pctVenda}% · ${lote.animais} animal(is) · lance ${lote.lance.toFixed(2)} × ${lote.captacoes} = ${lote.valorVenda.toFixed(2)}${lote.comissao ? ` · comissão de venda ${lote.comissao.valor.toFixed(2)} (${lote.comissao.pct}%)` : ''}`,
+      despesas: lote.comissao && lote.compradores === 1 ? [{ tipo: 'comissao_venda', descricao: 'Comissão de venda', lote: lote.numero, valor: lote.comissao.valor.toFixed(2), percentual: lote.comissao.pct }] : [],
+    };
+    if (!SM_NOMES.test(vendedor)) r.compra = `A SM não aparece como vendedora neste mapa (vendedor: ${vendedor || 'não identificado'}).`;
+    out.push(r);
+    i = k - 1;
+  }
+  if (out.length) { out[0].despesasArquivo = despesasArquivo; out[0].totalDespesasArquivo = totalGeral ? brNum(totalGeral).toFixed(2) : null; }
+  else return [{ erro: `Mapa de Venda de ${leilao.nome} sem lotes vendidos`, trecho: '' }];
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Planilhas (Excel .xlsx/.xls ou .csv): cada linha vira uma linha de texto com as células separadas,
+// no mesmo formato do texto extraído dos PDFs, para os mesmos leitores (repasse, contratos).
+// Números de colunas de valor viram "R$ 1.234,56"; datas viram dd/mm/aaaa.
+// ---------------------------------------------------------------------------
+const ehPlanilha = (f) => /\.(xlsx|xlsm|xls|csv|ods)$/i.test(f.name) || /spreadsheet|excel|csv/i.test(f.type || '');
+export { ehPlanilha };
+export async function planilhaParaTexto(file) {
+  const X = window.XLSX; if (!X) throw new Error('Leitor de planilhas não carregou.');
+  const wb = X.read(await file.arrayBuffer(), { type: 'array', cellDates: true, raw: false });
+  const br = (n) => n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const fd = (d) => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+  const linhas = [];
+  for (const nome of wb.SheetNames) {
+    const ws = wb.Sheets[nome]; if (!ws['!ref']) continue;
+    const rng = X.utils.decode_range(ws['!ref']);
+    let cab = []; // último cabeçalho visto: decide se a coluna é de valor (R$)
+    for (let r = rng.s.r; r <= rng.e.r; r++) {
+      const cel = [];
+      for (let c = rng.s.c; c <= rng.e.c; c++) {
+        const v = ws[X.utils.encode_cell({ r, c })];
+        if (!v || v.v == null || v.v === '') { cel.push(''); continue; }
+        if (v.v instanceof Date) { cel.push(fd(v.v)); continue; }
+        if (typeof v.v === 'number') {
+          const h = cab[c - rng.s.c] || '', fmt = String(v.z || '');
+          const dinheiro = /R\$|valor|honor|repasse|taxa|cr[eé]dito|d[eé]bito|total|l[ií]quido|bruto|desconto|entrada/i.test(h) || /R\$|#,##0\.00|0\.00/.test(fmt) || !Number.isInteger(v.v);
+          cel.push(dinheiro ? (/R\$/.test(h + fmt) || /valor|honor|repasse|cr[eé]dito|taxa/i.test(h) ? 'R$ ' : '') + br(v.v) : String(v.v));
+          continue;
+        }
+        cel.push(String(v.w ?? v.v).trim());
+      }
+      while (cel.length && cel[cel.length - 1] === '') cel.pop();
+      if (!cel.length) { linhas.push(''); continue; }
+      const textos = cel.filter((x) => x && !/^[\d.,R$\s/-]+$/.test(x));
+      if (textos.length >= 3 && textos.length >= cel.filter(Boolean).length - 1) cab = cel.slice();
+      // células vazias no meio viram espaço largo, para manter as colunas separadas
+      linhas.push('    ' + cel.map((x) => x || '').join('    ').replace(/\s{9,}/g, '        '));
+    }
+    linhas.push('');
+  }
+  return linhas.join('\n');
+}
+// lê qualquer arquivo aceito (PDF, planilha ou texto) e devolve o texto
+export async function arquivoParaTexto(file) {
+  if (/\.pdf$/i.test(file.name) || file.type === 'application/pdf') return pdfParaTexto(file);
+  if (ehPlanilha(file)) return planilhaParaTexto(file);
+  return file.text();
 }

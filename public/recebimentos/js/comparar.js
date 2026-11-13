@@ -6,12 +6,23 @@ const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toL
 const cv = (v) => Math.round(Number(v || 0) * 100);
 const assinatura = (d) => JSON.stringify([d.valor_total, d.lote, d.comprador?.documento, (d.parcelas || []).map((p) => [p.numero, p.vencimento, p.valor_previsto])]);
 
+// nomes parecidos (erros de digitação, "Ltda" x "LTDA", acentos): semelhança por pares de letras
+function parecido(a, b) {
+  const x = norm(a).replace(/\b(ltda|me|eireli|s a|sa)\b/g, '').replace(/\s+/g, ' ').trim(), y = norm(b).replace(/\b(ltda|me|eireli|s a|sa)\b/g, '').replace(/\s+/g, ' ').trim();
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const pares = (s) => { const m = new Map(); for (let i = 0; i < s.length - 1; i++) { const p = s.slice(i, i + 2); m.set(p, (m.get(p) || 0) + 1); } return m; };
+  const px = pares(x), py = pares(y); let comum = 0;
+  for (const [p, n] of px) comum += Math.min(n, py.get(p) || 0);
+  return (2 * comum) / (x.length - 1 + y.length - 1) >= 0.85;
+}
 function pontuacao(d, c) {
-  const comp = (d.comprador?.documento && d.comprador.documento === c.comprador.documento) || (norm(d.comprador?.nome) && norm(d.comprador.nome) === norm(c.comprador.nome));
+  const comp = (d.comprador?.documento && d.comprador.documento === c.comprador.documento) || parecido(d.comprador?.nome, c.comprador.nome);
   const leilao = norm(d.leilao?.nome) === norm(c.leilao.nome) && (!d.leilao?.data || !c.leilao.data || d.leilao.data === c.leilao.data);
   const lote = norm(d.lote) && norm(d.lote) === norm(c.lote);
   const data = d.data_contrato && d.data_contrato === c.data_contrato;
-  return { total: [comp, leilao, lote, data].filter(Boolean).length, comp, leilao, lote, data };
+  const animal = !!(norm(d.animal) && norm(c.animal) && (norm(d.animal).includes(norm(c.animal)) || norm(c.animal).includes(norm(d.animal))));
+  return { total: [comp, leilao, lote, data].filter(Boolean).length, comp, leilao, lote, data, animal };
 }
 
 // campos conferidos, lado a lado
@@ -28,7 +39,13 @@ export function diferencas(d, c) {
   add('valor_total', 'Valor contratado', d.valor_total, c.valor_total, cv(d.valor_total) === cv(c.valor_total), (x) => C.brl(cv(x)));
   if (d.data_contrato) add('data_contrato', 'Data do contrato', d.data_contrato, c.data_contrato, d.data_contrato === c.data_contrato, C.fmtD);
   const e1 = (d.parcelas || []).find((p) => p.numero === 1), c1 = c.parcelas.find((p) => p.numero === 1);
-  if (e1) add('entrada', 'Entrada (parcela 1)', `${C.brl(cv(e1.valor_previsto))} · ${C.fmtD(e1.vencimento)}`, c1 ? `${C.brl(c1.prev)} · ${C.fmtD(c1.vencimento)}` : '—', c1 && cv(e1.valor_previsto) === c1.prev && e1.vencimento === c1.vencimento);
+  if (e1) {
+    // a entrada entra na comparação do contrato, mas nunca no repasse (parcela 1 fica fora da conferência)
+    const soValor = !!e1.vencEstimado;
+    const cadTxt = !c1 ? '—' : c1.prev === 0 && c1.liquidacao_externa ? `R$ 0,00 · "Liquidada no cadastro"${c1.data_liquidacao_externa ? ' em ' + C.fmtD(c1.data_liquidacao_externa) : ''}` : `${C.brl(c1.prev)} · ${C.fmtD(c1.vencimento)}`;
+    add('entrada', soValor ? 'Entrada (parcela 1) — só o valor; o arquivo não traz a data' : 'Entrada (parcela 1)', soValor ? C.brl(cv(e1.valor_previsto)) : `${C.brl(cv(e1.valor_previsto))} · ${C.fmtD(e1.vencimento)}`, cadTxt,
+      c1 && cv(e1.valor_previsto) === c1.prev && (soValor || e1.vencimento === c1.vencimento));
+  }
   const nArq = (d.parcelas || []).length, nCad = c.parcelas.filter((p) => !p.cancelada).length;
   if (nArq) add('qtd_parcelas', 'Quantidade de parcelas', nArq, nCad, nArq === nCad, String);
   // parcelas (2 em diante; a entrada já está acima)
@@ -75,8 +92,12 @@ export function compararLote(model, registros, escolhas = {}) {
     else {
       // sem número (ou número não encontrado): procura por comprador + leilão + lote + data
       const cands = model.contratos.filter((c) => !usados.has(c.id)).map((c) => ({ c, s: pontuacao(d, c) })).filter((x) => x.s.total >= 3).sort((a, b) => b.s.total - a.s.total);
+      cands.sort((a, b) => b.s.total - a.s.total || b.s.animal - a.s.animal);
       const exatos = cands.filter((x) => x.s.total === 4);
+      // um único cadastro com o mesmo comprador, leilão e lote (a data do contrato pode ser de renegociação)
+      const fortes = cands.filter((x) => x.s.comp && x.s.leilao && x.s.lote);
       if (!d.id && exatos.length === 1) cad = exatos[0].c;
+      else if (!d.id && !exatos.length && fortes.length === 1 && cands.length === 1) cad = fortes[0].c;
       else if (cands.length) {
         res.revisao.push({ tipo: 'incerta', chave: r.chave, arquivo: r.arquivo, dados: d, opcoes: cands.slice(0, 5),
           msg: d.id ? `O contrato ${d.id} não está cadastrado, mas há contrato(s) parecido(s) (mesmo comprador, leilão e lote). Pode ser duplicidade ou número diferente.` : `O arquivo não traz o número do contrato. Há ${cands.length} contrato(s) parecido(s) no cadastro.` });
@@ -111,8 +132,8 @@ export function montarCorrecao(item, campos, corrigirParcelas) {
   if (Object.keys(cp).length) p.comprador = cp;
   if (campos.includes('leilao')) p.leilao = { nome: d.leilao.nome, data: d.leilao.data || '' };
   const parcelas = [];
-  if (campos.includes('entrada')) { const e = (d.parcelas || []).find((x) => x.numero === 1); if (e) parcelas.push({ numero: 1, valor_previsto: e.valor_previsto, vencimento: e.vencimento }); }
-  if (corrigirParcelas) for (const x of item.parcelas) { const q = d.parcelas.find((y) => y.numero === x.numero); parcelas.push({ numero: q.numero, valor_previsto: q.valor_previsto, vencimento: q.vencimento }); }
+  if (campos.includes('entrada')) { const e = (d.parcelas || []).find((x) => x.numero === 1); if (e) parcelas.push({ numero: 1, valor_previsto: e.valor_previsto, vencimento: e.vencEstimado ? '' : e.vencimento }); }
+  if (corrigirParcelas) for (const x of item.parcelas) { const q = d.parcelas.find((y) => y.numero === x.numero); parcelas.push({ numero: q.numero, valor_previsto: q.valor_previsto, vencimento: q.vencEstimado && !x.nova ? '' : q.vencimento }); }
   if (parcelas.length) p.parcelas = parcelas;
   return p;
 }

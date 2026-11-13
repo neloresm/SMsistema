@@ -2,7 +2,7 @@ import { html, render, useState, useEffect, useMemo, useRef, useCallback } from 
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.50.0/+esm';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../config.js';
 import * as C from './calc.js';
-import { parseCobranca, lerContratos, pdfParaTexto, parseRelatorioMecob, inferirTipo, extrairAnimal } from './parser.js';
+import { parseCobranca, lerContratos, pdfParaTexto, arquivoParaTexto, ehPlanilha, parseRelatorioMecob, inferirTipo, extrairAnimal } from './parser.js';
 import { RELATORIOS, gerarRelatorio, exportarExcel, exportarPDF } from './relatorios.js';
 import { baixarPDF, conferenciaExcel, conferenciaPDF, baixarContestacao } from './exportar-repasse.js';
 import { compararLote, montarCorrecao } from './comparar.js';
@@ -50,9 +50,9 @@ async function fetchAll(table, ordem = 'id') {
   return out;
 }
 async function loadRaw() {
-  const t = ['leiloes', 'compradores', 'contratos', 'parcelas', 'pagamentos', 'revisao_itens', 'repasses', 'repasse_linhas', 'config', 'contabilidades', 'fechamentos'].map((x) => 'rcb_' + x);
-  const [leiloes, compradores, contratos, parcelas, pagamentos, revisao, repasses, repasse_linhas, config, contabilidades, fechamentos] = await Promise.all(t.map((x) => fetchAll(x, x === 'rcb_config' ? 'chave' : x === 'rcb_fechamentos' ? 'mes' : 'id')));
-  return { leiloes, compradores, contratos, parcelas, pagamentos, revisao, repasses, repasse_linhas, config, contabilidades, fechamentos };
+  const t = ['leiloes', 'compradores', 'contratos', 'parcelas', 'pagamentos', 'revisao_itens', 'repasses', 'repasse_linhas', 'config', 'contabilidades', 'fechamentos', 'despesas_leilao'].map((x) => 'rcb_' + x);
+  const [leiloes, compradores, contratos, parcelas, pagamentos, revisao, repasses, repasse_linhas, config, contabilidades, fechamentos, despesas_leilao] = await Promise.all(t.map((x) => fetchAll(x, x === 'rcb_config' ? 'chave' : x === 'rcb_fechamentos' ? 'mes' : 'id')));
+  return { leiloes, compradores, contratos, parcelas, pagamentos, revisao, repasses, repasse_linhas, config, contabilidades, fechamentos, despesas_leilao };
 }
 async function uploadAnexo(file, { contrato_id, parcela_id = null, pagamento_id = null, descricao = '' }) {
   const path = `contratos/${contrato_id}/${Date.now()}_${safeName(file.name)}`;
@@ -392,6 +392,10 @@ function ContratoPage({ ctx, id }) {
     </div>
     ${c.revisao.length ? html`<div class="card"><div class="card-head"><h2>Revisão</h2><a href="#/revisao">Central de revisão</a></div>
       <${ItensRevisao} ctx=${ctx} c=${c} /></div>` : ''}
+    ${(() => { const ds = (model.despesasLeilao || []).filter((d) => d.leilao_id === c.leilao_id); return ds.length ? html`<div class="card"><div class="card-head"><h2>Despesas do leilão</h2><span class="small muted">${c.leilao.nome} · fora do repasse da contabilidade</span></div>
+      <div class="tbl-wrap"><table><thead><tr><th>Despesa</th><th>Lote</th><th>Contrato</th><th class="num">Valor</th><th>Origem</th></tr></thead><tbody>
+        ${ds.map((d) => html`<tr class=${d.contrato_id === c.id ? 'hl' : ''}><td>${d.descricao}${d.percentual ? ` (${Number(d.percentual).toLocaleString('pt-BR')}%)` : ''}</td><td>${d.lote || 'geral'}</td><td>${d.contrato_id ? (d.contrato_id === c.id ? html`<b>este</b>` : html`<a href=${'#/contrato/' + d.contrato_id}>${d.contrato_id}</a>`) : '—'}</td><td class="num">${C.brl(C.cents(d.valor))}</td><td class="small muted">${d.arquivo_nome || '—'}</td></tr>`)}
+        <tr><td colspan="3"><b>Total do leilão</b></td><td class="num"><b>${C.brl(ds.reduce((s, d) => s + C.cents(d.valor), 0))}</b></td><td></td></tr></tbody></table></div></div>` : ''; })()}
     <div class="card"><div class="card-head"><h2>Linha do tempo das parcelas</h2><div class="legend-note">
       <span><i class="dot" style="background:var(--em-600)"></i>Paga</span><span><i class="dot" style="background:var(--gold)"></i>Liquidada fora (sem valor)</span><span><i class="dot" style="background:var(--amber)"></i>Parcial</span><span><i class="dot" style="background:var(--red)"></i>Atrasada</span><span><i class="dot" style="background:#cfd8d4"></i>A vencer</span></div></div>
       <div class="timeline">${[...c.parcelas].sort((a, b) => (a.vencimento < b.vencimento ? -1 : 1)).map((p) => html`<div class=${'tl ' + p.status} title=${`${p.numero}ª · venc. ${C.fmtD(p.vencimento)} · ${C.brl(p.prev)} · ${C.STATUS_LABEL[p.status]}`}></div>`)}</div>
@@ -919,8 +923,8 @@ function EnviarRelatorio({ ctx, mesAtual, substitui, faltando = [], onClose }) {
   const ler = async (f) => {
     setFile(f); setErro(null); setLido(null); setBusy(true);
     try {
-      const txt = await pdfParaTexto(f); const r = parseRelatorioMecob(txt);
-      if (!r.linhas.length) setErro('Não encontrei linhas de repasse neste arquivo. Ele é o relatório de repasse ("Prestação de Contas / Relatório de movimentações") da contabilidade?');
+      const txt = await arquivoParaTexto(f); const r = parseRelatorioMecob(txt);
+      if (!r.linhas.length) setErro(ehPlanilha(f) ? 'A planilha foi aberta, mas não encontrei nela as seções do relatório de repasse (CRÉDITOS e TAXAS, com contrato, parcela, vencimento, crédito, honorário e repasse) nem o resumo (Créditos, Taxas, Valor final). Me envie esta planilha para eu ajustar o leitor a este modelo.' : 'Não encontrei linhas de repasse neste arquivo. Ele é o relatório de repasse ("Prestação de Contas / Relatório de movimentações") da contabilidade?');
       setLido(r);
       // competência sugerida pelo período de crédito (o usuário confirma ou troca; a data impressa não define o mês)
       if (!substitui && r.periodo_inicio) { const mid = new Date((Date.parse(r.periodo_inicio + 'T12:00:00Z') + Date.parse((r.periodo_fim || r.periodo_inicio) + 'T12:00:00Z')) / 2); setMes(mid.toISOString().slice(0, 7)); setQuinzena(mid.getUTCDate() <= 15 ? 1 : 2); }
@@ -939,7 +943,7 @@ function EnviarRelatorio({ ctx, mesAtual, substitui, faltando = [], onClose }) {
     setBusy(true);
     const ok = await ctx.act(async () => {
       const path = `repasses/${mes}/${Date.now()}_${safeName(file.name)}`;
-      chk(await sb.storage.from('recebimentos').upload(path, file, { contentType: 'application/pdf', upsert: false }));
+      chk(await sb.storage.from('recebimentos').upload(path, file, { contentType: file.type || (/\.pdf$/i.test(file.name) ? 'application/pdf' : 'application/octet-stream'), upsert: false }));
       chk(await sb.rpc('rcb_salvar_repasse', { p: { mes, titulo: lido.titulo, periodo_inicio: lido.periodo_inicio, periodo_fim: lido.periodo_fim, creditos: lido.creditos, debitos: lido.debitos || 0,
         taxas: lido.taxas || 0, valor_final: lido.valor_final, arquivo_nome: file.name, storage_path: path, linhas: lido.linhas, quinzena, data_relatorio: lido.data_repasse || null, forcar, substitui: substitui?.id || null, contabilidade_id: contab || null } }));
     }, 'Relatório salvo. Conferência atualizada.');
@@ -947,9 +951,9 @@ function EnviarRelatorio({ ctx, mesAtual, substitui, faltando = [], onClose }) {
     if (ok) { onClose(); go('#/repasses/' + mes); }
   };
   return html`<${Modal} wide title=${substitui ? 'Substituir relatório da contabilidade' : 'Enviar relatório da contabilidade'} onClose=${onClose}>
-    <p class="small muted">Envie o PDF do relatório de repasse que a contabilidade manda (pode ser um por quinzena). O sistema lê a base bruta, a taxa e o valor transferido de cada parcela, além dos outros descontos.</p>
+    <p class="small muted">Envie o relatório de repasse que a contabilidade manda, em PDF ou Excel (pode ser um por quinzena). O sistema lê a base bruta, a taxa e o valor transferido de cada parcela, além dos outros descontos.</p>
     ${faltando.length && !substitui ? html`<div class="banner warn">Falta para ${nomeMes(mesAtual)}: <b>${faltando.map(periodoTxt).join(' e ')}</b>.</div>` : ''}
-    <input type="file" accept="application/pdf" onChange=${(e) => e.target.files[0] && ler(e.target.files[0])} />
+    <input type="file" accept=".pdf,.xlsx,.xls,.xlsm,.csv,application/pdf" onChange=${(e) => e.target.files[0] && ler(e.target.files[0])} />
     ${busy && !lido ? html`<p>Lendo o PDF…</p>` : ''}
     ${erro ? html`<div class="banner err" style="margin-top:12px">${erro}</div>` : ''}
     ${lido && lido.linhas.length ? html`<div class="card" style="margin-top:12px"><dl class="dl">
@@ -1023,28 +1027,52 @@ function CompararPage({ ctx }) {
     for (const f of files) {
       setLendo(`Lendo ${f.name}…`);
       try {
-        const t = /\.pdf$/i.test(f.name) || f.type === 'application/pdf' ? await pdfParaTexto(f) : await f.text();
+        const t = await arquivoParaTexto(f);
         const regs = lerContratos(t);
         if (!regs.length) out.push({ chave: `${f.name}#0`, arquivo: f.name, erro: /Resumo do repasse|Prestação de Contas|Valor final:/i.test(t) ? 'Este arquivo é um relatório de repasse da contabilidade, não um contrato. Envie-o em Repasses da Contabilidade.' : !t.trim() ? 'O PDF não tem texto (parece imagem escaneada). Envie o PDF gerado pelo sistema de cobrança.' : 'Formato não reconhecido. Aceitos: extrato de contratos da cobrança (texto ou PDF) e Nota de Leilão.' });
-        regs.forEach((d, i) => out.push(d.erro ? { chave: `${f.name}#${i}`, arquivo: f.name, erro: `${d.erro}. Trecho: ${d.trecho.slice(0, 120)}…` } : { chave: `${f.name}#${i}#${k++}`, arquivo: f.name, dados: d }));
+        regs.forEach((d, i) => out.push(d.erro ? { chave: `${f.name}#${i}`, arquivo: f.name, erro: d.trecho ? `${d.erro}. Trecho: ${d.trecho.slice(0, 120)}…` : d.erro } : { chave: `${f.name}#${i}#${k++}`, arquivo: f.name, dados: d }));
       } catch (e) { out.push({ chave: `${f.name}#err`, arquivo: f.name, erro: 'Não foi possível ler o arquivo: ' + e.message }); }
     }
     setLendo(''); setEscolhas({}); setSelImp({}); setSelCor({}); setSelPag({}); setLog([]); setRegistros(out);
   };
   const lerTexto = () => lerArquivos([new File([texto], 'texto colado.txt', { type: 'text/plain' })]);
+  // despesas do leilão lidas nos Mapas de Venda (comissão de venda, taxa de catálogo…): registro à parte, fora do repasse
+  const despesasArq = useMemo(() => {
+    if (!registros || !res) return [];
+    const cadDe = new Map([...res.batendo, ...res.divergencia].map((x) => [x.chave, x.cad.id]));
+    const porArq = new Map();
+    for (const r of registros) {
+      if (r.erro || r.dados.fonte !== 'mapa_venda' || r.dados.compra) continue;
+      const g = porArq.get(r.arquivo) || { arquivo: r.arquivo, leilao: r.dados.leilao, itens: [] };
+      for (const d of r.dados.despesas || []) g.itens.push({ ...d, _chave: r.chave, contrato_id: cadDe.get(r.chave) || null, comprador: r.dados.comprador.nome });
+      for (const d of r.dados.despesasArquivo || []) g.itens.push({ ...d });
+      porArq.set(r.arquivo, g);
+    }
+    return [...porArq.values()].filter((g) => g.itens.length);
+  }, [registros, res]);
+  const [selDesp, setSelDesp] = useState(true);
   const acoes = res ? [
     ...res.faltando.filter((x) => selImp[x.chave]).map((x) => ({ tipo: 'importar', x, txt: `Importar contrato ${x.dados.id || '(sem número)'} · ${x.dados.comprador?.nome} · lote ${x.dados.lote || '—'} · ${C.brl(C.cents(x.dados.valor_total))}` })),
     ...res.divergencia.filter((x) => selCor[x.chave]?.ativo && (selCor[x.chave].campos.length || selCor[x.chave].parcelas)).map((x) => ({ tipo: 'corrigir', x, txt: `Corrigir contrato ${x.cad.id}: ${[...selCor[x.chave].campos.map((id) => x.campos.find((c) => c.id === id)?.label), selCor[x.chave].parcelas ? `${x.parcelas.length} parcela(s)` : null].filter(Boolean).join(', ')}` })),
+    ...(selDesp ? despesasArq.map((g) => ({ tipo: 'despesas', g, txt: `Registrar ${g.itens.length} despesa(s) do leilão ${g.leilao.nome} (${C.brl(g.itens.reduce((s, d) => s + C.cents(d.valor), 0))}): comissão de venda e taxas, fora do repasse` })) : []),
     ...[...res.batendo, ...res.divergencia].filter((x) => x.pagamentosNovos.length && selPag[x.chave]).map((x) => ({ tipo: 'pagamentos', x, txt: `Registrar ${x.pagamentosNovos.length} pagamento(s) novo(s) no contrato ${x.cad.id} (${C.brl(x.pagamentosNovos.reduce((s, p) => s + p.valor, 0))})` })),
   ] : [];
   const gravar = async () => {
     setBusy(true); const out = [];
+    const novos = {};
     for (const a of acoes) {
+      if (a.tipo === 'despesas') {
+        const itensD = a.g.itens.map(({ _chave, comprador, ...d }) => ({ ...d, contrato_id: d.contrato_id || novos[_chave] || null }));
+        const lc = leilaoCanon(ctx.model, a.g.leilao); const rd = await sb.rpc('rcb_registrar_despesas', { p: { leilao: lc, leilao_id: lc.leilao_id || null, arquivo: a.g.arquivo, itens: itensD } });
+        out.push({ ok: !rd.error, txt: a.txt, msg: rd.error ? rd.error.message : `${rd.data} nova(s); as já registradas não se repetem` });
+        continue;
+      }
       const { _sel, _dup, _edit, avisos, status_origem_contrato, ...payload } = a.x.dados;
       let r;
-      if (a.tipo === 'importar') r = await sb.rpc('rcb_importar_contrato', { p: { ...payload, revisao: (avisos || []).map((m) => ({ severidade: 'atencao', mensagem: 'Importação: ' + m })), revisao_status_se_ok: 'pendente' } });
+      if (a.tipo === 'importar') r = await sb.rpc('rcb_importar_contrato', { p: { ...payload, leilao: leilaoCanon(model, payload.leilao), revisao: (avisos || []).map((m) => ({ severidade: 'atencao', mensagem: 'Importação: ' + m })), revisao_status_se_ok: 'pendente' } });
       else if (a.tipo === 'corrigir') r = await sb.rpc('rcb_corrigir_contrato', { p_id: a.x.cad.id, p: montarCorrecao(a.x, selCor[a.x.chave].campos, selCor[a.x.chave].parcelas) });
       else r = await sb.rpc('rcb_atualizar_contrato', { p: { ...payload, id: a.x.cad.id } });
+      if (a.tipo === 'importar' && !r.error) novos[a.x.chave] = r.data;
       out.push({ ok: !r.error, txt: a.txt, msg: r.error ? r.error.message : 'feito' });
     }
     setLog(out); setBusy(false); setConfirmar(false); await ctx.reload();
@@ -1057,13 +1085,19 @@ function CompararPage({ ctx }) {
     <div class="page-head"><div><h1>Comparar contratos</h1><p>Envie todos os arquivos de uma vez e compare com os contratos cadastrados. Nada é gravado sem a sua confirmação.</p></div>
       </div>
     <div class="card"><div class="filters" style="align-items:center">
-      <label class="btn btn-primary">Selecionar arquivos<input type="file" multiple accept=".pdf,.txt,application/pdf,text/plain" hidden onChange=${(e) => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) lerArquivos(fs); }} /></label>
-      <span class="small muted">Extrato de contratos da cobrança (PDF ou texto) ou Nota de Leilão em PDF. Selecione todos os arquivos juntos (Ctrl+A na janela de arquivos).</span>${lendo ? html`<b>${lendo}</b>` : ''}</div>
+      <label class="btn btn-primary">Selecionar arquivos<input type="file" multiple accept=".pdf,.txt,.xlsx,.xls,.xlsm,.csv,application/pdf,text/plain" hidden onChange=${(e) => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) lerArquivos(fs); }} /></label>
+      <span class="small muted">Extrato de contratos da cobrança, Nota de Leilão ou Mapa de Venda, em PDF ou Excel. Pode misturar modelos e selecionar todos juntos (Ctrl+A na janela de arquivos).</span>${lendo ? html`<b>${lendo}</b>` : ''}</div>
       <details style="margin-top:10px"><summary class="small">Ou colar o texto dos contratos</summary><textarea value=${texto} onInput=${(e) => setTexto(e.target.value)}></textarea><button class="btn-sm" disabled=${!texto.trim()} onClick=${lerTexto}>Comparar texto colado</button></details></div>
     ${res ? html`
       <div class="grid kpis" style="grid-template-columns:repeat(5,minmax(0,1fr));margin-top:16px">${GRUPOS_CMP.map(([k, t, cls]) => html`<button class=${'kpi kpi-click' + (aba === k ? ' accent' : '')} onClick=${() => setAba(k)}><div class="lbl">${t}</div><div class="val num">${n[k]}</div><div class="sub">${Badge(cls, 'ver lista')}</div></button>`)}</div>
       <div class="filters" style="margin:12px 0 0"><input type="search" placeholder="Filtrar por contrato, comprador, leilão, lote ou arquivo" value=${busca} onInput=${(e) => setBusca(e.target.value)} style="min-width:320px" />${q ? html`<button class="btn-sm" onClick=${() => setBusca("")}>Limpar filtro</button>` : ""}</div>
       <p class="small muted">${registros.length} registro(s) lidos de ${new Set(registros.map((r) => r.arquivo)).size} arquivo(s). Referência: número do contrato; sem número, comprador + leilão + lote + data.</p>
+      ${despesasArq.length ? html`<div class="card"><div class="card-head"><h2>Despesas do leilão nos Mapas de Venda</h2>
+          <label class="small" style="display:flex;gap:6px"><input type="checkbox" checked=${selDesp} onChange=${(e) => setSelDesp(e.target.checked)} />Registrar como despesas do leilão</label></div>
+        <p class="small muted" style="margin:0 0 8px">Comissão de venda e taxas da leiloeira ficam registradas por leilão, separadas da taxa de repasse da contabilidade (que vem dos relatórios de repasse). Reenviar o mesmo arquivo não duplica.</p>
+        <div class="tbl-wrap"><table><thead><tr><th>Leilão</th><th>Despesa</th><th>Lote · comprador</th><th class="num">Valor</th></tr></thead><tbody>
+          ${despesasArq.flatMap((g) => g.itens.map((d) => html`<tr><td class="small">${g.leilao.nome} · ${C.fmtD(g.leilao.data)}<div class="muted">${g.arquivo}</div></td><td>${d.descricao}${d.percentual ? ` (${d.percentual}%)` : ''}</td>
+            <td class="small">${d.lote ? `lote ${d.lote}${d.comprador ? ' · ' + d.comprador : ''}${d.contrato_id ? ' · contrato ' + d.contrato_id : ''}` : 'leilão (geral)'}</td><td class="num">${C.brl(C.cents(d.valor))}</td></tr>`))}</tbody></table></div></div>` : ''}
       <div class="card">
         ${aba === 'batendo' ? html`<h2>Batendo (${n.batendo})</h2><p class="small muted">Contrato encontrado e dados conferem.</p>
           <div class="tbl-wrap"><table><thead><tr><th>Contrato</th><th>Comprador</th><th>Leilão · lote</th><th>Arquivo</th><th>Pagamentos novos</th></tr></thead><tbody>
@@ -1093,7 +1127,7 @@ function CompararPage({ ctx }) {
           ${!res.revisao.length ? html`<div class="empty">Nada para revisar.</div>` : ''}
           ${fl(res.revisao, (r) => [r.arquivo, r.msg, r.id]).map((r) => html`<div class="rev-item">${Badge(r.tipo === 'ilegivel' ? 'critico' : r.tipo === 'compra' ? 'cancelada' : 'atencao', r.tipo === 'ilegivel' ? 'Arquivo não lido' : r.tipo === 'compra' ? 'Contrato de compra' : r.tipo === 'duplicidade' ? 'Possível duplicidade' : 'Correspondência incerta')}
             <div class="msg small"><b>${r.arquivo || ''}</b> ${r.msg}
-              ${r.tipo === 'incerta' ? html`<div class="stack" style="margin-top:6px">${r.opcoes.map((o) => html`<button class="btn-sm" onClick=${() => setEscolhas((e) => ({ ...e, [r.chave]: o.c.id }))}>É o contrato ${o.c.id} · ${o.c.comprador.nome} · lote ${o.c.lote || '—'} (${o.s.total}/4 dados iguais)</button>`)}
+              ${r.tipo === 'incerta' ? html`<div class="stack" style="margin-top:6px">${r.opcoes.map((o) => html`<button class="btn-sm" onClick=${() => setEscolhas((e) => ({ ...e, [r.chave]: o.c.id }))}>É o contrato ${o.c.id} · ${o.c.comprador.nome} · lote ${o.c.lote || '—'} · ${o.c.animal || '—'}${o.s.animal ? ' (animal confere)' : ''} (${o.s.total}/4 dados iguais)</button>`)}
                 <button class="btn-sm" onClick=${() => setEscolhas((e) => ({ ...e, [r.chave]: 'novo' }))}>É um contrato novo</button></div>` : ''}
               ${r.tipo === 'duplicidade' && r.registros ? html`<div class="stack" style="margin-top:6px">${r.registros.map((x) => html`<button class="btn-sm" onClick=${() => setEscolhas((e) => ({ ...e, ['dup:' + r.id]: x.chave }))}>Usar ${x.arquivo} (${C.brl(C.cents(x.dados.valor_total))}, ${x.dados.parcelas.length} parcelas)</button>`)}</div>` : ''}
             </div></div>`)}` : ''}
@@ -1212,17 +1246,37 @@ function ImportarPage({ ctx }) {
   const [aba, setAba] = useState('texto');
   const [texto, setTexto] = useState('');
   const [itens, setItens] = useState(null);
-  const [pdf, setPdf] = useState(null);
+  const [arquivos, setArquivos] = useState({}); // nome → File (anexado ao contrato importado)
+  const [naoLidos, setNaoLidos] = useState([]);
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState([]);
-  const ler = (t = texto) => {
-    const r = parseCobranca(t).map((x) => ({ ...x, _sel: !x.erro, _dup: !x.erro && ctx.model.cmap.has(x.id), _edit: false }));
-    setItens(r); setLog([]);
-  };
-  const lerPdf = async (file) => {
-    setPdf(file); setBusy(true);
-    try { const t = await pdfParaTexto(file); setTexto(t); ler(t); } catch (e) { ctx.notify('Não foi possível ler o PDF: ' + e.message, 'err'); }
-    setBusy(false);
+  // prepara os registros lidos: contrato já cadastrado (pelo número ou por leilão + data + lote + comprador), compra, novo
+  const preparar = (regs) => regs.map((x, k) => {
+    if (x.erro) return x;
+    if (x.leilao) x = { ...x, leilao: leilaoCanon(ctx.model, x.leilao) };
+    if (x.compra) return { ...x, _sel: false, _compra: true };
+    if (x.id && ctx.model.cmap.has(x.id)) return { ...x, _sel: true, _dup: true };
+    if (!x.id) {
+      const r = compararLote(ctx.model, [{ chave: 'k' + k, arquivo: x._arquivo || '', dados: x }]);
+      const achado = r.batendo[0] || r.divergencia[0];
+      if (achado) return { ...x, _sel: false, _existe: achado.cad.id, _difs: achado.campos.length + achado.parcelas.length };
+      const inc = r.revisao.find((y) => y.tipo === 'incerta');
+      if (inc) return { ...x, _sel: false, _opcoes: inc.opcoes.map((o) => o.c.id) };
+    }
+    return { ...x, _sel: true, _dup: false };
+  });
+  const ler = (t = texto) => { setItens(preparar(lerContratos(t).map((x) => ({ ...x, _arquivo: 'texto colado' })))); setLog([]); setNaoLidos([]); };
+  const lerArquivos = async (files) => {
+    setBusy(true); const regs = [], falhas = [], mapa = {};
+    for (const f of files) {
+      try {
+        const t = await arquivoParaTexto(f); mapa[f.name] = f;
+        const r = lerContratos(t);
+        if (!r.length) falhas.push({ nome: f.name, msg: /Resumo do repasse|Prestação de Contas|Valor final:/i.test(t) ? 'é um relatório de repasse da contabilidade; envie em Repasses da Contabilidade' : !t.trim() ? 'sem texto (PDF escaneado?)' : 'formato não reconhecido' });
+        r.forEach((x) => regs.push({ ...x, _arquivo: f.name }));
+      } catch (e) { falhas.push({ nome: f.name, msg: 'não foi possível ler: ' + e.message }); }
+    }
+    setArquivos(mapa); setNaoLidos(falhas); setItens(preparar(regs)); setLog([]); setBusy(false);
   };
   const upd = (i, path, v) => setItens((xs) => xs.map((x, j) => { if (j !== i) return x; const y = structuredClone(x); const ks = path.split('.'); let o = y; ks.slice(0, -1).forEach((k) => (o = o[k])); o[ks.at(-1)] = v; return y; }));
   const importar = async () => {
@@ -1232,7 +1286,7 @@ function ImportarPage({ ctx }) {
     if (!confirm(`${nNovos ? `Importar ${nNovos} contrato(s) novo(s) (entram como "pendente de revisão")` : ''}${nNovos && nAtual ? ' e ' : ''}${nAtual ? `atualizar ${nAtual} contrato(s) já cadastrado(s) (só pagamentos e situações novas)` : ''}?`)) return;
     setBusy(true); const out = [];
     for (const x of sel) {
-      const { _sel, _dup, _edit, avisos, status_origem_contrato, ...payload } = x;
+      const { _sel, _dup, _edit, _arquivo, _compra, _existe, _opcoes, _difs, _feito, avisos, status_origem_contrato, compra, despesas, despesasArquivo, totalDespesasArquivo, registro, tipo_doc, leiloeira, ...payload } = x;
       if (_dup) {
         const r = await sb.rpc('rcb_atualizar_contrato', { p: payload });
         out.push(r.error ? { id: x.id, ok: false, msg: r.error.message } : { id: x.id, ok: true, msg: `Atualizado: ${r.data.pagamentos_novos} pagamento(s) novo(s), ${r.data.parcelas_novas} parcela(s) nova(s)${r.data.valores_divergentes ? `, ${r.data.valores_divergentes} valor(es) diferente(s) para revisar` : ''}` });
@@ -1244,8 +1298,18 @@ function ImportarPage({ ctx }) {
       if (r.error) out.push({ id: x.id, ok: false, msg: r.error.message });
       else {
         out.push({ id: r.data, ok: true, msg: 'Importado' });
-        if (pdf) { try { await uploadAnexo(pdf, { contrato_id: r.data, descricao: 'Documento de origem da importação' }); } catch (e) { out.push({ id: r.data, ok: false, msg: 'Contrato importado, mas o PDF não foi anexado: ' + e.message }); } }
+        x._novoId = r.data;
+        const fArq = arquivos[x._arquivo];
+        if (fArq) { try { await uploadAnexo(fArq, { contrato_id: r.data, descricao: `Documento de origem da importação (${x.tipo_doc || 'extrato da cobrança'})` }); } catch (e) { out.push({ id: r.data, ok: false, msg: 'Contrato importado, mas o arquivo não foi anexado: ' + e.message }); } }
       }
+    }
+    // despesas do leilão (comissão de venda, taxa de catálogo…) dos Mapas de Venda importados; nunca entram no repasse
+    for (const nomeArq of [...new Set(sel.filter((x) => x._novoId && x.fonte === 'mapa_venda').map((x) => x._arquivo))]) {
+      const doArq = itens.filter((x) => x._arquivo === nomeArq && !x.erro);
+      const lista = [...sel.filter((x) => x._novoId && x._arquivo === nomeArq).flatMap((x) => (x.despesas || []).map((d) => ({ ...d, contrato_id: x._novoId }))), ...(doArq.find((x) => x.despesasArquivo)?.despesasArquivo || [])];
+      if (!lista.length) continue;
+      const r = await sb.rpc('rcb_registrar_despesas', { p: { leilao: doArq[0].leilao, leilao_id: doArq[0].leilao.leilao_id || null, arquivo: nomeArq, itens: lista } });
+      out.push(r.error ? { id: nomeArq, ok: false, msg: 'Despesas do leilão não registradas: ' + r.error.message } : { id: nomeArq, ok: true, msg: `${r.data} despesa(s) do leilão registrada(s)` });
     }
     setLog(out); setBusy(false); await ctx.reload();
     setItens((xs) => xs.map((x) => (out.find((o) => o.ok && o.id === x.id) ? { ...x, _sel: false, _dup: true, _feito: true } : x)));
@@ -1254,23 +1318,25 @@ function ImportarPage({ ctx }) {
     <${AbasAtualizar} atual="importar" />
     <div class="page-head"><div><h1>Importar novos contratos</h1><p>Contratos novos entram como “pendente de revisão” até serem conferidos</p></div>
       </div>
-    <div class="pill-tabs">${[['texto', 'Colar texto da cobrança'], ['pdf', 'Upload de PDF'], ['manual', 'Cadastro manual']].map(([k, t]) => html`<button class=${aba === k ? 'on' : ''} onClick=${() => setAba(k)}>${t}</button>`)}</div>
+    <div class="pill-tabs">${[['texto', 'Colar texto da cobrança'], ['pdf', 'Enviar arquivos (PDF ou Excel)'], ['manual', 'Cadastro manual']].map(([k, t]) => html`<button class=${aba === k ? 'on' : ''} onClick=${() => setAba(k)}>${t}</button>`)}</div>
     ${aba === 'manual' ? html`<${CadastroManual} ctx=${ctx} />` : html`
     <div class="card">
       ${aba === 'texto' ? html`<p class="small muted">Copie a tela do contrato no sistema de cobrança (do “Evento:” até a última parcela) e cole abaixo. Vários contratos podem ser colados de uma vez.</p>
         <textarea style="min-height:200px" value=${texto} onInput=${(e) => setTexto(e.target.value)} placeholder="Evento: ... Contrato 12345 - ... Parcela Valor Vencimento Pagamento ..."></textarea>
         <div class="stack" style="margin-top:10px"><button class="btn-primary" disabled=${!texto.trim()} onClick=${() => ler()}>Ler contratos</button></div>`
-      : html`<p class="small muted">Envie o PDF do contrato ou do extrato da cobrança. O texto é extraído no navegador; se o formato for reconhecido, os dados são pré-preenchidos para conferência. O PDF é anexado ao contrato importado.</p>
-        <input type="file" accept="application/pdf" onChange=${(e) => e.target.files[0] && lerPdf(e.target.files[0])} /> ${busy ? 'Lendo…' : ''}
-        ${pdf && itens && !itens.length ? html`<div class="banner warn" style="margin-top:10px">O formato do PDF não foi reconhecido automaticamente. Use o <b>cadastro manual</b> com base no texto extraído abaixo (nenhum dado é inventado).</div><textarea readonly value=${texto}></textarea>` : ''}`}
+      : html`<p class="small muted">Envie um ou vários arquivos de uma vez (PDF ou Excel): extrato de contratos da cobrança, Nota de Leilão ou Mapa de Venda. Os dados são pré-preenchidos para conferência e o arquivo é anexado ao contrato importado.</p>
+        <input type="file" multiple accept=".pdf,.xlsx,.xls,.xlsm,.csv,.txt,application/pdf" onChange=${(e) => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) lerArquivos(fs); }} /> ${busy ? 'Lendo…' : ''}
+        ${naoLidos.length ? html`<div class="banner warn" style="margin-top:10px"><div>${naoLidos.map((n) => html`<div><b>${n.nome}</b>: ${n.msg}</div>`)}</div></div>` : ''}
+`}
     </div>
     ${itens && itens.length ? html`<div class="card"><div class="card-head"><h2>Conferência antes de importar (${itens.length})</h2>
       <button class="btn-primary" disabled=${busy || !itens.some((x) => x._sel)} onClick=${importar}>${busy ? 'Importando…' : `Importar ${itens.filter((x) => x._sel).length} selecionado(s)`}</button></div>
       ${itens.map((x, i) => x.erro ? html`<div class="banner err">${x.erro}: <span class="small">${x.trecho}</span></div>` : html`<div class="rev-item" style="flex-wrap:wrap">
-        <input type="checkbox" checked=${x._sel} disabled=${x._feito} onChange=${(e) => upd(i, '_sel', e.target.checked)} />
-        <div class="msg"><b>Contrato ${x.id}</b> · ${x.comprador.nome || '(sem nome)'} · ${x.leilao.nome} (${C.fmtD(x.leilao.data)}) · lote ${x.lote || '—'}<br />
+        <input type="checkbox" checked=${x._sel} disabled=${x._feito || x._compra} onChange=${(e) => upd(i, '_sel', e.target.checked)} />
+        <div class="msg"><b>${x.id ? 'Contrato ' + x.id : 'Sem número de contrato'}</b> · ${x.comprador.nome || '(sem nome)'} · ${x.leilao.nome} (${C.fmtD(x.leilao.data)}) · lote ${x.lote || '—'}${x.tipo_doc ? html` ${Badge('cancelada', x.tipo_doc)}` : ''}<br />
+          <span class="small muted">${x._arquivo}${x.registro ? ' · registro ' + x.registro : ''}${x.despesas?.length ? ' · comissão de venda ' + C.brl(C.cents(x.despesas[0].valor)) + ' (' + x.despesas[0].percentual + '%) — despesa do leilão' : ''}</span><br />
           <span class="small">${x.descricao}</span><br /><span class="small">Valor ${C.brl(C.cents(x.valor_total))} · ${x.parcelas.length} parcelas · soma ${C.brl(x.parcelas.reduce((s, p) => s + C.cents(p.valor_previsto), 0))} · ${x.parcelas.filter((p) => p.pagamento).length} pagamentos com valor · ${x.parcelas.filter((p) => p.liquidacao_externa).length} liquidadas sem valor</span>
-          ${x._feito ? html`<div>${Badge('ok', 'Processado')}</div>` : x._dup ? html`<div>${Badge('pendente', 'Já cadastrado: será atualizado (pagamentos novos), sem duplicar')}</div>` : html`<div>${Badge('info', 'Contrato novo')}</div>`}
+          ${x._feito ? html`<div>${Badge('ok', 'Processado')}</div>` : x._compra ? html`<div>${Badge('cancelada', 'Contrato de compra: não entra nos recebimentos')}</div>` : x._existe ? html`<div>${Badge('pendente', `Já cadastrado como contrato ${x._existe}`)} <span class="small">${x._difs ? `${x._difs} diferença(s): confira e corrija em <a href="#/comparar">Comparar contratos</a>` : 'dados conferem'}. Não será importado de novo.</span></div>` : x._opcoes ? html`<div>${Badge('atencao', 'Possível duplicidade')} <span class="small">parecido com ${x._opcoes.map((id) => html`<a href=${'#/contrato/' + id}>${id}</a> `)}— decida em <a href="#/comparar">Comparar contratos</a> ou marque para importar como novo.</span></div>` : x._dup ? html`<div>${Badge('pendente', 'Já cadastrado: será atualizado (pagamentos novos), sem duplicar')}</div>` : html`<div>${Badge('info', 'Contrato novo')}</div>`}
           ${x.avisos.length ? html`<ul class="items small" style="margin-top:4px;color:var(--amber)">${x.avisos.map((a) => html`<li>${a}</li>`)}</ul>` : ''}
           ${x._edit ? html`<div class="form-grid" style="margin-top:8px">
             <label class="f">Leilão<input value=${x.leilao.nome} onInput=${(e) => upd(i, 'leilao.nome', e.target.value)} /></label><label class="f">Data do leilão<input type="date" value=${x.leilao.data} onInput=${(e) => upd(i, 'leilao.data', e.target.value)} /></label>
@@ -1281,7 +1347,7 @@ function ImportarPage({ ctx }) {
             <label class="f">Tipo<select value=${x.tipo_venda} onChange=${(e) => upd(i, 'tipo_venda', e.target.value)}>${Object.entries(C.TIPO_LABEL).map(([k, t]) => html`<option value=${k}>${t}</option>`)}</select></label>
             <label class="f">Animal<input value=${x.animal} onInput=${(e) => upd(i, 'animal', e.target.value)} /></label></div>` : ''}
         </div><button class="btn-sm" onClick=${() => upd(i, '_edit', !x._edit)}>${x._edit ? 'Fechar edição' : 'Corrigir dados'}</button></div>`)}
-      ${log.length ? html`<div class="sep"></div>${log.map((l) => html`<div class=${'small ' + (l.ok ? '' : 'muted')} style=${l.ok ? 'color:var(--em-700)' : 'color:var(--red)'}>Contrato ${l.id}: ${l.msg}</div>`)}` : ''}
+      ${log.length ? html`<div class="sep"></div>${log.map((l) => html`<div class=${'small ' + (l.ok ? '' : 'muted')} style=${l.ok ? 'color:var(--em-700)' : 'color:var(--red)'}>${/^\d+$/.test(String(l.id)) ? 'Contrato ' + l.id : l.id || 'Contrato'}: ${l.msg}</div>`)}` : ''}
     </div>` : itens ? html`<div class="card empty">Nenhum contrato reconhecido no texto.</div>` : ''}`}`;
 }
 
@@ -1422,4 +1488,12 @@ function CompetenciaModal({ ctx, r, onClose }) {
     ${fechado(mes) ? html`<div class="banner err">${nomeMes(mes)} está fechado. Reabra o mês antes.</div>` : ''}
     <div class="modal-actions"><button onClick=${onClose}>Cancelar</button><button class="btn-primary" disabled=${!/^\d{4}-\d{2}$/.test(mes) || fechado(mes) || (mes === r.mes && q === r.quinzena)}
       onClick=${async () => { if (await ctx.act(() => sb.rpc('rcb_definir_competencia', { p_id: r.id, p_mes: mes, p_quinzena: q }).then(chk), `Relatório passou para ${C.competenciaTxt(mes, q)}`)) { onClose(); go('#/repasses/' + mes); } }}>Salvar</button></div><//>`;
+}
+
+// usa o leilão já cadastrado quando o nome só difere em maiúsculas/acentos (evita leilão duplicado)
+function leilaoCanon(model, l) {
+  if (!l) return l;
+  const n = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const e = (model.leiloes || []).find((x) => n(x.nome) === n(l.nome) && (!l.data || !x.data || x.data === l.data));
+  return e ? { ...l, nome: e.nome, data: e.data || l.data, leilao_id: e.id } : l;
 }

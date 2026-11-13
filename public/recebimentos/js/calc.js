@@ -149,7 +149,7 @@ export function build(raw, hoje = hojeISO()) {
   const contabAtual = contabilidades.find((x) => String(x.id) === String(cfg.contabilidade_atual)) || contabilidades[0] || null;
   for (const r of repasses) r.contabilidade = contabilidades.find((x) => x.id === r.contabilidade_id) || null;
 
-  return { hoje, contratos, cmap, parcelas, pagamentos, repasses, repassesRemovidos, contabilidades, contabAtual, fechamentos: new Map((raw.fechamentos || []).map((f) => [f.mes, f])), leiloes: [...leiloes.values()], compradores: [...compradores.values()] };
+  return { hoje, contratos, cmap, parcelas, pagamentos, repasses, repassesRemovidos, contabilidades, contabAtual, fechamentos: new Map((raw.fechamentos || []).map((f) => [f.mes, f])), despesasLeilao: raw.despesas_leilao || [], leiloes: [...leiloes.values()], compradores: [...compradores.values()] };
 }
 
 // entrada (parcela 1) | cadastro ("Liquidada no cadastro") | direto (pago ao vendedor) | mecob (repassado pela MECOB)
