@@ -396,7 +396,12 @@ export function conferencia(model, mes) {
   const mediaEstimativa = tm.media ?? (() => { const all = taxaMedia(todas.filter((x) => x.l.tipo === 'credito' && !x.duplicadaDe).map((x) => ({ base: cents(x.l.valor) + cents(x.l.honorario), taxa: cents(x.l.honorario) }))); return all.media; })();
   const temRelatorioPosterior = model.repasses.some((r) => !r.substituido && r.mes > mes);
   // períodos de crédito cobertos pelos relatórios ativos do mês (pagamentos que aparecem em algum relatório já foram tratados acima)
-  const periodos = repsMes.filter((r) => r.periodo_inicio && r.periodo_fim).map((r) => [r.periodo_inicio, r.periodo_fim]);
+  // O crédito na contabilidade sai até 3 dias depois do pagamento: um pagamento só "deveria" estar num relatório
+  // se foi feito entre o início do período e 3 dias antes do fim. Períodos encostados (quinzenas) são unidos.
+  const diasAntes = (iso, n) => { const x = new Date(iso + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() - n); return x.toISOString().slice(0, 10); };
+  const periodos = repsMes.filter((r) => r.periodo_inicio && r.periodo_fim).map((r) => [r.periodo_inicio, r.periodo_fim]).sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .reduce((acc, p) => { const u = acc[acc.length - 1]; if (u && p[0] <= diasAntes(u[1], -4)) { if (p[1] > u[1]) u[1] = p[1]; } else acc.push([...p]); return acc; }, [])
+    .map(([a, b]) => [a, diasAntes(b, 3)]);
   const maxFim = periodos.reduce((s, p) => (p[1] > s ? p[1] : s), '');
   const coberto = (d) => !periodos.length || periodos.some(([a, b]) => d >= a && d <= b);
   for (const p of model.parcelas) {
@@ -407,7 +412,7 @@ export function conferencia(model, mes) {
       const fimDoMes = +g.data_pagamento.slice(8, 10) >= ultimoDia(mes) - 1;
       const d = g.data_pagamento;
       const lacuna = temRelatorioProprio && !coberto(d) && d < maxFim; // entre/antes dos períodos enviados: falta um relatório do mês
-      const depois = temRelatorioProprio && !coberto(d) && d > maxFim && !temRelatorioPosterior;
+      const depois = temRelatorioProprio && !coberto(d) && d > maxFim && !temRelatorioPosterior; // fim do período: pode vir no próximo relatório
       const aguardando = !temRelatorioProprio || lacuna || depois || (fimDoMes && !temRelatorioPosterior);
       itens.push({ id: 'P' + g.id, contrato: p.contrato, ctr: String(p.contrato_id), lote: p.contrato.lote || '—', comprador: p.contrato.comprador.nome, parcelasTxt: String(p.numero),
         vencimento: p.vencimento, pagoEm: g.data_pagamento, data_credito: null, parcelas: [p], bruto, taxa: taxaEst, estimado: true, lacuna, cat: aguardando ? 'aguardando' : 'faltou',
@@ -442,6 +447,7 @@ export function conferencia(model, mes) {
   // recebimento do arquivo x resultado da conferência
   const faltamDados = itens.some((i) => ['sem_parcela', 'sem_pagamento'].includes(i.cat) && !i.resolvido) || res.taxaCobertura.n < res.taxaCobertura.total || itens.some((i) => i.lacuna);
   res.lacunas = itens.filter((i) => i.lacuna).length;
+  res.taxaEstimativa = mediaEstimativa;
   res.conciliacao = !repsMes.length ? 'aguardando' : faltamDados ? 'faltam_dados' : res.dif === 0 && !res.pendencias ? 'bateu' : 'divergencia';
   res.status = repsMes.length ? 'enviado' : 'aguardando';
   res.linhasDeOutros = conta.some((i) => i.linha) && !repsMes.length;
