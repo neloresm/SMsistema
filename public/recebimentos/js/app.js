@@ -4,7 +4,7 @@ import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../config.js';
 import * as C from './calc.js';
 import { parseCobranca, lerContratos, pdfParaTexto, parseRelatorioMecob, inferirTipo, extrairAnimal } from './parser.js';
 import { RELATORIOS, gerarRelatorio, exportarExcel, exportarPDF } from './relatorios.js';
-import { baixarPDF, conferenciaExcel, conferenciaPDF } from './exportar-repasse.js';
+import { baixarPDF, conferenciaExcel, conferenciaPDF, baixarContestacao } from './exportar-repasse.js';
 import { compararLote, montarCorrecao } from './comparar.js';
 
 // Modo de teste local: só em localhost e com ?mock na URL (o arquivo de teste não é publicado).
@@ -50,9 +50,9 @@ async function fetchAll(table, ordem = 'id') {
   return out;
 }
 async function loadRaw() {
-  const t = ['leiloes', 'compradores', 'contratos', 'parcelas', 'pagamentos', 'revisao_itens', 'repasses', 'repasse_linhas', 'config', 'contabilidades'].map((x) => 'rcb_' + x);
-  const [leiloes, compradores, contratos, parcelas, pagamentos, revisao, repasses, repasse_linhas, config, contabilidades] = await Promise.all(t.map((x) => fetchAll(x, x === 'rcb_config' ? 'chave' : 'id')));
-  return { leiloes, compradores, contratos, parcelas, pagamentos, revisao, repasses, repasse_linhas, config, contabilidades };
+  const t = ['leiloes', 'compradores', 'contratos', 'parcelas', 'pagamentos', 'revisao_itens', 'repasses', 'repasse_linhas', 'config', 'contabilidades', 'fechamentos'].map((x) => 'rcb_' + x);
+  const [leiloes, compradores, contratos, parcelas, pagamentos, revisao, repasses, repasse_linhas, config, contabilidades, fechamentos] = await Promise.all(t.map((x) => fetchAll(x, x === 'rcb_config' ? 'chave' : x === 'rcb_fechamentos' ? 'mes' : 'id')));
+  return { leiloes, compradores, contratos, parcelas, pagamentos, revisao, repasses, repasse_linhas, config, contabilidades, fechamentos };
 }
 async function uploadAnexo(file, { contrato_id, parcela_id = null, pagamento_id = null, descricao = '' }) {
   const path = `contratos/${contrato_id}/${Date.now()}_${safeName(file.name)}`;
@@ -111,7 +111,7 @@ function App() {
   const navGrupos = [
     ['', [['', 'dashboard', 'Painel']]],
     ['Vendas', [['repasses', 'recebimentos', 'Repasses da Contabilidade', pendRep], ['contratos', 'parcelas', 'Contratos de venda'], ['inadimplencia', 'pendencias', 'Inadimplência']]],
-    ['Operação', [['revisao', 'usuarios', 'Central de revisão', pend], ...(isAdmin ? [['importar', 'importar', 'Importar novos contratos'], ['comparar', 'parcelas', 'Comparar contratos']] : []), ['relatorios', 'relatorios', 'Relatórios']]],
+    ['Operação', [['revisao', 'usuarios', 'Central de revisão', pend], ...(isAdmin ? [['atualizar', 'importar', 'Atualizar contratos']] : []), ['relatorios', 'relatorios', 'Exportações']]],
   ];
   const r0 = route[0] || '';
   let page;
@@ -122,7 +122,7 @@ function App() {
   else if (r0 === 'inadimplencia') page = html`<${InadPage} ctx=${ctx} />`;
   else if (r0 === 'revisao') page = html`<${RevisaoPage} ctx=${ctx} />`;
   else if (r0 === 'importar' && isAdmin) page = html`<${ImportarPage} ctx=${ctx} />`;
-  else if (r0 === 'comparar' && isAdmin) page = html`<${CompararPage} ctx=${ctx} />`;
+  else if ((r0 === 'comparar' || r0 === 'atualizar') && isAdmin) page = html`<${CompararPage} ctx=${ctx} />`;
   else if (r0 === 'relatorios') page = html`<${RelatoriosPage} ctx=${ctx} />`;
   else page = html`<${Dashboard} ctx=${ctx} />`;
 
@@ -133,7 +133,7 @@ function App() {
         <div class="brand"><img class="side-logo" src="/brand/sm-logo-260.png" alt="SM Agropecuária" /><div class="brand-name">SM Agropecuária</div><div class="brand-sub">Recebimentos</div></div>
         <nav class="nav">
           ${navGrupos.map(([g, itens]) => html`<div class="nav-grp">${g ? html`<div class="nav-grp-t">${g}</div>` : ''}
-            ${itens.map(([k, ic, t, b]) => html`<a href=${'#/' + k} class=${'nav-item' + (r0 === k || (k === 'contratos' && r0 === 'contrato') ? ' on' : '')}><span class="nav-ic"><${Ico} n=${ic} /></span>${t}${b ? html`<span class="nav-count">${b}</span>` : ''}</a>`)}</div>`)}
+            ${itens.map(([k, ic, t, b]) => html`<a href=${'#/' + k} class=${'nav-item' + (r0 === k || (k === 'contratos' && r0 === 'contrato') || (k === 'atualizar' && (r0 === 'importar' || r0 === 'comparar')) ? ' on' : '')}><span class="nav-ic"><${Ico} n=${ic} /></span>${t}${b ? html`<span class="nav-count">${b}</span>` : ''}</a>`)}</div>`)}
           <div class="nav-grp"><div class="nav-grp-t">SM sistema</div><a class="nav-item" href="/"><span class="nav-ic"><${Ico} n="voltar" /></span>Voltar ao sistema</a></div>
         </nav>
         <div class="side-foot">
@@ -230,6 +230,7 @@ function Dashboard({ ctx }) {
       <div class="stack"><${Seg} value=${f.modo} onChange=${(v) => setF((o) => ({ ...o, modo: v }))} opts=${[['contratual', 'Por vencimento'], ['caixa', 'Pago pelos compradores']]} />
       <${Seg} value=${f.gran} onChange=${(v) => setF((o) => ({ ...o, gran: v }))} opts=${[['mes', 'Mensal'], ['trimestre', 'Trimestral'], ['ano', 'Anual']]} /></div></div>
     ${pend > 0 && f.base === 'todos' ? html`<div class="banner warn"><span><b>${pend} contrato(s)</b> com pendências na central de revisão estão incluídos nestes números. <a href="#/revisao">Revisar</a> ou altere a base para “Somente revisados”.</span></div>` : ''}
+    <${CardRepasse} ctx=${ctx} />
     <div class="card" style="margin-bottom:16px"><${FiltroBase} model=${model} f=${f} setF=${setF} /></div>
     <div class="grid kpis">
       <${Kpi} cls="accent" lbl="Total vendido" val=${C.brl(k.vendido)} sub=${`${k.contratos} contratos`} />
@@ -598,97 +599,229 @@ const CONCILIACAO = { bateu: ['ok', 'Conciliado'], divergencia: ['critico', 'Com
 const chipStatus = (c) => (c.status === 'enviado' ? html`${Badge('ok', 'Relatório enviado')} ${Badge(CONCILIACAO[c.conciliacao][0], CONCILIACAO[c.conciliacao][1])}` : Badge('cancelada', 'Aguardando relatório'));
 const pct = (x) => (x == null ? '—' : C.pctTxt(x));
 
+// menu suspenso simples (fecha ao clicar fora ou numa opção)
+function Menu({ label, title, children, alinhar = 'right' }) {
+  const [open, setOpen] = useState(false); const ref = useRef(null);
+  useEffect(() => { if (!open) return; const f = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); }; document.addEventListener('mousedown', f); return () => document.removeEventListener('mousedown', f); }, [open]);
+  return html`<div class="menu" ref=${ref}><button class="menu-btn" title=${title || ''} aria-haspopup="true" aria-expanded=${open} onClick=${() => setOpen(!open)}>${label}</button>
+    ${open ? html`<div class=${'menu-list ' + alinhar} role="menu" onClick=${() => setOpen(false)}>${children}</div>` : ''}</div>`;
+}
+
+const periodoTxt = (p) => `${C.fmtD(p.de)} a ${C.fmtD(p.ate)}`;
+const DECISAO = { aceito: ['ok', 'Aceito'], contestado: ['critico', 'Contestado'] };
+
 function RepassesPage({ ctx, mes }) {
   const { model, isAdmin } = ctx;
   const meses = C.mesesConferencia(model);
   const comRel = meses.filter((x) => model.repasses.some((r) => r.mes === x && !r.substituido));
   const m = mes && /^\d{4}-\d{2}$/.test(mes) ? mes : (comRel[0] || meses[0]);
   const conf = useMemo(() => C.conferencia(model, m), [model, m]);
-  const resumoMeses = useMemo(() => meses.slice(0, 12).map((x) => ({ mes: x, c: C.conferencia(model, x) })), [model]);
-  const [cat, setCat] = useState(null);
+  const [abertos, setAbertos] = useState(null);
   const [sel, setSel] = useState(null);
   const [modal, setModal] = useState(null);
-  useEffect(() => { setCat(null); setSel(null); }, [m]);
-  const lista = cat === null ? null : cat === '' ? conf.itens.filter((i) => !CATM[i.cat].neutro) : cat === 'taxa_fora' ? conf.foraPadrao : conf.itens.filter((i) => i.cat === cat);
-  const [exCls, exTxt] = EXTRATO[conf.extrato];
-  const abrirLista = (c) => { setCat(c); setTimeout(() => document.getElementById('lista-rep')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50); };
+  useEffect(() => { setAbertos(null); setSel(null); }, [m]);
+  const fech = model.fechamentos?.get(m); const fechado = fech?.status === 'fechado';
+  const idx = meses.indexOf(m); const anterior = meses[idx + 1], proximo = meses[idx - 1];
   const exportar = (tipo) => { try { tipo === 'pdf' ? baixarPDF(conf, model) : conferenciaExcel(conf, model); } catch (e) { ctx.notify('Não foi possível gerar o arquivo: ' + e.message, 'err'); } };
   const cob = conf.taxaCobertura;
+  const precisaEnviar = isAdmin && !fechado && (!conf.reps.length || conf.periodosFaltando.length);
+  const decidir = (i, decisao, nota = '') => ctx.act(() => sb.rpc('rcb_decidir_ajuste', { p_id: i.linha.id, p_decisao: decisao, p_nota: nota }).then(chk), decisao === 'aceito' ? 'Ajuste aceito' : decisao === 'contestado' ? 'Ajuste contestado' : 'Decisão desfeita');
+
+  // grupos que explicam o mês: diferença real, ajustes da contabilidade, conferidos e fora da conta
+  const grupos = [
+    ...conf.problemas.map((c) => ({ ...c, tipo: 'dif', valor: c.dif })),
+    ...conf.cats.filter((c) => c.ajuste).map((c) => ({ ...c, tipo: 'ajuste', valor: -c.itens.reduce((s, i) => s + i.ajuste, 0) })),
+    ...conf.cats.filter((c) => c.neutro && !c.fora).map((c) => ({ ...c, tipo: 'ok', valor: c.id === 'encargo' ? conf.encargos : null })),
+    ...conf.cats.filter((c) => c.fora).map((c) => ({ ...c, tipo: 'fora', valor: c.id === 'aguardando' ? conf.aguardando : null })),
+  ];
+  const abertosEf = abertos ?? new Set(grupos.filter((g) => g.tipo === 'dif' || (g.tipo === 'ajuste' && conf.ajustesPendentes)).map((g) => g.id));
+  const alternar = (id) => setAbertos(() => { const n = new Set(abertosEf); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  // fechamento
+  const passos = [
+    { ok: conf.reps.length > 0 && !conf.periodosFaltando.length, t: 'Relatórios do mês completos', d: !conf.reps.length ? 'Nenhum relatório enviado' : conf.periodosFaltando.length ? `Falta: créditos de ${conf.periodosFaltando.map(periodoTxt).join('; ')}` : `${conf.reps.length} arquivo(s): ${conf.reps.map((r) => `${C.fmtD(r.periodo_inicio)} a ${C.fmtD(r.periodo_fim)}`).join('; ')}` },
+    { ok: conf.reps.length > 0 && cob.n === cob.total, t: 'Taxa identificada em todas as parcelas', d: cob.total ? `${cob.n} de ${cob.total} parcelas · taxa média ${pct(conf.taxaMedia)}` : '—' },
+    { ok: conf.reps.length > 0 && conf.dif === 0 && !conf.pendencias, t: 'Sem diferença real', d: conf.dif || conf.pendencias ? `${C.brl(conf.dif)}${conf.pendencias ? ` · ${conf.pendencias} item(ns) para conferir` : ''}` : 'Transferido = esperado após ajustes' },
+    { ok: !conf.ajustesPendentes, t: 'Ajustes aceitos ou contestados', d: conf.ajustesItens.length ? `${conf.ajustesItens.length - conf.ajustesPendentes} de ${conf.ajustesItens.length} decididos${conf.ajustesContestados.length ? ` · ${conf.ajustesContestados.length} contestado(s)` : ''}` : 'Nenhum ajuste no mês' },
+    { ok: conf.extrato === 'confirmado', t: 'Valor conferido no extrato bancário', d: conf.extrato === 'confirmado' ? `Confirmado: ${C.brl(conf.confirmadoConta)}` : conf.extrato === 'divergente' ? 'Divergente no extrato' : 'Ainda não conferido', acao: conf.reps.find((r) => r.extrato_status !== 'confirmado') },
+  ];
+  const podeFechar = isAdmin && !fechado && passos.every((p) => p.ok);
+
+  // frase com a resposta
+  const verd = !conf.reps.length
+    ? ['warn', html`<b>Aguardando relatório da contabilidade de ${nomeMes(m)}.</b> ${conf.painelMes ? html`Os compradores pagaram ${C.brl(conf.painelMes)} no mês (valor bruto, antes das taxas).` : ''}`]
+    : conf.periodosFaltando.length
+      ? ['warn', html`<b>Falta o relatório com créditos de ${conf.periodosFaltando.map(periodoTxt).join(' e de ')}.</b> A conta abaixo usa só ${conf.reps.length === 1 ? 'o arquivo enviado' : 'os arquivos enviados'}; os pagamentos desse período (${C.brl(conf.aguardando)}) aguardam o relatório.`]
+      : conf.dif === 0 && !conf.pendencias
+        ? ['ok', html`<b>O repasse bateu.</b> A contabilidade transferiu ${C.brl(conf.informado)}${conf.ajustes ? html`, já descontados ${C.brl(conf.ajustes)} de ajustes que ela informou no relatório${conf.ajustesPendentes ? ' (aceite ou conteste abaixo)' : ''}` : ''}.`]
+        : conf.dif < 0
+          ? ['err', html`<b>Faltaram ${C.brl(-conf.dif)} no repasse.</b> Veja abaixo as parcelas que explicam a diferença.`]
+          : conf.dif > 0 ? ['warn', html`<b>A contabilidade transferiu ${C.brl(conf.dif)} a mais que o esperado.</b> Veja abaixo as parcelas.`]
+            : ['warn', html`<b>${conf.pendencias} item(ns) para conferir</b> antes de fechar o mês.`];
+
+  const linhaItem = (i, g) => html`<tr class="click" onClick=${() => setSel(i)}>
+    <td><b>${i.ctr}</b> · ${i.lote}${i.ref ? html`<div class="small muted">${i.ref}</div>` : ''}</td><td>${i.parcelasTxt}</td>
+    <td class="num small">${C.fmtD(i.pagoEm || i.data_credito)}</td>
+    ${g.tipo === 'ajuste'
+      ? html`<td class="num neg">−${C.brl(i.ajuste)}</td><td class="small" style="max-width:420px">${i.desc || i.why}</td>
+        <td onClick=${(e) => e.stopPropagation()} style="white-space:nowrap">${i.decisao ? html`${Badge(DECISAO[i.decisao][0], DECISAO[i.decisao][1])}${isAdmin && !fechado ? html` <button class="btn-sm btn-ghost" onClick=${() => decidir(i, null)}>desfazer</button>` : ''}`
+          : isAdmin && !fechado ? html`<button class="btn-sm" onClick=${() => decidir(i, 'aceito')}>Aceitar</button> <button class="btn-sm" onClick=${() => setModal({ t: 'contestar', i })}>Contestar</button>` : Badge('cancelada', 'Sem decisão')}</td>`
+      : html`<td class="num small">${i.bruto ? C.brl(i.bruto) : i.espPrevisto ? C.brl(i.espPrevisto) : '—'}</td>
+        <td class="num small">${i.taxaPct != null ? `${C.brl(i.taxa)} (${pct(i.taxaPct)})` : i.estimado && i.taxa ? '~' + C.brl(i.taxa) : '—'}</td>
+        <td class="num">${i.linha ? C.brl(i.inf) : '—'}</td>
+        <td class="num" style=${i.dif < 0 ? 'color:var(--red);font-weight:600' : ''}>${i.dif ? (i.dif > 0 ? '+' : '') + C.brl(i.dif) : '—'}</td>
+        <td class="small" style="max-width:380px">${i.resolvido ? html`${Badge('ok', 'Resolvido')} ` : ''}${i.why}</td>`}</tr>`;
 
   return html`
     <div class="page-head"><div><h1>Repasses da Contabilidade</h1><p>Confira se a contabilidade transferiu tudo o que deveria em cada mês</p></div>
-      <div class="stack no-print">${isAdmin ? html`<button class="btn-primary" onClick=${() => setModal({ t: 'enviar' })}>Enviar relatório da contabilidade</button>` : ''}
-        <button onClick=${() => exportar('xlsx')} disabled=${!conf.itens.length}>Excel</button><button onClick=${() => exportar('pdf')} disabled=${!conf.itens.length}>PDF</button></div></div>
-    <div class="banner info" style="justify-content:space-between;align-items:center"><span>Contabilidade atual: <b>${model.contabAtual?.nome || 'não cadastrada'}</b>. Cada relatório guarda a empresa que o emitiu.</span>
-      ${isAdmin ? html`<button class="btn-sm" onClick=${() => setModal({ t: 'contab' })}>Cadastrar / trocar contabilidade</button>` : ''}</div>
-    <div class="mes-chips">${resumoMeses.map(({ mes: x, c }) => html`<a href=${'#/repasses/' + x} class=${'mes-chip' + (x === m ? ' on' : '') + (c.status === 'enviado' ? ' enviado' : '')}><b>${nomeMes(x)}</b><span class="stack" style="gap:4px">${chipStatus(c)}</span></a>`)}</div>
-    ${conf.reps.length ? html`<div class=${'banner ' + (conf.conciliacao === 'bateu' ? 'info' : 'warn')}><span><b>${nomeMes(m)}: relatório enviado</b> (${conf.reps.length} arquivo(s)). Conferência: <b>${CONCILIACAO[conf.conciliacao][1]}</b>${conf.conciliacao === 'divergencia' ? ` de ${C.brl(conf.dif)}` : ''}${conf.conciliacao === 'faltam_dados' ? (conf.lacunas ? ` — ${conf.lacunas} pagamento(s) do mês ficam fora do período dos relatórios enviados (falta um relatório?)` : ' — há linhas sem contrato/pagamento registrado ou sem taxa identificada') : ''}.</span></div>` : ''}
-    ${!conf.reps.length ? html`<div class="banner warn"><span><b>Aguardando relatório da contabilidade de ${nomeMes(m)}.</b>${conf.linhasDeOutros ? ' Já há parcelas deste mês que vieram em relatórios de outros meses.' : ''} ${conf.aguardando ? html`Pagamentos de compradores aguardando o relatório: <b>${C.brl(conf.aguardando)}</b> ${conf.taxaEstimativa != null ? '(estimado, já sem a taxa média)' : '(valor pago pelos compradores; a taxa entra quando o relatório chegar)'}.` : ''} </span>${isAdmin ? html`<button class="btn-primary btn-sm" style="margin-left:auto" onClick=${() => setModal({ t: 'enviar' })}>Enviar relatório de ${nomeMes(m)}</button>` : ''}</div>` : ''}
-    <div class="grid kpis">
-      <${Kpi} cls="accent" lbl="Repasse líquido esperado" val=${C.brl(conf.esperado)} sub=${`Pago pelos compradores no mês − taxas cobradas${conf.taxasEstimadas ? ' (parte estimada)' : ''}`} />
-      <div class="kpi gold"><div class="lbl">Transferido pela contabilidade</div><div class="val num">${C.brl(conf.informado)}</div><div class="sub">${Badge(exCls, exTxt)}${conf.confirmadoConta ? html` <span class="small">Confirmado na conta: <b>${C.brl(conf.confirmadoConta)}</b></span>` : ''}</div></div>
-      <${Kpi} cls="gray" lbl="Taxas descontadas" val=${C.brl(conf.taxas + conf.outrosDescontos)} sub=${`Taxa sobre parcelas ${C.brl(conf.taxas)} + outros descontos ${C.brl(conf.outrosDescontos)}`} />
-      <button class=${'kpi kpi-click ' + (conf.dif < 0 ? 'red' : conf.dif > 0 ? 'gold' : 'accent')} onClick=${() => abrirLista('')}>
-        <div class="lbl">Diferença · clique para ver</div><div class="val num" style=${conf.dif ? 'color:var(--red)' : ''}>${C.brl(conf.dif)}</div>
-        <div class="sub">${!conf.reps.length ? 'Sem relatório: nada a comparar ainda' : conf.dif < 0 ? 'A SM recebeu menos que o esperado' : conf.dif > 0 ? 'Transferido acima do esperado' : 'Bate com o esperado'}${conf.pendencias ? ` · ${conf.pendencias} pendência(s)` : ''}</div></button>
+      <div class="stack no-print">
+        ${precisaEnviar ? html`<button class="btn-primary" onClick=${() => setModal({ t: 'enviar' })}>Enviar relatório de ${nomeMes(m)}</button>` : ''}
+        <${Menu} label="Exportar ▾"><button disabled=${!conf.itens.length} onClick=${() => exportar('pdf')}>PDF da conferência</button><button disabled=${!conf.itens.length} onClick=${() => exportar('xlsx')}>Planilha Excel</button>
+          ${conf.ajustesContestados.length ? html`<button onClick=${() => { try { baixarContestacao(conf, model); } catch (e) { ctx.notify(e.message, 'err'); } }}>Contestação (PDF)</button>` : ''}<//>
+        ${isAdmin ? html`<${Menu} label="⋯" title="Mais ações">
+          ${!precisaEnviar ? html`<button disabled=${fechado} onClick=${() => setModal({ t: 'enviar' })}>Enviar outro relatório</button>` : ''}
+          <button onClick=${() => setModal({ t: 'contab' })}>Empresa de contabilidade (${model.contabAtual?.nome || '—'})</button><//>` : ''}
+      </div></div>
+
+    <div class="mes-bar">
+      <button class="btn-sm" disabled=${!anterior} onClick=${() => go('#/repasses/' + anterior)} aria-label="Mês anterior">‹</button>
+      <select class="mes-sel" value=${m} onChange=${(e) => go('#/repasses/' + e.target.value)} aria-label="Mês">
+        ${meses.map((x) => html`<option value=${x}>${nomeMes(x)}${model.repasses.some((r) => r.mes === x && !r.substituido) ? ' · relatório enviado' : ''}</option>`)}</select>
+      <button class="btn-sm" disabled=${!proximo} onClick=${() => go('#/repasses/' + proximo)} aria-label="Próximo mês">›</button>
+      <span class="stack" style="gap:6px">${conf.status === 'enviado' ? Badge('ok', `Relatório enviado · ${conf.reps.length} arquivo(s)`) : Badge('cancelada', 'Aguardando relatório')}
+        ${conf.status === 'enviado' ? Badge(CONCILIACAO[conf.conciliacao][0], CONCILIACAO[conf.conciliacao][1]) : ''}
+        ${fechado ? Badge('info', 'Mês fechado') : ''}</span>
     </div>
-    ${conf.itens.some((i) => i.linha) ? html`<div class="grid cols-2" style="margin-top:16px">
-      <div class="card"><h2 style="margin-bottom:10px">Taxa média da contabilidade</h2>
-        <div style="display:flex;gap:18px;align-items:baseline;flex-wrap:wrap"><div class="num" style="font-size:30px;font-weight:700">${pct(conf.taxaMedia)}</div>
-          <div class="small muted">Soma das taxas (${C.brl(conf.taxas)}) ÷ soma das bases brutas (${C.brl(conf.itens.filter((i) => i.linha?.tipo === 'credito' && !CATM[i.cat].fora && i.base).reduce((s, i) => s + i.base, 0))}) × 100.<br />Cada parcela pesa pelo seu valor.</div></div>
-        <p class="small" style="margin:10px 0 0">${cob.n === cob.total ? html`Cobre <b>todas as ${cob.total} linhas</b> de parcelas deste mês.` : html`<b style="color:var(--amber)">Cobre ${cob.n} de ${cob.total} linhas</b>: as demais não têm taxa e base identificadas.`}
-          ${cob.semBase ? html` <span style="color:var(--amber)">${cob.semBase} desconto(s) avulso(s) não informam base e ficaram fora da média.</span>` : ''}</p>
-        ${conf.predominante != null ? html`<p class="small" style="margin:6px 0 0">Taxa mais frequente: <b>${conf.predominante.toLocaleString('pt-BR')}%</b>.
-          ${conf.foraPadrao.length ? html`<a href="#" onClick=${(e) => { e.preventDefault(); abrirLista('taxa_fora'); }}>${conf.foraPadrao.length} parcela(s) com taxa diferente</a>` : 'Todas as parcelas com a mesma taxa.'}</p>` : ''}
-        ${conf.porRelatorio.length ? html`<div class="sep"></div><table><thead><tr><th>Relatório</th><th class="num">Linhas</th><th class="num">Taxa média</th></tr></thead><tbody>
-          ${conf.porRelatorio.map((x) => html`<tr><td class="small">${x.r.titulo || x.r.arquivo_nome}<div class="muted">${C.fmtD(x.r.periodo_inicio)} a ${C.fmtD(x.r.periodo_fim)}</div></td><td class="num">${x.n}/${x.nLinhas}</td><td class="num"><b>${pct(x.media)}</b></td></tr>`)}
-          <tr><td><b>Consolidado do mês</b> <span class="small muted">(sem repetições, pelo mês do pagamento)</span></td><td class="num">${cob.n}</td><td class="num"><b>${pct(conf.taxaMedia)}</b></td></tr></tbody></table>` : ''}</div>
-      <div class="card"><h2 style="margin-bottom:10px">${conf.problemas.length ? `Por que ${conf.dif < 0 ? 'faltaram' : 'a diferença de'} ${C.brl(Math.abs(conf.dif))}` : 'Nenhuma divergência'}</h2>
-        <div class="cats">${conf.problemas.map((c) => html`<button class=${'cat-row ' + c.sev} onClick=${() => abrirLista(c.id)}>${Badge(SEV[c.sev], c.qtd)}<span><b>${c.t}</b><br /><span class="small muted">${c.d}</span></span><span class="num">${C.brl(c.dif)}</span></button>`)}</div>
-        ${conf.problemas.length ? html`<p class="small muted" style="margin:10px 0 0">A soma dos motivos (${C.brl(conf.problemas.reduce((s, c) => s + c.dif, 0))}) fecha com a diferença.</p>` : html`<p class="small muted">Todos os créditos e descontos conferem.</p>`}
-        <div class="sep"></div><h3>Conferido sem diferença ou fora da conta</h3>
-        <div class="cats" style="margin-top:8px">${conf.cats.filter((c) => c.neutro).map((c) => html`<button class=${'cat-row ' + c.sev} onClick=${() => abrirLista(c.id)}>${Badge(SEV[c.sev], c.qtd)}<span><b>${c.t}</b><br /><span class="small muted">${c.d}</span></span><span class="num">${c.id === 'encargo' ? '+' + C.brl(conf.encargos) : c.id === 'aguardando' ? C.brl(conf.aguardando) : c.fora ? 'fora' : 'OK'}</span></button>`)}</div></div>
+
+    <div class=${'banner ' + verd[0]} style="margin-top:12px"><span>${verd[1]}</span></div>
+    ${fechado ? html`<div class="banner info"><span>Mês fechado em ${C.fmtD(fech.fechado_em?.slice(0, 10))}${fech.fechado_por_email ? ' por ' + fech.fechado_por_email : ''}${fech.nota ? ` · ${fech.nota}` : ''}. Para enviar, trocar ou excluir relatórios, reabra o mês.</span></div>` : ''}
+
+    <div class="mes-grid">
+      <div class="col-main">
+        <div class="card conta">
+          <div class="conta-row">
+            <div class="conta-box"><div class="lbl">Repasse líquido esperado</div><div class="val num">${C.brl(conf.esperado)}</div>
+              <div class="sub">pago ${C.brl(conf.bruto)} − taxas ${C.brl(conf.taxas + conf.taxasEstimadas)}${conf.taxaMedia != null ? ` (${pct(conf.taxaMedia)})` : ''}</div></div>
+            <div class="conta-op">−</div>
+            <div class="conta-box"><div class="lbl">Ajustes informados</div><div class="val num">${C.brl(conf.ajustes)}</div><div class="sub">${conf.ajustesItens.length ? `${conf.ajustesItens.length} lançamento(s) no relatório` : 'nenhum'}</div></div>
+            <div class="conta-op">vs</div>
+            <div class="conta-box"><div class="lbl">Transferido pela contabilidade</div><div class="val num">${C.brl(conf.informado)}</div><div class="sub">${Badge(EXTRATO[conf.extrato][0], EXTRATO[conf.extrato][1])}</div></div>
+            <div class="conta-op">=</div>
+            <div class=${'conta-box ' + (conf.dif ? 'neg' : conf.reps.length ? 'zero' : '')}><div class="lbl">Diferença</div><div class="val num">${C.brl(conf.dif)}</div>
+              <div class="sub">${!conf.reps.length ? 'sem relatório' : conf.dif === 0 ? 'nada sem explicação' : conf.dif < 0 ? 'a SM recebeu menos' : 'transferido a mais'}</div></div>
+          </div>
+        </div>
+
+        ${grupos.length ? html`<div class="card"><div class="card-head"><h2>O que explica ${nomeMes(m)}</h2>
+            <span class="small muted">clique num grupo para ver contratos, lotes e parcelas</span></div>
+          <div class="grupos">${grupos.map((g) => { const aberto = abertosEf.has(g.id); return html`<div class=${'grupo ' + g.tipo + (aberto ? ' aberto' : '')}>
+            <button class="grupo-head" aria-expanded=${aberto} onClick=${() => alternar(g.id)}>
+              <span class="seta">${aberto ? '▾' : '▸'}</span>
+              <span class="grupo-t"><b>${g.t}</b> · ${g.qtd} ${g.qtd === 1 ? 'item' : 'itens'}<span class="small muted"> — ${g.d}</span></span>
+              <span class="num grupo-v">${g.tipo === 'dif' ? C.brl(g.valor) : g.tipo === 'ajuste' ? '−' + C.brl(-g.valor) : g.valor != null ? (g.id === 'encargo' ? '+' : '') + C.brl(g.valor) : g.tipo === 'fora' ? 'fora da conta' : 'OK'}</span>
+            </button>
+            ${aberto ? html`<div class="tbl-wrap"><table><thead><tr><th>Contrato · lote</th><th>Parcela</th><th class="num">Pago em</th>
+                ${g.tipo === 'ajuste' ? html`<th class="num">Ajuste</th><th>Descrição</th><th>Decisão</th>` : html`<th class="num">Pago</th><th class="num">Taxa</th><th class="num">Transferido</th><th class="num">Diferença</th><th>Por quê</th>`}</tr></thead>
+              <tbody>${g.itens.map((i) => linhaItem(i, g))}</tbody></table></div>` : ''}
+          </div>`; })}</div>
+          ${conf.reps.length ? html`<p class="small muted" style="margin:10px 0 0">Esperado ${C.brl(conf.esperado)} − ajustes ${C.brl(conf.ajustes)} = ${C.brl(conf.esperadoAposAjustes)}; transferido ${C.brl(conf.informado)}; diferença ${C.brl(conf.dif)}.${conf.linhasRepetidas ? ` ${conf.linhasRepetidas} linha(s) repetidas entre arquivos foram contadas uma vez só.` : ''}</p>` : ''}
+        </div>` : ''}
+      </div>
+
+      <div class="col-side">
+        <div class="card fechamento"><h2 style="margin-bottom:8px">Fechamento de ${nomeMes(m)}</h2>
+          ${passos.map((p) => html`<div class="passo"><span class=${'marca ' + (p.ok ? 'ok' : 'falta')}>${p.ok ? '✓' : '!'}</span><div><b>${p.t}</b> ${p.ok ? Badge('ok', 'feito') : Badge('atencao', 'falta')}<div class="small muted">${p.d}</div>
+            ${!p.ok && p.acao && isAdmin && !fechado ? html`<button class="btn-sm" style="margin-top:4px" onClick=${() => setModal({ t: 'extrato', r: p.acao })}>Conferir no extrato</button>` : ''}</div></div>`)}
+          ${fechado ? html`<div class="sep"></div><p class="small">Fechado em <b>${C.fmtD(fech.fechado_em?.slice(0, 10))}</b>${fech.fechado_por_email ? ' por ' + fech.fechado_por_email : ''}.</p>${isAdmin ? html`<button onClick=${() => setModal({ t: 'reabrir' })}>Reabrir mês</button>` : ''}`
+            : html`<button class="btn-primary" style="margin-top:12px;width:100%" disabled=${!podeFechar} onClick=${() => setModal({ t: 'fechar' })}>Fechar o mês</button>
+              ${!podeFechar && isAdmin ? html`<p class="small muted" style="margin:6px 0 0">Libera quando todos os passos estiverem feitos.</p>` : ''}`}
+          ${fech?.status === 'aberto' && fech.reaberto_motivo ? html`<p class="small muted" style="margin-top:8px">Reaberto: ${fech.reaberto_motivo}</p>` : ''}
+        </div>
+      </div>
     </div>
-    <div class="card"><h2 style="margin-bottom:10px">De onde sai cada número</h2><dl class="bridge">
-      <dt>Pago pelos compradores no mês (parcelas da 2ª em diante)</dt><dd>${C.brl(conf.bruto)}</dd>
-      <dt>− taxas cobradas sobre essas parcelas${conf.taxasEstimadas ? ` (inclui ${C.brl(conf.taxasEstimadas)} estimados pela taxa média)` : ''}</dt><dd class="neg">−${C.brl(conf.taxas + conf.taxasEstimadas)}</dd>
-      <dt class="tot">= Repasse líquido esperado</dt><dd class="tot">${C.brl(conf.esperado)}</dd>
-      <dt>Relatórios enviados para ${nomeMes(m)} (valor final)</dt><dd>${C.brl(conf.totalRelatoriosMes)}</dd>
-      ${conf.paraOutrosMeses ? html`<dt>− linhas desses relatórios pagas em outros meses</dt><dd class="neg">−${C.brl(conf.paraOutrosMeses)}</dd>` : ''}
-      ${conf.deOutrosRelatorios ? html`<dt>+ parcelas pagas neste mês que vieram em relatórios de outros meses</dt><dd>${C.brl(conf.deOutrosRelatorios)}</dd>` : ''}
-      <dt class="tot">= Transferido referente a ${nomeMes(m)}</dt><dd class="tot">${C.brl(conf.informado)}</dd>
-      ${conf.outrosDescontos ? html`<dt style="padding-left:14px">dos quais outros descontos e ajustes da contabilidade</dt><dd class="neg">−${C.brl(conf.outrosDescontos)}</dd>` : ''}
-      <dt class="tot">Diferença</dt><dd class=${'tot' + (conf.dif ? ' neg' : '')}>${C.brl(conf.dif)}</dd></dl>
-      ${conf.aguardando ? html`<p class="small muted" style="margin:10px 0 0">Fora da conta: ${C.brl(conf.aguardando)} esperados de pagamentos que ainda aguardam relatório.</p>` : ''}</div>
-    ${conf.mudancaRegra && conf.mudancaRegra.grupos.length ? html`<div class="card"><h2 style="margin-bottom:6px">Por que mudou em relação ao cálculo anterior</h2>
-      <p class="small muted" style="margin:0 0 10px">O cálculo anterior usava taxa fixa de 4% e o mês da data de crédito. Pelo cálculo anterior: esperado ${C.brl(conf.mudancaRegra.antigo.esperado)}, transferido ${C.brl(conf.mudancaRegra.antigo.informado)}, diferença <b>${C.brl(conf.mudancaRegra.antigo.dif)}</b>. Agora: diferença <b>${C.brl(conf.dif)}</b>.</p>
+
+    ${conf.reps.length ? html`<div class="card"><div class="card-head"><h2>Relatórios enviados para ${nomeMes(m)}</h2></div>
+      <div class="tbl-wrap"><table><thead><tr><th style="min-width:280px">Arquivo</th><th>Créditos de</th><th class="num">Taxa média</th><th class="num">Créditos</th><th class="num">Descontos</th><th class="num">Valor final</th><th>Conta da SM</th><th></th></tr></thead><tbody>
+      ${conf.reps.map((r) => { const t = conf.porRelatorio.find((x) => x.r.id === r.id); return html`<tr><td><b>${r.arquivo_nome || r.titulo || '—'}</b><div class="small muted">${r.contabilidade?.nome || '—'} · ${r.linhas.length} linhas</div></td>
+        <td class="small" style="white-space:nowrap"><b>${C.fmtD(r.periodo_inicio)}</b><br />a <b>${C.fmtD(r.periodo_fim)}</b></td>
+        <td class="num">${pct(t?.media)}</td><td class="num">${C.brl(C.cents(r.creditos))}</td><td class="num">${C.brl(C.cents(r.taxas) + C.cents(r.debitos))}</td><td class="num"><b>${C.brl(C.cents(r.valor_final))}</b></td>
+        <td>${Badge(EXTRATO[r.extrato_status][0], EXTRATO[r.extrato_status][1])}${r.extrato_data ? html`<div class="small muted">${C.fmtD(r.extrato_data)} · ${C.brl(C.cents(r.extrato_valor))}</div>` : ''}</td>
+        <td class="right"><${Menu} label="⋯" title="Ações do relatório">
+          ${r.storage_path && r.storage_path !== 'teste' ? html`<button onClick=${() => abrirAnexo(r.storage_path).catch((e) => ctx.notify(e.message, 'err'))}>Abrir PDF</button>` : ''}
+          ${isAdmin ? html`<button onClick=${() => setModal({ t: 'extrato', r })}>Conferir no extrato</button>
+            <button disabled=${fechado} onClick=${() => setModal({ t: 'enviar', substitui: r })}>Substituir arquivo</button>
+            <button class="danger" disabled=${fechado} onClick=${() => setModal({ t: 'remover', r })}>Excluir relatório</button>` : ''}<//></td></tr>`; })}
+      </tbody></table></div></div>` : ''}
+
+    <details class="card dobra"><summary><b>De onde sai cada número</b> <span class="small muted">· ponte do arquivo até a diferença e comparação com o Painel</span></summary>
+      <dl class="bridge" style="margin-top:12px">
+        <dt>Pago pelos compradores no mês e já coberto por relatório (2ª parcela em diante)</dt><dd>${C.brl(conf.bruto)}</dd>
+        <dt>− taxas cobradas sobre essas parcelas${conf.taxasEstimadas ? ` (inclui ${C.brl(conf.taxasEstimadas)} estimados)` : ''}</dt><dd class="neg">−${C.brl(conf.taxas + conf.taxasEstimadas)}</dd>
+        <dt class="tot">= Repasse líquido esperado</dt><dd class="tot">${C.brl(conf.esperado)}</dd>
+        <dt>− ajustes informados pela contabilidade no relatório</dt><dd class="neg">−${C.brl(conf.ajustes)}</dd>
+        <dt class="tot">= Esperado após ajustes</dt><dd class="tot">${C.brl(conf.esperadoAposAjustes)}</dd>
+        <dt>Valor final dos arquivos de ${nomeMes(m)}${conf.linhasRepetidas ? ' (linhas repetidas contadas uma vez)' : ''}</dt><dd>${C.brl(conf.totalRelatoriosMes)}</dd>
+        ${conf.paraOutrosMeses ? html`<dt>− linhas desses arquivos pagas em outros meses</dt><dd class="neg">−${C.brl(conf.paraOutrosMeses)}</dd>` : ''}
+        ${conf.deOutrosRelatorios ? html`<dt>+ parcelas pagas neste mês que vieram em arquivos de outros meses</dt><dd>${C.brl(conf.deOutrosRelatorios)}</dd>` : ''}
+        <dt class="tot">= Transferido referente a ${nomeMes(m)}</dt><dd class="tot">${C.brl(conf.informado)}</dd>
+        <dt class="tot">Diferença</dt><dd class=${'tot' + (conf.dif ? ' neg' : '')}>${C.brl(conf.dif)}</dd></dl>
+      <div class="sep"></div>
+      <p class="small"><b>Painel × conferência.</b> No Painel ("Pago pelos compradores"), ${nomeMes(m)} soma <b>${C.brl(conf.painelMes)}</b>: é o valor bruto pago pelos compradores, antes das taxas.
+        ${conf.painelMes - conf.bruto ? html` Desse total, ${C.brl(conf.painelMes - conf.bruto)} ainda não estão em nenhum relatório (aguardam o envio).` : ' Todo esse valor já está nos relatórios conferidos.'}
+        Entrada, pagamentos diretos ao vendedor e baixas "Liquidada no cadastro" ficam fora dos dois.</p>
+    </details>
+
+    ${conf.reps.length ? html`<details class="card dobra"><summary><b>Taxa média da contabilidade: ${pct(conf.taxaMedia)}</b> <span class="small muted">· soma das taxas ÷ soma das bases das parcelas</span></summary>
+      <p class="small" style="margin-top:10px">Taxas ${C.brl(conf.taxas)} ÷ bases ${C.brl(conf.itens.filter((i) => i.linha?.tipo === 'credito' && !CATM[i.cat].fora && i.base).reduce((s, i) => s + i.base, 0))}. ${cob.n === cob.total ? `Cobre todas as ${cob.total} parcelas.` : `Cobre ${cob.n} de ${cob.total} parcelas.`}
+        ${conf.predominante != null ? html` Taxa mais frequente: <b>${conf.predominante.toLocaleString('pt-BR')}%</b>${conf.foraPadrao.length ? html`; com taxa diferente: ${conf.foraPadrao.map((i) => `${i.ctr}/${i.parcelasTxt} (${pct(i.taxaPct)})`).join(', ')}` : ''}.` : ''}</p>
+      <table><thead><tr><th>Arquivo</th><th class="num">Parcelas</th><th class="num">Taxa média</th></tr></thead><tbody>
+        ${conf.porRelatorio.map((x) => html`<tr><td class="small">${x.r.arquivo_nome || x.r.titulo}<div class="muted">${C.fmtD(x.r.periodo_inicio)} a ${C.fmtD(x.r.periodo_fim)}</div></td><td class="num">${x.n}/${x.nLinhas}</td><td class="num"><b>${pct(x.media)}</b></td></tr>`)}
+        <tr><td><b>Mês</b> <span class="small muted">(pelo mês do pagamento, sem repetições)</span></td><td class="num">${cob.n}</td><td class="num"><b>${pct(conf.taxaMedia)}</b></td></tr></tbody></table>
+    </details>` : ''}
+
+    ${conf.mudancaRegra && conf.mudancaRegra.grupos.length ? html`<details class="card dobra"><summary><b>Histórico: comparação com o cálculo anterior</b> <span class="small muted">· antes ${C.brl(conf.mudancaRegra.antigo.dif)}, agora ${C.brl(conf.dif)}</span></summary>
+      <p class="small muted" style="margin:10px 0">O cálculo anterior usava taxa fixa de 4%, o mês da data de crédito e contava os ajustes do relatório como diferença.</p>
       <dl class="bridge"><dt>Diferença pelo cálculo anterior</dt><dd>${C.brl(conf.mudancaRegra.antigo.dif)}</dd>
         ${conf.mudancaRegra.grupos.map((g) => html`<dt><b>${g.t}</b><div class="small muted">${g.d}</div><ul class="items small" style="margin-top:4px">${g.itens.map((x) => html`<li>${x}</li>`)}</ul></dt><dd class=${g.efeito < 0 ? 'neg' : ''}>${g.efeito > 0 ? '+' : ''}${C.brl(g.efeito)}</dd>`)}
         ${conf.mudancaRegra.resto ? html`<dt>Outras diferenças entre os cálculos</dt><dd>${C.brl(conf.mudancaRegra.resto)}</dd>` : ''}
-        <dt class="tot">= Diferença atual</dt><dd class=${'tot' + (conf.dif ? ' neg' : '')}>${C.brl(conf.dif)}</dd></dl></div>` : ''}` : ''}
-    ${lista ? html`<div class="card" id="lista-rep"><div class="card-head"><h2>${cat === 'taxa_fora' ? 'Parcelas com taxa diferente da mais frequente' : cat ? CATM[cat].t : 'Itens que formam a diferença'}</h2>
-        <div class="stack"><select value=${cat} onChange=${(e) => setCat(e.target.value)}><option value="">Itens que formam a diferença</option>${conf.foraPadrao.length ? html`<option value="taxa_fora">Taxa diferente da mais frequente (${conf.foraPadrao.length})</option>` : ''}${conf.cats.map((c) => html`<option value=${c.id}>${c.t} (${c.qtd})</option>`)}</select><button class="btn-sm" onClick=${() => setCat(null)}>Fechar</button></div></div>
-      <div class="tbl-wrap"><table><thead><tr><th>Contrato · lote</th><th>Parcela</th><th>Comprador</th><th>Pago em</th><th class="num">Taxa</th><th class="num">Esperado</th><th class="num">Transferido</th><th class="num">Diferença</th><th>Por quê</th></tr></thead>
-        <tbody>${lista.map((i) => html`<tr class="click" onClick=${() => setSel(i)}><td><b>${i.ctr}</b> · ${i.lote}${i.ref ? html`<div class="small muted">${i.ref}</div>` : ''}</td><td>${i.parcelasTxt}</td><td>${i.comprador}</td>
-          <td class="num small">${C.fmtD(i.pagoEm || i.data_credito)}</td><td class="num small">${i.taxaPct != null ? pct(i.taxaPct) : i.desconto ? C.brl(i.desconto) : i.estimado && i.taxa ? '~' + C.brl(i.taxa) : '—'}</td>
-          <td class="num">${C.brl(i.esp)}</td><td class="num">${C.brl(i.inf)}</td>
-          <td class="num" style=${i.dif < 0 ? 'color:var(--red);font-weight:600' : ''}>${i.dif ? (i.dif > 0 ? '+' : '') + C.brl(i.dif) : '—'}</td>
-          <td class="small" style="max-width:380px">${i.resolvido ? html`${Badge('ok', 'Resolvido')} ` : ''}${i.why}</td></tr>`)}</tbody>
-        <tfoot><tr><td colspan="5">Soma</td><td class="num">${C.brl(lista.reduce((s, i) => s + i.esp, 0))}</td><td class="num">${C.brl(lista.reduce((s, i) => s + i.inf, 0))}</td><td class="num">${C.brl(lista.reduce((s, i) => s + i.dif, 0))}</td><td></td></tr></tfoot></table></div></div>` : ''}
-    ${conf.reps.length ? html`<div class="card"><div class="card-head"><h2>Relatórios enviados para ${nomeMes(m)}</h2></div>
-      <div class="tbl-wrap"><table><thead><tr><th style="min-width:300px">Arquivo e ações</th><th>Créditos de</th><th class="num">Taxa média</th><th class="num">Créditos</th><th class="num">Descontos</th><th class="num">Valor final</th><th>Conta da SM</th></tr></thead><tbody>
-      ${conf.reps.map((r) => { const t = conf.porRelatorio.find((x) => x.r.id === r.id); return html`<tr><td><b>${r.arquivo_nome || r.titulo || '—'}</b><div class="small muted">${r.titulo || ''} · ${r.contabilidade?.nome || '—'} · ${r.linhas.length} linhas</div>
-          <div class="stack" style="margin-top:8px;gap:6px">${r.storage_path && r.storage_path !== 'teste' ? html`<button class="btn-sm" onClick=${() => abrirAnexo(r.storage_path).catch((e) => ctx.notify(e.message, 'err'))}>Abrir PDF</button>` : ''}
-          ${isAdmin ? html`<button class="btn-sm" onClick=${() => setModal({ t: 'extrato', r })}>Conferir no extrato</button><button class="btn-sm" onClick=${() => setModal({ t: 'enviar', substitui: r })}>Substituir</button><button class="btn-sm btn-danger" onClick=${() => setModal({ t: 'remover', r })}>Excluir relatório</button>` : ''}</div></td>
-        <td class="small" style="white-space:nowrap">${C.fmtD(r.periodo_inicio)}<br />a ${C.fmtD(r.periodo_fim)}</td>
-        <td class="num">${pct(t?.media)}</td><td class="num">${C.brl(C.cents(r.creditos))}</td><td class="num">${C.brl(C.cents(r.taxas) + C.cents(r.debitos))}</td><td class="num"><b>${C.brl(C.cents(r.valor_final))}</b></td>
-        <td>${Badge(EXTRATO[r.extrato_status][0], EXTRATO[r.extrato_status][1])}${r.extrato_data ? html`<div class="small muted">${C.fmtD(r.extrato_data)} · ${C.brl(C.cents(r.extrato_valor))}</div>` : ''}</td></tr>`; })}
-      </tbody></table></div></div>` : ''}
+        <dt class="tot">= Diferença atual</dt><dd class=${'tot' + (conf.dif ? ' neg' : '')}>${C.brl(conf.dif)}</dd></dl>
+    </details>` : ''}
+
     ${sel ? html`<${ItemRepasse} ctx=${ctx} i=${sel} mes=${m} onClose=${() => setSel(null)} />` : ''}
-    ${modal?.t === 'enviar' ? html`<${EnviarRelatorio} ctx=${ctx} mesAtual=${m} substitui=${modal.substitui} onClose=${() => setModal(null)} />` : ''}
+    ${modal?.t === 'enviar' ? html`<${EnviarRelatorio} ctx=${ctx} mesAtual=${m} substitui=${modal.substitui} faltando=${conf.periodosFaltando} onClose=${() => setModal(null)} />` : ''}
     ${modal?.t === 'extrato' ? html`<${ExtratoModal} ctx=${ctx} r=${modal.r} onClose=${() => setModal(null)} />` : ''}
     ${modal?.t === 'contab' ? html`<${ContabilidadeModal} ctx=${ctx} onClose=${() => setModal(null)} />` : ''}
-    ${modal?.t === 'remover' ? html`<${RemoverRelatorio} ctx=${ctx} r=${modal.r} mes=${m} outros=${conf.reps.filter((x) => x.id !== modal.r.id)} onClose=${() => setModal(null)} />` : ''}`;
+    ${modal?.t === 'remover' ? html`<${RemoverRelatorio} ctx=${ctx} r=${modal.r} mes=${m} outros=${conf.reps.filter((x) => x.id !== modal.r.id)} onClose=${() => setModal(null)} />` : ''}
+    ${modal?.t === 'contestar' ? html`<${ContestarModal} ctx=${ctx} i=${modal.i} onClose=${() => setModal(null)} onOk=${(nota) => decidir(modal.i, 'contestado', nota)} />` : ''}
+    ${modal?.t === 'fechar' ? html`<${FecharMesModal} ctx=${ctx} conf=${conf} mes=${m} onClose=${() => setModal(null)} />` : ''}
+    ${modal?.t === 'reabrir' ? html`<${ReabrirMesModal} ctx=${ctx} mes=${m} onClose=${() => setModal(null)} />` : ''}`;
+}
+
+function ContestarModal({ i, onClose, onOk }) {
+  const [nota, setNota] = useState('');
+  return html`<${Modal} title="Contestar ajuste" onClose=${onClose}>
+    <table class="kv"><tbody><tr><th>Lançamento</th><td><b>${i.ref}</b>${i.desc ? ' · ' + i.desc : ''}</td></tr><tr><th>Contrato</th><td>${i.ctr} · lote ${i.lote} · parcela ${i.parcelasTxt}</td></tr><tr><th>Valor</th><td><b>${C.brl(i.ajuste)}</b></td></tr></tbody></table>
+    <label class="f">Motivo da contestação<input value=${nota} onInput=${(e) => setNota(e.target.value)} placeholder="Ex.: parcela paga direto ao vendedor; honorário não previsto em contrato" /></label>
+    <p class="small muted">O item entra no PDF de contestação (Exportar ▾ › Contestação) para enviar à contabilidade.</p>
+    <div class="modal-actions"><button onClick=${onClose}>Cancelar</button><button class="btn-primary" disabled=${nota.trim().length < 3} onClick=${async () => { if (await onOk(nota.trim())) onClose(); }}>Contestar</button></div><//>`;
+}
+
+function FecharMesModal({ ctx, conf, mes, onClose }) {
+  const [nota, setNota] = useState('');
+  const resumo = { esperado: conf.esperado, ajustes: conf.ajustes, transferido: conf.informado, diferenca: conf.dif, taxa_media: conf.taxaMedia, relatorios: conf.reps.map((r) => r.id), contestados: conf.ajustesContestados.length };
+  return html`<${Modal} title=${'Fechar ' + nomeMes(mes)} onClose=${onClose}>
+    <table class="kv"><tbody><tr><th>Esperado</th><td>${C.brl(conf.esperado)}</td></tr><tr><th>Ajustes</th><td>${C.brl(conf.ajustes)}${conf.ajustesContestados.length ? ` (${conf.ajustesContestados.length} contestado(s))` : ''}</td></tr>
+      <tr><th>Transferido</th><td>${C.brl(conf.informado)}</td></tr><tr><th>Diferença</th><td><b>${C.brl(conf.dif)}</b></td></tr></tbody></table>
+    <p class="small muted">Com o mês fechado, os relatórios dele não podem ser enviados, trocados ou excluídos, e as decisões não mudam. Dá para reabrir informando o motivo.</p>
+    <label class="f">Observação (opcional)<input value=${nota} onInput=${(e) => setNota(e.target.value)} placeholder="Ex.: conferido com o extrato do Sicredi" /></label>
+    <div class="modal-actions"><button onClick=${onClose}>Cancelar</button><button class="btn-primary" onClick=${async () => { if (await ctx.act(() => sb.rpc('rcb_fechar_mes', { p_mes: mes, p_nota: nota.trim(), p_resumo: resumo }).then(chk), `${nomeMes(mes)} fechado`)) onClose(); }}>Fechar o mês</button></div><//>`;
+}
+
+function ReabrirMesModal({ ctx, mes, onClose }) {
+  const [motivo, setMotivo] = useState('');
+  return html`<${Modal} title=${'Reabrir ' + nomeMes(mes)} onClose=${onClose}>
+    <label class="f">Motivo (obrigatório)<input value=${motivo} onInput=${(e) => setMotivo(e.target.value)} placeholder="Ex.: contabilidade enviou relatório corrigido" /></label>
+    <div class="modal-actions"><button onClick=${onClose}>Cancelar</button><button class="btn-danger" disabled=${motivo.trim().length < 3} onClick=${async () => { if (await ctx.act(() => sb.rpc('rcb_reabrir_mes', { p_mes: mes, p_motivo: motivo.trim() }).then(chk), `${nomeMes(mes)} reaberto`)) onClose(); }}>Reabrir</button></div><//>`;
 }
 
 function RemoverRelatorio({ ctx, r, mes, outros = [], onClose }) {
@@ -763,7 +896,7 @@ function ItemRepasse({ ctx, i, mes, onClose }) {
   </div></div>`;
 }
 
-function EnviarRelatorio({ ctx, mesAtual, substitui, onClose }) {
+function EnviarRelatorio({ ctx, mesAtual, substitui, faltando = [], onClose }) {
   const { model } = ctx;
   const [file, setFile] = useState(null); const [lido, setLido] = useState(null); const [erro, setErro] = useState(null);
   const [busy, setBusy] = useState(false); const [mes, setMes] = useState(mesAtual); const [forcar, setForcar] = useState(false);
@@ -783,6 +916,7 @@ function EnviarRelatorio({ ctx, mesAtual, substitui, onClose }) {
   const repetidas = lido ? lido.linhas.filter((l) => existentes.has(chave(l))).length : 0;
   const mesmoArquivo = lido && ativos.find((r) => r.titulo === lido.titulo && C.cents(r.valor_final) === C.cents(lido.valor_final) && r.periodo_inicio === lido.periodo_inicio && r.periodo_fim === lido.periodo_fim);
   const semCadastro = lido ? [...new Set(lido.linhas.filter((l) => !model.cmap.has(l.contrato_id)).map((l) => l.contrato_id))] : [];
+  const sobrepoe = lido && !mesmoArquivo ? ativos.find((r) => r.mes === mes && r.periodo_inicio && lido.periodo_inicio && r.periodo_inicio <= lido.periodo_fim && lido.periodo_inicio <= r.periodo_fim) : null;
   const tm = lido ? (() => { const ls = lido.linhas.filter((l) => l.tipo === 'credito'); const b = ls.reduce((s, l) => s + C.cents(l.valor) + C.cents(l.honorario), 0), t = ls.reduce((s, l) => s + C.cents(l.honorario), 0); return b ? t / b : null; })() : null;
   const salvar = async () => {
     setBusy(true);
@@ -797,6 +931,7 @@ function EnviarRelatorio({ ctx, mesAtual, substitui, onClose }) {
   };
   return html`<${Modal} wide title=${substitui ? 'Substituir relatório da contabilidade' : 'Enviar relatório da contabilidade'} onClose=${onClose}>
     <p class="small muted">Envie o PDF do relatório de repasse que a contabilidade manda (pode ser um por quinzena). O sistema lê a base bruta, a taxa e o valor transferido de cada parcela, além dos outros descontos.</p>
+    ${faltando.length && !substitui ? html`<div class="banner warn">Falta para ${nomeMes(mesAtual)}: relatório com créditos de <b>${faltando.map(periodoTxt).join(' e de ')}</b>.</div>` : ''}
     <input type="file" accept="application/pdf" onChange=${(e) => e.target.files[0] && ler(e.target.files[0])} />
     ${busy && !lido ? html`<p>Lendo o PDF…</p>` : ''}
     ${erro ? html`<div class="banner err" style="margin-top:12px">${erro}</div>` : ''}
@@ -810,6 +945,7 @@ function EnviarRelatorio({ ctx, mesAtual, substitui, onClose }) {
       ${lido.avisos.length ? html`<div class="banner warn" style="margin-top:10px"><div>${lido.avisos.map((a) => html`<div>${a}</div>`)}<label style="display:flex;gap:6px;margin-top:6px"><input type="checkbox" checked=${forcar} onChange=${(e) => setForcar(e.target.checked)} /> Conferi o arquivo e quero salvar mesmo assim</label></div></div>` : html`<div class="banner info" style="margin-top:10px">As linhas lidas fecham com o resumo do relatório.</div>`}
       ${semCadastro.length ? html`<div class="banner warn">Contrato(s) do relatório que não estão cadastrados: <b>${semCadastro.join(', ')}</b>. As linhas ficam como pendência até o contrato ser importado.</div>` : ''}
       ${mesmoArquivo ? html`<div class="banner err">Este relatório já foi enviado (mesmo título, período e valor). Para trocar o arquivo, use "Substituir" na lista de relatórios.</div>`
+        : sobrepoe ? html`<div class="banner warn">Já existe um relatório de ${nomeMes(mes)} com créditos de ${C.fmtD(sobrepoe.periodo_inicio)} a ${C.fmtD(sobrepoe.periodo_fim)} (${sobrepoe.arquivo_nome}). Se este arquivo é uma versão corrigida, use <b>Substituir arquivo</b> no menu ⋯ do relatório.${repetidas ? ` ${repetidas} linha(s) repetidas seriam contadas uma vez só.` : ''}</div>`
         : repetidas ? html`<div class="banner warn">${repetidas} de ${lido.linhas.length} linha(s) já constam em outro relatório enviado. Elas serão contadas uma vez só.</div>` : ''}
     </div>` : ''}
     <div class="modal-actions"><button onClick=${onClose}>Cancelar</button>
@@ -896,8 +1032,9 @@ function CompararPage({ ctx }) {
   const n = res ? Object.fromEntries(GRUPOS_CMP.map(([k]) => [k, res[k].length])) : {};
   const marcar = (setFn, chave, v) => setFn((o) => ({ ...o, [chave]: v }));
   return html`
+    <${AbasAtualizar} atual="comparar" />
     <div class="page-head"><div><h1>Comparar contratos</h1><p>Envie todos os arquivos de uma vez e compare com os contratos cadastrados. Nada é gravado sem a sua confirmação.</p></div>
-      <a class="btn" href="#/importar">Importar novos contratos</a></div>
+      </div>
     <div class="card"><div class="filters" style="align-items:center">
       <label class="btn btn-primary">Selecionar arquivos<input type="file" multiple accept=".pdf,.txt,application/pdf,text/plain" hidden onChange=${(e) => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) lerArquivos(fs); }} /></label>
       <span class="small muted">Extrato de contratos da cobrança (PDF ou texto) ou Nota de Leilão em PDF. Selecione todos os arquivos juntos (Ctrl+A na janela de arquivos).</span>${lendo ? html`<b>${lendo}</b>` : ''}</div>
@@ -1093,8 +1230,9 @@ function ImportarPage({ ctx }) {
     setItens((xs) => xs.map((x) => (out.find((o) => o.ok && o.id === x.id) ? { ...x, _sel: false, _dup: true, _feito: true } : x)));
   };
   return html`
+    <${AbasAtualizar} atual="importar" />
     <div class="page-head"><div><h1>Importar novos contratos</h1><p>Contratos novos entram como “pendente de revisão” até serem conferidos</p></div>
-      <a class="btn btn-primary" href="#/comparar">Comparar contratos</a></div>
+      </div>
     <div class="pill-tabs">${[['texto', 'Colar texto da cobrança'], ['pdf', 'Upload de PDF'], ['manual', 'Cadastro manual']].map(([k, t]) => html`<button class=${aba === k ? 'on' : ''} onClick=${() => setAba(k)}>${t}</button>`)}</div>
     ${aba === 'manual' ? html`<${CadastroManual} ctx=${ctx} />` : html`
     <div class="card">
@@ -1212,7 +1350,7 @@ function RelatoriosPage({ ctx }) {
   const anos = [...new Set(model.parcelas.map((p) => p.vencimento.slice(0, 4)))].sort();
   const fmt = (col, v) => (v == null || v === '' ? '' : col.tipo === 'money' ? C.brl(v) : col.tipo === 'date' ? C.fmtD(v) : col.tipo === 'pct' ? C.pct(v) : v);
   return html`
-    <div class="page-head"><div><h1>Relatórios</h1><p>Exportação em Excel e PDF com os mesmos cálculos do painel</p></div>
+    <div class="page-head"><div><h1>Exportações</h1><p>Relatórios em Excel e PDF com os mesmos cálculos do painel</p></div>
       <div class="stack"><button onClick=${() => exportarExcel(rel)}>Exportar Excel</button><button class="btn-primary" onClick=${() => exportarPDF(rel)}>Exportar PDF</button></div></div>
     <div class="card" style="margin-bottom:16px"><div class="filters">
       <label class="f">Relatório<select value=${f.tipo} onChange=${s('tipo')}>${RELATORIOS.map(([k, t]) => html`<option value=${k}>${t}</option>`)}</select></label>
@@ -1226,3 +1364,26 @@ function RelatoriosPage({ ctx }) {
 }
 
 render(html`<${App} />`, document.getElementById('app'));
+
+// "Atualizar contratos": uma entrada no menu, duas abas
+function AbasAtualizar({ atual }) {
+  return html`<div class="pill-tabs" style="margin-bottom:14px" role="tablist" aria-label="Atualizar contratos">
+    <a role="tab" aria-selected=${atual === 'comparar'} class=${'tab-link' + (atual === 'comparar' ? ' on' : '')} href="#/comparar">Comparar com arquivos</a>
+    <a role="tab" aria-selected=${atual === 'importar'} class=${'tab-link' + (atual === 'importar' ? ' on' : '')} href="#/importar">Importar novos contratos</a></div>`;
+}
+
+// Painel: situação do repasse do último mês com relatório (ou do mês passado)
+function CardRepasse({ ctx }) {
+  const { model } = ctx;
+  const comRel = C.mesesConferencia(model).filter((x) => model.repasses.some((r) => r.mes === x && !r.substituido));
+  const passado = (() => { const [y, m] = model.hoje.slice(0, 7).split('-').map(Number); const d = new Date(Date.UTC(y, m - 2, 1)); return d.toISOString().slice(0, 7); })();
+  const mes = comRel[0] && comRel[0] >= passado ? comRel[0] : passado;
+  const conf = useMemo(() => C.conferencia(model, mes), [model, mes]);
+  const fech = model.fechamentos?.get(mes);
+  const [cls, txt] = conf.status === 'enviado' ? CONCILIACAO[conf.conciliacao] : ['cancelada', 'Aguardando relatório'];
+  return html`<div class="card painel-repasse" style="margin-bottom:16px">
+    <div><div class="small muted">Repasse da contabilidade</div><div style="font-size:20px;font-weight:700">${nomeMes(mes)} ${Badge(cls, txt)} ${fech?.status === 'fechado' ? Badge('info', 'Mês fechado') : ''}</div>
+      <div class="small">${conf.reps.length ? html`Transferido <b>${C.brl(conf.informado)}</b> · esperado após ajustes ${C.brl(conf.esperadoAposAjustes)} · diferença <b class=${conf.dif ? 'neg' : ''}>${C.brl(conf.dif)}</b>${conf.periodosFaltando.length ? ` · falta créditos de ${conf.periodosFaltando.map(periodoTxt).join(' e ')}` : ''}`
+        : html`Compradores pagaram ${C.brl(conf.painelMes)} no mês; aguardando o relatório.`}</div></div>
+    <a class="btn btn-primary" href=${'#/repasses/' + mes}>Abrir conferência</a></div>`;
+}

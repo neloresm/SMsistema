@@ -20,7 +20,7 @@ function dadosLinhas(conf) {
   return conf.itens.map((i) => ({
     i, cat: CURTO[i.cat] || i.cat, ctr: i.ctr, lote: i.lote, parc: (i.ref ? i.ref + ' ' : '') + i.parcelasTxt, comp: i.comprador,
     venc: i.vencimento || '', pago: i.pagoEm || '', cred: i.data_credito || '', bruto: i.bruto || 0, base: i.base || 0, taxa: i.linha?.tipo === 'credito' ? i.taxa : i.estimado ? i.taxa : 0,
-    desconto: i.desconto || 0, taxaPct: i.taxaPct ?? null, esp: i.esp, inf: i.inf, dif: i.dif, why: i.why, problema: !CATM[i.cat].neutro, fora: !!CATM[i.cat].fora, resolvido: !!i.resolvido,
+    desconto: i.desconto || 0, taxaPct: i.taxaPct ?? null, esp: i.esp, inf: i.inf, dif: i.dif, why: i.why, problema: !CATM[i.cat].neutro && !CATM[i.cat].ajuste, ajuste: !!CATM[i.cat].ajuste, fora: !!CATM[i.cat].fora, resolvido: !!i.resolvido,
   }));
 }
 function ponte(conf) {
@@ -28,12 +28,14 @@ function ponte(conf) {
     ['Pago pelos compradores no mês (2ª parcela em diante)', conf.bruto, ''],
     [`(-) Taxas cobradas sobre essas parcelas${conf.taxasEstimadas ? ' (parte estimada pela taxa média)' : ''}`, -(conf.taxas + conf.taxasEstimadas), ''],
     ['= Repasse líquido esperado', conf.esperado, 'tot'],
-    ['Relatórios enviados para o mês (valor final)', conf.totalRelatoriosMes, ''],
+    ['(-) Ajustes informados pela contabilidade no relatório', -conf.ajustes, ''],
+    ['= Esperado após ajustes', conf.esperadoAposAjustes, 'tot'],
+    [`Valor final dos arquivos do mês${conf.linhasRepetidas ? ' (linhas repetidas contadas uma vez)' : ''}`, conf.totalRelatoriosMes, ''],
   ];
   if (conf.paraOutrosMeses) l.push(['(-) Linhas desses relatórios pagas em outros meses', -conf.paraOutrosMeses, '']);
   if (conf.deOutrosRelatorios) l.push(['(+) Parcelas do mês repassadas em relatórios de outros meses', conf.deOutrosRelatorios, '']);
   l.push(['= Transferido referente ao mês', conf.informado, 'tot']);
-  l.push(['Diferença (transferido - esperado)', conf.dif, 'dif']);
+  l.push(['Diferença (transferido - esperado após ajustes)', conf.dif, 'dif']);
   return l;
 }
 
@@ -56,9 +58,9 @@ export function conferenciaPDF(conf, model) {
   const caixas = [
     ['Repasse líquido esperado', brl(conf.esperado), 'Pago pelos compradores - taxas cobradas'],
     ['Transferido pela contabilidade', brl(conf.informado), conf.confirmadoConta ? `Confirmado na conta: ${brl(conf.confirmadoConta)}` : EXTRATO[conf.extrato].split(' (')[0]],
-    ['Taxas descontadas', brl(conf.taxas + conf.outrosDescontos), `Sobre parcelas ${brl(conf.taxas)} + outros ${brl(conf.outrosDescontos)}`],
+    ['Ajustes informados', brl(conf.ajustes), `${conf.ajustesItens.length} lançamento(s) · ${conf.ajustesPendentes} sem decisão`],
     ['Taxa média da contabilidade', pct(conf.taxaMedia), cob.n === cob.total ? `Todas as ${cob.total} linhas de parcelas` : `Cobre ${cob.n} de ${cob.total} linhas`],
-    ['Diferença', sg(conf.dif), conf.dif < 0 ? 'A SM recebeu menos que o esperado' : conf.dif > 0 ? 'Transferido acima do esperado' : 'Bate com o esperado'],
+    ['Diferença', sg(conf.dif), !conf.reps.length ? 'Sem relatório' : conf.dif < 0 ? 'A SM recebeu menos que o esperado' : conf.dif > 0 ? 'Transferido acima do esperado' : 'Nada sem explicação'],
   ];
   const bw = (W - 2 * M - 4 * 10) / 5;
   caixas.forEach(([lbl, val, sub], k) => {
@@ -91,7 +93,7 @@ export function conferenciaPDF(conf, model) {
     columnStyles: { 1: { halign: 'right', cellWidth: 92, overflow: 'visible' } },
     didParseCell: alinhar({ 1: { halign: 'right' } }, (d) => { const k = d.row.raw?.[1]?.k; if (d.section === 'body' && k) { d.cell.styles.fontStyle = 'bold'; if (k === 'dif' && conf.dif) d.cell.styles.textColor = VERM; d.cell.styles.fillColor = [246, 244, 239]; } }) });
   const yEsq = doc.lastAutoTable.finalY;
-  const probs = conf.cats.filter((c) => !c.neutro), neutros = conf.cats.filter((c) => c.neutro);
+  const probs = conf.problemas, neutros = conf.cats.filter((c) => c.neutro);
   doc.setFont('helvetica', 'bold'); doc.setFontSize(12); doc.setTextColor(17, 26, 21);
   doc.text(pdfTxt(probs.length ? `Por que a diferença de ${brl(Math.abs(conf.dif))}` : 'Nenhuma divergência'), M + meia + 20, y0 - 8);
   doc.autoTable({ ...base, startY: y0, margin: { left: M + meia + 20, right: M }, tableWidth: meia, head: [['Motivo', 'Itens', 'Valor']],
@@ -140,6 +142,17 @@ export function conferenciaPDF(conf, model) {
       y += 10;
     }
     y += 12;
+  }
+
+  // ajustes informados pela contabilidade
+  if (conf.ajustesItens.length) {
+    titulo(`Ajustes informados pela contabilidade · ${brl(conf.ajustes)}`, 'Descontos que o próprio relatório discrimina. Não contam como diferença; cada um é aceito ou contestado.');
+    const jcols = { 5: { halign: 'right', cellWidth: 78, overflow: 'visible' } };
+    doc.autoTable({ ...base, startY: y, head: [['Contrato', 'Lote', 'Parcela', 'Lançamento', 'Descrição', 'Valor', 'Decisão']], columnStyles: { 0: { cellWidth: 54 }, 1: { cellWidth: 44 }, 2: { cellWidth: 48 }, 3: { cellWidth: 70 }, 4: { cellWidth: 'auto' }, ...jcols, 6: { cellWidth: 170 } }, didParseCell: alinhar(jcols),
+      body: conf.ajustesItens.map((i) => [i.ctr, i.lote, pdfTxt(i.parcelasTxt), pdfTxt(i.ref || ''), pdfTxt(i.desc || ''), { content: '-' + brl(i.ajuste), styles: { textColor: VERM } },
+        pdfTxt(i.decisao === 'aceito' ? 'Aceito' : i.decisao === 'contestado' ? `Contestado${i.decisaoNota ? ': ' + i.decisaoNota : ''}` : 'Sem decisão')]),
+      foot: [['Total', '', '', '', '', '-' + brl(conf.ajustes), '']], footStyles: { fillColor: [246, 244, 239], textColor: [17, 26, 21], fontStyle: 'bold' } });
+    y = doc.lastAutoTable.finalY + 22;
   }
 
   // relatórios
@@ -199,12 +212,12 @@ export function conferenciaExcel(conf, model, soGerar = false) {
     X.utils.book_append_sheet(wb, ws, nome);
   };
   const linhas = dadosLinhas(conf);
-  const probs = conf.cats.filter((c) => !c.neutro), neutros = conf.cats.filter((c) => c.neutro);
+  const probs = conf.problemas, neutros = conf.cats.filter((c) => c.neutro);
   aba('Resumo', [
     [`SM Agropecuária — Conferência do repasse da Contabilidade — ${mesTxt}`], [`Contabilidade: ${contabNomes(conf)} · Gerado em ${new Date().toLocaleString('pt-BR', { timeZone: C.TZ })}`], [],
     ['RESUMO', 'Valor'], ['Repasse líquido esperado', rs(conf.esperado)], ['Transferido pela contabilidade', rs(conf.informado)], ['Confirmado na conta da SM', rs(conf.confirmadoConta)],
-    ['Taxas descontadas (total)', rs(conf.taxas + conf.outrosDescontos)], ['   Taxas sobre parcelas', rs(conf.taxas)], ['   Outros descontos', rs(conf.outrosDescontos)],
-    ['Diferença (transferido - esperado)', rs(conf.dif)], ['Itens para conferir', conf.pendencias], ['Conta da SM', EXTRATO[conf.extrato]], [],
+    ['Taxas sobre parcelas', rs(conf.taxas)], ['Ajustes informados pela contabilidade', rs(conf.ajustes)], ['Esperado após ajustes', rs(conf.esperadoAposAjustes)],
+    ['Diferença (transferido - esperado após ajustes)', rs(conf.dif)], ['Itens para conferir', conf.pendencias], ['Ajustes sem decisão', conf.ajustesPendentes], ['Conta da SM', EXTRATO[conf.extrato]], [],
     ['TAXA MÉDIA DA CONTABILIDADE', 'Taxa'], ['Consolidado do mês (soma das taxas ÷ soma das bases)', conf.taxaMedia ?? ''], ['Linhas cobertas', `${cob.n} de ${cob.total}`],
     ...conf.porRelatorio.map((x) => [`Relatório: ${x.r.titulo || x.r.arquivo_nome} (${C.fmtD(x.r.periodo_inicio)} a ${C.fmtD(x.r.periodo_fim)})`, x.media ?? '']),
     ['Taxa mais frequente (%)', conf.predominante ?? ''], [],
@@ -222,6 +235,9 @@ export function conferenciaExcel(conf, model, soGerar = false) {
     ...linhas.map((l) => [+l.ctr || l.ctr, l.lote, l.parc, l.comp, dt(l.venc), dt(l.pago), dt(l.cred), rs(l.bruto), rs(l.base), rs(l.taxa), l.taxaPct ?? '', rs(l.desconto), rs(l.esp), rs(l.inf), rs(l.dif), l.cat + (l.resolvido ? ' (resolvido)' : ''), l.fora ? 'Sim' : '', l.why]),
     ['Total', '', '', '', '', '', '', '', '', rs(conf.taxas), conf.taxaMedia ?? '', rs(conf.outrosDescontos), rs(conf.esperado), rs(conf.informado), rs(conf.dif), '', '', '']],
     [10, 8, 12, 34, 12, 12, 12, 14, 14, 12, 10, 14, 14, 14, 14, 24, 10, 120], { 7: 'rs', 8: 'rs', 9: 'rs', 10: 'pct', 11: 'rs', 12: 'rs', 13: 'rs', 14: 'rs' });
+  aba('Ajustes', [['Contrato', 'Lote', 'Parcela', 'Lançamento', 'Descrição', 'Valor', 'Decisão', 'Motivo da contestação'],
+    ...conf.ajustesItens.map((i) => [+i.ctr || i.ctr, i.lote, i.parcelasTxt, i.ref || '', i.desc || '', -rs(i.ajuste), i.decisao === 'aceito' ? 'Aceito' : i.decisao === 'contestado' ? 'Contestado' : 'Sem decisão', i.decisaoNota || '']),
+    ['Total', '', '', '', '', -rs(conf.ajustes), '', '']], [10, 8, 10, 12, 40, 14, 14, 60], { 5: 'rs' });
   aba('Relatórios', [['Relatório', 'Arquivo', 'Contabilidade', 'Créditos de', 'Créditos até', 'Taxa média', 'Créditos', 'Débitos', 'Outros descontos', 'Valor final', 'Conta da SM', 'Data no extrato', 'Valor no extrato'],
     ...conf.reps.map((r) => { const t = conf.porRelatorio.find((x) => x.r.id === r.id); return [r.titulo || '', r.arquivo_nome || '', r.contabilidade?.nome || '', dt(r.periodo_inicio), dt(r.periodo_fim), t?.media ?? '', +r.creditos, +r.debitos, +r.taxas, +r.valor_final,
       { confirmado: 'Confirmado', divergente: 'Divergente', pendente: 'Aguardando extrato' }[r.extrato_status], dt(r.extrato_data), r.extrato_valor == null ? '' : +r.extrato_valor]; })],
@@ -231,3 +247,28 @@ export function conferenciaExcel(conf, model, soGerar = false) {
 }
 
 export function baixarPDF(conf, model) { const d = conferenciaPDF(conf, model); if (d) d.save(arquivo(conf.mes, 'pdf')); }
+
+// Contestação: lista dos ajustes contestados, para enviar à contabilidade
+export function contestacaoPDF(conf, model) {
+  const J = window.jspdf?.jsPDF; if (!J) throw new Error('Biblioteca de PDF não carregou.');
+  const itens = conf.ajustesContestados;
+  if (!itens.length) throw new Error('Nenhum ajuste contestado neste mês.');
+  const doc = new J({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+  const W = doc.internal.pageSize.getWidth(), M = 40, VERDE = [23, 107, 70];
+  doc.setFillColor(...VERDE); doc.rect(0, 0, W, 64, 'F');
+  doc.setTextColor(255); doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.text(pdfTxt(`Contestação de ajustes · ${nomeMes(conf.mes)}`), M, 32);
+  doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.text(pdfTxt(`SM Agropecuária · para: ${contabNomes(conf)}`), M, 50);
+  doc.setTextColor(28, 38, 33); doc.setFontSize(10.5);
+  const total = itens.reduce((s, i) => s + i.ajuste, 0);
+  const txt = `Conferimos os relatórios de repasse de ${nomeMes(conf.mes)} (${conf.reps.map((r) => `${r.arquivo_nome || r.titulo}, créditos de ${C.fmtD(r.periodo_inicio)} a ${C.fmtD(r.periodo_fim)}`).join('; ')}) e contestamos os lançamentos abaixo, no total de ${brl(total)}. Pedimos a revisão e o estorno ou a justificativa de cada item.`;
+  doc.text(doc.splitTextToSize(pdfTxt(txt), W - 2 * M), M, 92);
+  doc.autoTable({ startY: 140, theme: 'grid', margin: { left: M, right: M }, styles: { font: 'helvetica', fontSize: 9, cellPadding: 5, lineColor: [226, 223, 216] }, headStyles: { fillColor: [246, 244, 239], textColor: [60, 70, 65] },
+    head: [['Contrato', 'Lote', 'Parcela', 'Lançamento', 'Valor', 'Motivo']],
+    body: itens.map((i) => [i.ctr, i.lote, pdfTxt(i.parcelasTxt), pdfTxt(`${i.ref || ''}${i.desc ? ' · ' + i.desc : ''}`), brl(i.ajuste), pdfTxt(i.decisaoNota || '')]),
+    foot: [['Total', '', '', '', brl(total), '']], footStyles: { fillColor: [246, 244, 239], textColor: [17, 26, 21], fontStyle: 'bold' },
+    columnStyles: { 0: { cellWidth: 52 }, 1: { cellWidth: 40 }, 2: { cellWidth: 44 }, 3: { cellWidth: 130 }, 4: { cellWidth: 66, halign: 'right' } } });
+  doc.setFontSize(8); doc.setTextColor(138, 147, 142);
+  doc.text(pdfTxt(`Gerado em ${new Date().toLocaleString('pt-BR', { timeZone: C.TZ })} · SM Agropecuária · Recebimentos`), M, doc.internal.pageSize.getHeight() - 20);
+  return doc;
+}
+export function baixarContestacao(conf, model) { contestacaoPDF(conf, model).save(`SM_Contestacao_Ajustes_${conf.mes}.pdf`); }

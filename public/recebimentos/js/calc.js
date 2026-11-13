@@ -149,7 +149,7 @@ export function build(raw, hoje = hojeISO()) {
   const contabAtual = contabilidades.find((x) => String(x.id) === String(cfg.contabilidade_atual)) || contabilidades[0] || null;
   for (const r of repasses) r.contabilidade = contabilidades.find((x) => x.id === r.contabilidade_id) || null;
 
-  return { hoje, contratos, cmap, parcelas, pagamentos, repasses, repassesRemovidos, contabilidades, contabAtual, leiloes: [...leiloes.values()], compradores: [...compradores.values()] };
+  return { hoje, contratos, cmap, parcelas, pagamentos, repasses, repassesRemovidos, contabilidades, contabAtual, fechamentos: new Map((raw.fechamentos || []).map((f) => [f.mes, f])), leiloes: [...leiloes.values()], compradores: [...compradores.values()] };
 }
 
 // entrada (parcela 1) | cadastro ("Liquidada no cadastro") | direto (pago ao vendedor) | mecob (repassado pela MECOB)
@@ -284,10 +284,10 @@ export function inadimplencia(model, contratos) {
 //  - Linha repetida em outro relatório é contada uma vez só.
 // ===========================================================================
 export const CONF_CATS = [
-  { id: 'outros_descontos', t: 'Outros descontos da contabilidade', d: 'Descontos discriminados no relatório, fora da taxa sobre as parcelas', sev: 'bad' },
+  { id: 'outros_descontos', t: 'Ajustes informados pela contabilidade', d: 'Descontos discriminados no relatório (negativação, honorários, tarifas). Aceite ou conteste.', sev: 'gold', ajuste: true },
   { id: 'faltou', t: 'Pago pelo comprador, sem repasse', d: 'Pagamento do mês que não aparece em nenhum relatório', sev: 'bad' },
   { id: 'base_divergente', t: 'Base diferente do valor pago', d: 'O valor bruto do relatório difere do que o comprador pagou', sev: 'bad' },
-  { id: 'debito', t: 'Débito no relatório', d: 'Valor debitado pela contabilidade', sev: 'bad' },
+  { id: 'debito', t: 'Débito informado pela contabilidade', d: 'Valor debitado no relatório. Aceite ou conteste.', sev: 'gold', ajuste: true },
   { id: 'sem_parcela', t: 'Linha sem parcela no cadastro', d: 'Contrato ou parcela do relatório não encontrado no cadastro', sev: 'bad' },
   { id: 'sem_pagamento', t: 'Pagamento não registrado no contrato', d: 'A contabilidade informou o pagamento, mas ele não consta no contrato', sev: 'warn' },
   { id: 'fora_regra', t: 'Parcela que deveria ficar fora', d: 'Entrada, liquidada no cadastro ou paga direto que apareceu como crédito', sev: 'warn' },
@@ -380,7 +380,7 @@ export function conferencia(model, mes) {
     if (x.l.tipo === 'debito') why = `Débito de ${brl(v)} lançado pela contabilidade no contrato ${b.ctr}, parcela ${b.parcelasTxt}. Conferir o motivo.`;
     else if (/diret/i.test(x.l.descricao || '') && p && p.tipo === 'direto') why = `${x.l.descricao} (${x.l.referencia}): ${brl(v)} sobre a parcela ${b.parcelasTxt}, paga direto ao vendedor${p.data_liquidacao_externa ? ' em ' + fmtD(p.data_liquidacao_externa) : ''}. O relatório não informa a base; pelo cadastro a parcela vale ${brl(x.c.valorPadrao)} (${x.c.valorPadrao ? pctTxt(v / x.c.valorPadrao) : '—'}). Desconto discriminado, fora da taxa média.`;
     else why = `${x.l.descricao || x.l.referencia} (${x.l.referencia}): ${brl(v)} no contrato ${b.ctr}, parcela ${b.parcelasTxt}. O relatório não informa a base de cálculo; desconto separado da taxa sobre as parcelas.`;
-    itens.push({ ...b, cat: x.l.tipo === 'debito' ? 'debito' : 'outros_descontos', esp: 0, inf: -v, dif: -v, desconto: v, ref: x.l.referencia, desc: x.l.descricao, parcelas: p ? [p] : [], why });
+    itens.push({ ...b, cat: x.l.tipo === 'debito' ? 'debito' : 'outros_descontos', esp: 0, inf: -v, dif: 0, ajuste: v, desconto: v, decisao: x.l.decisao || null, decisaoNota: x.l.decisao_nota || null, ref: x.l.referencia, desc: x.l.descricao, parcelas: p ? [p] : [], why });
   }
   // 3) taxa média: do mês (créditos vinculados) e de cada relatório
   const creditosMes = itens.filter((i) => i.linha?.tipo === 'credito' && !CATMAP[i.cat].fora && i.base);
@@ -431,7 +431,8 @@ export function conferencia(model, mes) {
     bruto: sum(conta.filter((i) => i.bruto && i.cat !== 'sem_parcela'), (i) => i.bruto),
     taxas: sum(conta.filter((i) => i.linha?.tipo === 'credito'), (i) => i.taxa), taxasEstimadas: sum(conta.filter((i) => i.cat === 'faltou'), (i) => i.taxa),
     outrosDescontos: sum(conta.filter((i) => i.cat === 'outros_descontos' || i.cat === 'debito'), (i) => i.desconto || -i.inf),
-    totalRelatoriosMes: sum(repsMes, (r) => cents(r.valor_final)),
+    totalRelatoriosMes: sum(todas.filter((x) => x.r.mes === mes && !x.duplicadaDe), (x) => (x.l.tipo === 'credito' ? 1 : -1) * cents(x.l.valor)),
+    linhasRepetidas: todas.filter((x) => x.r.mes === mes && x.duplicadaDe).length,
     deOutrosRelatorios: sum(conta.filter((i) => i.repasse && i.repasse.mes !== mes), (i) => i.inf),
     paraOutrosMeses: sum(itens.filter((i) => i.cat === 'outro_mes'), (i) => cents(i.linha.valor)),
     aguardando: sum(itens.filter((i) => i.cat === 'aguardando'), (i) => i.espPrevisto),
@@ -440,12 +441,33 @@ export function conferencia(model, mes) {
     taxaMedia: tm.media, taxaCobertura: { n: tm.n, total: nCreditosMes, semBase: itens.filter((i) => i.cat === 'outros_descontos').length },
     porRelatorio, predominante, foraPadrao,
   };
-  res.dif = res.informado - res.esperado;
-  res.pendencias = itens.filter((i) => !CATMAP[i.cat].neutro && !i.resolvido).length;
-  res.problemas = cats.filter((c) => !c.neutro);
+  // ajustes que a própria contabilidade discrimina no relatório (SPC, honorários, tarifas, débitos):
+  // aparecem à parte e não contam como diferença; você aceita ou contesta cada um no fechamento.
+  res.ajustes = res.outrosDescontos;
+  res.ajustesItens = itens.filter((i) => CATMAP[i.cat].ajuste);
+  res.ajustesPendentes = res.ajustesItens.filter((i) => !i.decisao).length;
+  res.ajustesContestados = res.ajustesItens.filter((i) => i.decisao === 'contestado');
+  res.esperadoAposAjustes = res.esperado - res.ajustes;
+  res.difBruta = res.informado - res.esperado; // diferença antes de separar os ajustes
+  res.dif = res.informado - res.esperadoAposAjustes; // diferença real, sem explicação no relatório
+  res.pendencias = itens.filter((i) => !CATMAP[i.cat].neutro && !CATMAP[i.cat].ajuste && !i.resolvido).length;
+  res.problemas = cats.filter((c) => !c.neutro && !c.ajuste);
+  // o Painel ("Pago pelos compradores") soma o valor bruto de todos os pagamentos elegíveis do mês
+  res.painelMes = sum(model.parcelas.filter((p) => p.elegivel && !p.contrato.arquivado).flatMap((p) => p.ativos.filter((g) => g.data_pagamento.slice(0, 7) === mes)), (g) => g.valorC);
+  // períodos de crédito do mês sem relatório (ex.: falta a 2ª quinzena)
+  const ult = ultimoDia(mes), iso = (d) => `${mes}-${String(d).padStart(2, '0')}`;
+  const dia = (s) => (s.slice(0, 7) < mes ? 0 : s.slice(0, 7) > mes ? ult + 1 : +s.slice(8, 10));
+  const faixas = repsMes.filter((r) => r.periodo_inicio && r.periodo_fim).map((r) => [dia(r.periodo_inicio), dia(r.periodo_fim)]).sort((a, b) => a[0] - b[0]);
+  const fimMesPassou = model.hoje > iso(ult);
+  res.periodosFaltando = [];
+  if (faixas.length) {
+    let cur = 1;
+    for (const [a, b] of faixas) { if (a - cur > 3) res.periodosFaltando.push({ de: iso(cur), ate: iso(Math.min(a - 1, ult)) }); cur = Math.max(cur, b + 1); }
+    if (ult - cur >= 3 && fimMesPassou) res.periodosFaltando.push({ de: iso(Math.min(cur, ult)), ate: iso(ult) });
+  }
   res.extrato = !repsMes.length ? 'sem_relatorio' : repsMes.every((r) => r.extrato_status === 'confirmado') ? 'confirmado' : repsMes.some((r) => r.extrato_status === 'divergente') ? 'divergente' : 'pendente';
   // recebimento do arquivo x resultado da conferência
-  const faltamDados = itens.some((i) => ['sem_parcela', 'sem_pagamento'].includes(i.cat) && !i.resolvido) || res.taxaCobertura.n < res.taxaCobertura.total || itens.some((i) => i.lacuna);
+  const faltamDados = itens.some((i) => ['sem_parcela', 'sem_pagamento'].includes(i.cat) && !i.resolvido) || res.taxaCobertura.n < res.taxaCobertura.total || itens.some((i) => i.lacuna) || res.periodosFaltando.length > 0;
   res.lacunas = itens.filter((i) => i.lacuna).length;
   res.taxaEstimativa = mediaEstimativa;
   res.conciliacao = !repsMes.length ? 'aguardando' : faltamDados ? 'faltam_dados' : res.dif === 0 && !res.pendencias ? 'bateu' : 'divergencia';
@@ -463,9 +485,14 @@ function regraAnterior(model, mes, conf) {
   if (!conf.reps.length) return null;
   const PCT = 0.04, h = (c) => Math.round(c * PCT);
   let esp = 0, inf = 0;
-  for (const r of conf.reps) {
-    inf += cents(r.valor_final);
+  // cada linha conta uma vez, mesmo que o arquivo tenha sido enviado de novo
+  const vistas = new Set();
+  for (const r of conf.reps.slice().sort((a, b) => a.id - b.id)) {
     for (const l of r.linhas) {
+      const chave = [l.tipo, l.contrato_id, (l.parcelas || []).join('+'), l.data_credito || '', cents(l.valor), cents(l.honorario), l.referencia || ''].join('|');
+      if (vistas.has(chave)) continue;
+      vistas.add(chave);
+      inf += (l.tipo === 'credito' ? 1 : -1) * cents(l.valor);
       const c = model.cmap.get(Number(l.contrato_id));
       if (l.tipo === 'credito') {
         const ps = (l.parcelas || []).map((n) => c?.parcelas.find((p) => p.numero === n));
@@ -498,6 +525,8 @@ function regraAnterior(model, mes, conf) {
     grupos.push({ t: 'Honorário sobre pagamento direto', d: 'Antes era descontado do valor esperado como previsto; agora aparece como outro desconto da contabilidade, sem base no relatório.', efeito,
       itens: diretos.map((i) => `Contrato ${i.ctr}, parcela ${i.parcelasTxt}: ${brl(i.desconto)} (${i.desc})`) });
   }
+  if (conf.ajustes) grupos.push({ t: 'Ajustes informados pela contabilidade separados da diferença', d: 'Descontos que o próprio relatório discrimina saem da diferença e ficam para você aceitar ou contestar.', efeito: conf.ajustes,
+    itens: conf.ajustesItens.map((i) => `Contrato ${i.ctr}, parcela ${i.parcelasTxt}: ${brl(i.ajuste)} (${i.ref}${i.desc ? ' · ' + i.desc : ''})`) });
   const explicado = grupos.reduce((s, g) => s + g.efeito, 0);
   return { antigo, grupos, explicado, resto: conf.dif - antigo.dif - explicado };
 }
