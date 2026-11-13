@@ -630,7 +630,7 @@ function RepassesPage({ ctx, mes }) {
       <${Kpi} cls="gray" lbl="Taxas descontadas" val=${C.brl(conf.taxas + conf.outrosDescontos)} sub=${`Taxa sobre parcelas ${C.brl(conf.taxas)} + outros descontos ${C.brl(conf.outrosDescontos)}`} />
       <button class=${'kpi kpi-click ' + (conf.dif < 0 ? 'red' : conf.dif > 0 ? 'gold' : 'accent')} onClick=${() => abrirLista('')}>
         <div class="lbl">Diferença · clique para ver</div><div class="val num" style=${conf.dif ? 'color:var(--red)' : ''}>${C.brl(conf.dif)}</div>
-        <div class="sub">${conf.dif < 0 ? 'A SM recebeu menos que o esperado' : conf.dif > 0 ? 'Transferido acima do esperado' : 'Bate com o esperado'}${conf.pendencias ? ` · ${conf.pendencias} pendência(s)` : ''}</div></button>
+        <div class="sub">${!conf.reps.length ? 'Sem relatório: nada a comparar ainda' : conf.dif < 0 ? 'A SM recebeu menos que o esperado' : conf.dif > 0 ? 'Transferido acima do esperado' : 'Bate com o esperado'}${conf.pendencias ? ` · ${conf.pendencias} pendência(s)` : ''}</div></button>
     </div>
     ${conf.itens.some((i) => i.linha) ? html`<div class="grid cols-2" style="margin-top:16px">
       <div class="card"><h2 style="margin-bottom:10px">Taxa média da contabilidade</h2>
