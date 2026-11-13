@@ -96,7 +96,7 @@ export function compararLote(model, registros, escolhas = {}) {
       const exatos = cands.filter((x) => x.s.total === 4);
       // um único cadastro com o mesmo comprador, leilão e lote (a data do contrato pode ser de renegociação)
       const fortes = cands.filter((x) => x.s.comp && x.s.leilao && x.s.lote);
-      if (!d.id && exatos.length === 1) cad = exatos[0].c;
+      if (!d.id && exatos.length === 1 && fortes.length <= 1) cad = exatos[0].c;
       else if (!d.id && !exatos.length && fortes.length === 1 && cands.length === 1) cad = fortes[0].c;
       else if (cands.length) {
         res.revisao.push({ tipo: 'incerta', chave: r.chave, arquivo: r.arquivo, dados: d, opcoes: cands.slice(0, 5),
