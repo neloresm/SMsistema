@@ -35,7 +35,7 @@ export function diferencas(d, c) {
   const parcelas = [];
   for (const p of (d.parcelas || []).filter((x) => x.numero > 1)) {
     const q = c.parcelas.find((x) => x.numero === p.numero);
-    const valorOk = q && cv(p.valor_previsto) === cv(q.valor_previsto), vencOk = q && p.vencimento === q.vencimento;
+    const valorOk = q && cv(p.valor_previsto) === cv(q.valor_previsto), vencOk = q && (p.vencEstimado || p.vencimento === q.vencimento);
     if (!q || !valorOk || !vencOk) parcelas.push({ numero: p.numero, arquivo: { valor: cv(p.valor_previsto), venc: p.vencimento }, cadastro: q ? { valor: cv(q.valor_previsto), venc: q.vencimento } : null, nova: !q, valorOk, vencOk });
   }
   // pagamentos que estão no arquivo e ainda não foram registrados (não é divergência)
@@ -64,6 +64,7 @@ export function compararLote(model, registros, escolhas = {}) {
   }
   for (const r of registros) {
     if (r.erro) { res.revisao.push({ tipo: 'ilegivel', arquivo: r.arquivo, msg: r.erro }); continue; }
+    if (r.dados.compra) { res.revisao.push({ tipo: 'compra', arquivo: r.arquivo, msg: r.dados.compra + ' Contratos de compra não entram nos recebimentos e não são comparados.' }); continue; }
     if (ignorar.has(r.chave)) continue;
     const d = r.dados;
     let cad = null;

@@ -395,18 +395,25 @@ export function conferencia(model, mes) {
   // 4) pagamentos do mês sem linha em nenhum relatório
   const mediaEstimativa = tm.media ?? (() => { const all = taxaMedia(todas.filter((x) => x.l.tipo === 'credito' && !x.duplicadaDe).map((x) => ({ base: cents(x.l.valor) + cents(x.l.honorario), taxa: cents(x.l.honorario) }))); return all.media; })();
   const temRelatorioPosterior = model.repasses.some((r) => !r.substituido && r.mes > mes);
+  // períodos de crédito cobertos pelos relatórios ativos do mês (pagamentos que aparecem em algum relatório já foram tratados acima)
+  const periodos = repsMes.filter((r) => r.periodo_inicio && r.periodo_fim).map((r) => [r.periodo_inicio, r.periodo_fim]);
+  const maxFim = periodos.reduce((s, p) => (p[1] > s ? p[1] : s), '');
+  const coberto = (d) => !periodos.length || periodos.some(([a, b]) => d >= a && d <= b);
   for (const p of model.parcelas) {
     if (!p.elegivel || p.contrato.arquivado || coberta.has(`${p.contrato_id}-${p.numero}`)) continue;
     for (const g of p.ativos) {
       if (g.data_pagamento.slice(0, 7) !== mes) continue;
       const bruto = g.valorC, taxaEst = mediaEstimativa != null ? Math.round(bruto * mediaEstimativa) : 0, esp = bruto - taxaEst;
       const fimDoMes = +g.data_pagamento.slice(8, 10) >= ultimoDia(mes) - 1;
-      const aguardando = !temRelatorioProprio || (fimDoMes && !temRelatorioPosterior);
+      const d = g.data_pagamento;
+      const lacuna = temRelatorioProprio && !coberto(d) && d < maxFim; // entre/antes dos períodos enviados: falta um relatório do mês
+      const depois = temRelatorioProprio && !coberto(d) && d > maxFim && !temRelatorioPosterior;
+      const aguardando = !temRelatorioProprio || lacuna || depois || (fimDoMes && !temRelatorioPosterior);
       itens.push({ id: 'P' + g.id, contrato: p.contrato, ctr: String(p.contrato_id), lote: p.contrato.lote || '—', comprador: p.contrato.comprador.nome, parcelasTxt: String(p.numero),
-        vencimento: p.vencimento, pagoEm: g.data_pagamento, data_credito: null, parcelas: [p], bruto, taxa: taxaEst, estimado: true, cat: aguardando ? 'aguardando' : 'faltou',
+        vencimento: p.vencimento, pagoEm: g.data_pagamento, data_credito: null, parcelas: [p], bruto, taxa: taxaEst, estimado: true, lacuna, cat: aguardando ? 'aguardando' : 'faltou',
         esp: aguardando ? 0 : esp, inf: 0, dif: aguardando ? 0 : -esp, espPrevisto: esp,
         why: aguardando
-          ? (!temRelatorioProprio ? `Pago em ${fmtD(g.data_pagamento)}. Ainda não há relatório da contabilidade para ${nomeMesCurto(mes)}.` : `Pago em ${fmtD(g.data_pagamento)}, no fim do mês: pode vir no próximo relatório.`)
+          ? (!temRelatorioProprio ? `Pago em ${fmtD(g.data_pagamento)}. Ainda não há relatório da contabilidade para ${nomeMesCurto(mes)}.` : lacuna || depois ? `Pago em ${fmtD(d)}, fora do período dos relatórios enviados (${repsMes.map((r) => fmtD(r.periodo_inicio) + ' a ' + fmtD(r.periodo_fim)).join('; ')}). Aguarda o relatório que cobre essa data.` : `Pago em ${fmtD(g.data_pagamento)}, no fim do mês: pode vir no próximo relatório.`)
           : `O comprador pagou ${brl(bruto)} em ${fmtD(g.data_pagamento)}, mas a parcela não aparece em nenhum relatório. Esperado: ${brl(esp)}${mediaEstimativa != null ? ` (estimado com a taxa média de ${pctTxt(mediaEstimativa)})` : ''}.` });
     }
   }
@@ -433,7 +440,8 @@ export function conferencia(model, mes) {
   res.problemas = cats.filter((c) => !c.neutro);
   res.extrato = !repsMes.length ? 'sem_relatorio' : repsMes.every((r) => r.extrato_status === 'confirmado') ? 'confirmado' : repsMes.some((r) => r.extrato_status === 'divergente') ? 'divergente' : 'pendente';
   // recebimento do arquivo x resultado da conferência
-  const faltamDados = itens.some((i) => ['sem_parcela', 'sem_pagamento'].includes(i.cat) && !i.resolvido) || res.taxaCobertura.n < res.taxaCobertura.total;
+  const faltamDados = itens.some((i) => ['sem_parcela', 'sem_pagamento'].includes(i.cat) && !i.resolvido) || res.taxaCobertura.n < res.taxaCobertura.total || itens.some((i) => i.lacuna);
+  res.lacunas = itens.filter((i) => i.lacuna).length;
   res.conciliacao = !repsMes.length ? 'aguardando' : faltamDados ? 'faltam_dados' : res.dif === 0 && !res.pendencias ? 'bateu' : 'divergencia';
   res.status = repsMes.length ? 'enviado' : 'aguardando';
   res.linhasDeOutros = conta.some((i) => i.linha) && !repsMes.length;

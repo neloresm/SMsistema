@@ -2,7 +2,7 @@ import { html, render, useState, useEffect, useMemo, useRef, useCallback } from 
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.50.0/+esm';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../config.js';
 import * as C from './calc.js';
-import { parseCobranca, pdfParaTexto, parseRelatorioMecob, inferirTipo, extrairAnimal } from './parser.js';
+import { parseCobranca, lerContratos, pdfParaTexto, parseRelatorioMecob, inferirTipo, extrairAnimal } from './parser.js';
 import { RELATORIOS, gerarRelatorio, exportarExcel, exportarPDF } from './relatorios.js';
 import { baixarPDF, conferenciaExcel, conferenciaPDF } from './exportar-repasse.js';
 import { compararLote, montarCorrecao } from './comparar.js';
@@ -594,7 +594,7 @@ const CATM = Object.fromEntries(C.CONF_CATS.map((c) => [c.id, c]));
 const SEV = { bad: 'critico', warn: 'atencao', info: 'info', gold: 'pendente', ok: 'ok', gray: 'cancelada' };
 const nomeMes = (m) => `${C.MESES_LONGOS[+m.slice(5) - 1]}/${m.slice(0, 4)}`;
 const EXTRATO = { sem_relatorio: ['cancelada', 'Sem relatório'], pendente: ['cancelada', 'Transferência informada pela contabilidade'], confirmado: ['ok', 'Confirmado no extrato'], divergente: ['critico', 'Divergente no extrato'] };
-const CONCILIACAO = { bateu: ['ok', 'Bateu'], divergencia: ['critico', 'Com divergência'], faltam_dados: ['atencao', 'Faltam dados'], aguardando: ['cancelada', 'Aguardando relatório'] };
+const CONCILIACAO = { bateu: ['ok', 'Conciliado'], divergencia: ['critico', 'Com diferença'], faltam_dados: ['atencao', 'Faltam dados'], aguardando: ['cancelada', 'Aguardando relatório'] };
 const chipStatus = (c) => (c.status === 'enviado' ? html`${Badge('ok', 'Relatório enviado')} ${Badge(CONCILIACAO[c.conciliacao][0], CONCILIACAO[c.conciliacao][1])}` : Badge('cancelada', 'Aguardando relatório'));
 const pct = (x) => (x == null ? '—' : C.pctTxt(x));
 
@@ -622,8 +622,8 @@ function RepassesPage({ ctx, mes }) {
     <div class="banner info" style="justify-content:space-between;align-items:center"><span>Contabilidade atual: <b>${model.contabAtual?.nome || 'não cadastrada'}</b>. Cada relatório guarda a empresa que o emitiu.</span>
       ${isAdmin ? html`<button class="btn-sm" onClick=${() => setModal({ t: 'contab' })}>Cadastrar / trocar contabilidade</button>` : ''}</div>
     <div class="mes-chips">${resumoMeses.map(({ mes: x, c }) => html`<a href=${'#/repasses/' + x} class=${'mes-chip' + (x === m ? ' on' : '') + (c.status === 'enviado' ? ' enviado' : '')}><b>${nomeMes(x)}</b><span class="stack" style="gap:4px">${chipStatus(c)}</span></a>`)}</div>
-    ${conf.reps.length ? html`<div class=${'banner ' + (conf.conciliacao === 'bateu' ? 'info' : 'warn')}><span><b>${nomeMes(m)}: relatório enviado</b> (${conf.reps.length} arquivo(s)). Conferência: <b>${CONCILIACAO[conf.conciliacao][1]}</b>${conf.conciliacao === 'divergencia' ? ` de ${C.brl(conf.dif)}` : ''}${conf.conciliacao === 'faltam_dados' ? ' — há linhas sem contrato/pagamento registrado ou sem taxa identificada' : ''}.</span></div>` : ''}
-    ${!conf.reps.length ? html`<div class="banner warn"><span><b>Aguardando relatório da contabilidade de ${nomeMes(m)}.</b>${conf.linhasDeOutros ? ' Já há parcelas deste mês que vieram em relatórios de outros meses.' : ''} ${conf.aguardando ? html`Pagamentos de compradores aguardando o relatório: <b>${C.brl(conf.aguardando)}</b> (estimado, já sem a taxa média).` : ''} ${isAdmin ? html`<a href="#" onClick=${(e) => { e.preventDefault(); setModal({ t: 'enviar' }); }}>Enviar agora</a>` : ''}</span></div>` : ''}
+    ${conf.reps.length ? html`<div class=${'banner ' + (conf.conciliacao === 'bateu' ? 'info' : 'warn')}><span><b>${nomeMes(m)}: relatório enviado</b> (${conf.reps.length} arquivo(s)). Conferência: <b>${CONCILIACAO[conf.conciliacao][1]}</b>${conf.conciliacao === 'divergencia' ? ` de ${C.brl(conf.dif)}` : ''}${conf.conciliacao === 'faltam_dados' ? (conf.lacunas ? ` — ${conf.lacunas} pagamento(s) do mês ficam fora do período dos relatórios enviados (falta um relatório?)` : ' — há linhas sem contrato/pagamento registrado ou sem taxa identificada') : ''}.</span></div>` : ''}
+    ${!conf.reps.length ? html`<div class="banner warn"><span><b>Aguardando relatório da contabilidade de ${nomeMes(m)}.</b>${conf.linhasDeOutros ? ' Já há parcelas deste mês que vieram em relatórios de outros meses.' : ''} ${conf.aguardando ? html`Pagamentos de compradores aguardando o relatório: <b>${C.brl(conf.aguardando)}</b> (estimado, já sem a taxa média).` : ''} </span>${isAdmin ? html`<button class="btn-primary btn-sm" style="margin-left:auto" onClick=${() => setModal({ t: 'enviar' })}>Enviar relatório de ${nomeMes(m)}</button>` : ''}</div>` : ''}
     <div class="grid kpis">
       <${Kpi} cls="accent" lbl="Repasse líquido esperado" val=${C.brl(conf.esperado)} sub=${`Pago pelos compradores no mês − taxas cobradas${conf.taxasEstimadas ? ' (parte estimada)' : ''}`} />
       <div class="kpi gold"><div class="lbl">Transferido pela contabilidade</div><div class="val num">${C.brl(conf.informado)}</div><div class="sub">${Badge(exCls, exTxt)}${conf.confirmadoConta ? html` <span class="small">Confirmado na conta: <b>${C.brl(conf.confirmadoConta)}</b></span>` : ''}</div></div>
@@ -681,23 +681,30 @@ function RepassesPage({ ctx, mes }) {
         <td class="num">${pct(t?.media)}</td><td class="num">${C.brl(C.cents(r.creditos))}</td><td class="num">${C.brl(C.cents(r.taxas) + C.cents(r.debitos))}</td><td class="num"><b>${C.brl(C.cents(r.valor_final))}</b></td>
         <td>${Badge(EXTRATO[r.extrato_status][0], EXTRATO[r.extrato_status][1])}${r.extrato_data ? html`<div class="small muted">${C.fmtD(r.extrato_data)} · ${C.brl(C.cents(r.extrato_valor))}</div>` : ''}</td>
         <td class="right"><div class="stack" style="justify-content:flex-end">${r.storage_path && r.storage_path !== 'teste' ? html`<button class="btn-sm" onClick=${() => abrirAnexo(r.storage_path).catch((e) => ctx.notify(e.message, 'err'))}>Abrir PDF</button>` : ''}
-          ${isAdmin ? html`<button class="btn-sm" onClick=${() => setModal({ t: 'extrato', r })}>Conferir no extrato</button><button class="btn-sm" onClick=${() => setModal({ t: 'enviar', substitui: r })}>Substituir</button><button class="btn-sm btn-danger" onClick=${() => setModal({ t: 'remover', r })}>Remover</button>` : ''}</div></td></tr>`; })}
+          ${isAdmin ? html`<button class="btn-sm" onClick=${() => setModal({ t: 'extrato', r })}>Conferir no extrato</button><button class="btn-sm" onClick=${() => setModal({ t: 'enviar', substitui: r })}>Substituir</button><button class="btn-sm btn-danger" onClick=${() => setModal({ t: 'remover', r })}>Excluir relatório</button>` : ''}</div></td></tr>`; })}
       </tbody></table></div></div>` : ''}
     ${sel ? html`<${ItemRepasse} ctx=${ctx} i=${sel} mes=${m} onClose=${() => setSel(null)} />` : ''}
     ${modal?.t === 'enviar' ? html`<${EnviarRelatorio} ctx=${ctx} mesAtual=${m} substitui=${modal.substitui} onClose=${() => setModal(null)} />` : ''}
     ${modal?.t === 'extrato' ? html`<${ExtratoModal} ctx=${ctx} r=${modal.r} onClose=${() => setModal(null)} />` : ''}
     ${modal?.t === 'contab' ? html`<${ContabilidadeModal} ctx=${ctx} onClose=${() => setModal(null)} />` : ''}
-    ${modal?.t === 'remover' ? html`<${RemoverRelatorio} ctx=${ctx} r=${modal.r} onClose=${() => setModal(null)} />` : ''}`;
+    ${modal?.t === 'remover' ? html`<${RemoverRelatorio} ctx=${ctx} r=${modal.r} mes=${m} outros=${conf.reps.filter((x) => x.id !== modal.r.id)} onClose=${() => setModal(null)} />` : ''}`;
 }
 
-function RemoverRelatorio({ ctx, r, onClose }) {
+function RemoverRelatorio({ ctx, r, mes, outros = [], onClose }) {
   const [motivo, setMotivo] = useState('');
-  return html`<${Modal} title="Remover relatório" onClose=${onClose}>
-    <p><b>${r.titulo || r.arquivo_nome}</b> (créditos de ${C.fmtD(r.periodo_inicio)} a ${C.fmtD(r.periodo_fim)}, valor final ${C.brl(C.cents(r.valor_final))}).</p>
-    <p class="small muted">O relatório e as linhas dele saem de todos os cálculos e o mês volta a “Aguardando relatório” se não houver outro arquivo. Contratos, parcelas e pagamentos não são alterados. O registro fica no histórico e o arquivo pode ser enviado de novo.</p>
-    <label class="f">Motivo (obrigatório)<input value=${motivo} onInput=${(e) => setMotivo(e.target.value)} placeholder="Ex.: reimportar o relatório de outubro" /></label>
-    <div class="modal-actions"><button onClick=${onClose}>Cancelar</button><button class="btn-danger" disabled=${motivo.trim().length < 3}
-      onClick=${async () => { if (await ctx.act(() => sb.rpc('rcb_remover_repasse', { p_id: r.id, p_motivo: motivo.trim() }).then(chk), 'Relatório removido. O mês aguarda um novo envio.')) onClose(); }}>Remover relatório</button></div><//>`;
+  const ultimo = !outros.length;
+  return html`<${Modal} title="Excluir relatório" onClose=${onClose}>
+    <dl class="bridge" style="margin:0 0 12px"><dt>Arquivo</dt><dd style="text-align:right"><b>${r.arquivo_nome || r.titulo || '—'}</b></dd>
+      <dt>Mês afetado</dt><dd><b>${nomeMes(mes)}</b></dd>
+      <dt>Relatório</dt><dd class="small">${r.titulo || '—'} · créditos de ${C.fmtD(r.periodo_inicio)} a ${C.fmtD(r.periodo_fim)}</dd>
+      <dt>Valor final do arquivo</dt><dd>${C.brl(C.cents(r.valor_final))} (${r.linhas.length} linhas)</dd></dl>
+    <div class=${'banner ' + (ultimo ? 'warn' : 'info')} style="margin:0 0 12px"><span>${ultimo
+      ? html`É o <b>único relatório</b> de ${nomeMes(mes)}. O mês volta para <b>“Aguardando relatório”</b> e o botão para enviar outro arquivo fica disponível.`
+      : html`${nomeMes(mes)} será recalculado com ${outros.length === 1 ? 'o relatório que continua ativo' : `os ${outros.length} relatórios que continuam ativos`}: ${outros.map((x) => x.arquivo_nome || x.titulo).join(', ')}.`}</span></div>
+    <p class="small muted">Os valores lidos deste arquivo saem da conferência. Contratos, parcelas, pagamentos e os outros meses não são alterados. A exclusão fica registrada no histórico e o mesmo arquivo pode ser enviado de novo.</p>
+    <label class="f">Motivo (opcional)<input value=${motivo} onInput=${(e) => setMotivo(e.target.value)} placeholder="Ex.: enviar o arquivo corrigido" /></label>
+    <div class="modal-actions"><button onClick=${onClose}>Cancelar</button><button class="btn-danger"
+      onClick=${async () => { if (await ctx.act(() => sb.rpc('rcb_remover_repasse', { p_id: r.id, p_motivo: motivo.trim().length >= 3 ? motivo.trim() : 'Excluído pelo usuário' }).then(chk), ultimo ? `Relatório excluído. ${nomeMes(mes)} aguarda um novo envio.` : `Relatório excluído. ${nomeMes(mes)} foi recalculado.`)) onClose(); }}>Excluir relatório</button></div><//>`;
 }
 
 function ContabilidadeModal({ ctx, onClose }) {
@@ -858,8 +865,8 @@ function CompararPage({ ctx }) {
       setLendo(`Lendo ${f.name}…`);
       try {
         const t = /\.pdf$/i.test(f.name) || f.type === 'application/pdf' ? await pdfParaTexto(f) : await f.text();
-        const regs = parseCobranca(t);
-        if (!regs.length) out.push({ chave: `${f.name}#0`, arquivo: f.name, erro: 'Arquivo ilegível ou em formato não reconhecido (nenhum contrato encontrado).' });
+        const regs = lerContratos(t);
+        if (!regs.length) out.push({ chave: `${f.name}#0`, arquivo: f.name, erro: /Resumo do repasse|Prestação de Contas|Valor final:/i.test(t) ? 'Este arquivo é um relatório de repasse da contabilidade, não um contrato. Envie-o em Repasses da Contabilidade.' : !t.trim() ? 'O PDF não tem texto (parece imagem escaneada). Envie o PDF gerado pelo sistema de cobrança.' : 'Formato não reconhecido. Aceitos: extrato de contratos da cobrança (texto ou PDF) e Nota de Leilão.' });
         regs.forEach((d, i) => out.push(d.erro ? { chave: `${f.name}#${i}`, arquivo: f.name, erro: `${d.erro}. Trecho: ${d.trecho.slice(0, 120)}…` } : { chave: `${f.name}#${i}#${k++}`, arquivo: f.name, dados: d }));
       } catch (e) { out.push({ chave: `${f.name}#err`, arquivo: f.name, erro: 'Não foi possível ler o arquivo: ' + e.message }); }
     }
@@ -890,8 +897,8 @@ function CompararPage({ ctx }) {
     <div class="page-head"><div><h1>Comparar contratos</h1><p>Envie todos os arquivos de uma vez e compare com os contratos cadastrados. Nada é gravado sem a sua confirmação.</p></div>
       <a class="btn" href="#/importar">Importar novos contratos</a></div>
     <div class="card"><div class="filters" style="align-items:center">
-      <label class="btn btn-primary">Selecionar arquivos<input type="file" multiple accept=".pdf,.txt,application/pdf,text/plain" hidden onChange=${(e) => e.target.files.length && lerArquivos([...e.target.files])} /></label>
-      <span class="small muted">PDF ou texto do extrato de contratos. Pode selecionar vários arquivos juntos.</span>${lendo ? html`<b>${lendo}</b>` : ''}</div>
+      <label class="btn btn-primary">Selecionar arquivos<input type="file" multiple accept=".pdf,.txt,application/pdf,text/plain" hidden onChange=${(e) => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) lerArquivos(fs); }} /></label>
+      <span class="small muted">Extrato de contratos da cobrança (PDF ou texto) ou Nota de Leilão em PDF. Selecione todos os arquivos juntos (Ctrl+A na janela de arquivos).</span>${lendo ? html`<b>${lendo}</b>` : ''}</div>
       <details style="margin-top:10px"><summary class="small">Ou colar o texto dos contratos</summary><textarea value=${texto} onInput=${(e) => setTexto(e.target.value)}></textarea><button class="btn-sm" disabled=${!texto.trim()} onClick=${lerTexto}>Comparar texto colado</button></details></div>
     ${res ? html`
       <div class="grid kpis" style="grid-template-columns:repeat(5,minmax(0,1fr));margin-top:16px">${GRUPOS_CMP.map(([k, t, cls]) => html`<button class=${'kpi kpi-click' + (aba === k ? ' accent' : '')} onClick=${() => setAba(k)}><div class="lbl">${t}</div><div class="val num">${n[k]}</div><div class="sub">${Badge(cls, 'ver lista')}</div></button>`)}</div>
@@ -924,7 +931,7 @@ function CompararPage({ ctx }) {
             </div>`; })}` : ''}
         ${aba === 'revisao' ? html`<h2>Precisa de revisão (${n.revisao})</h2>
           ${!res.revisao.length ? html`<div class="empty">Nada para revisar.</div>` : ''}
-          ${fl(res.revisao, (r) => [r.arquivo, r.msg, r.id]).map((r) => html`<div class="rev-item">${Badge(r.tipo === 'ilegivel' ? 'critico' : 'atencao', r.tipo === 'ilegivel' ? 'Arquivo ilegível' : r.tipo === 'duplicidade' ? 'Possível duplicidade' : 'Correspondência incerta')}
+          ${fl(res.revisao, (r) => [r.arquivo, r.msg, r.id]).map((r) => html`<div class="rev-item">${Badge(r.tipo === 'ilegivel' ? 'critico' : r.tipo === 'compra' ? 'cancelada' : 'atencao', r.tipo === 'ilegivel' ? 'Arquivo não lido' : r.tipo === 'compra' ? 'Contrato de compra' : r.tipo === 'duplicidade' ? 'Possível duplicidade' : 'Correspondência incerta')}
             <div class="msg small"><b>${r.arquivo || ''}</b> ${r.msg}
               ${r.tipo === 'incerta' ? html`<div class="stack" style="margin-top:6px">${r.opcoes.map((o) => html`<button class="btn-sm" onClick=${() => setEscolhas((e) => ({ ...e, [r.chave]: o.c.id }))}>É o contrato ${o.c.id} · ${o.c.comprador.nome} · lote ${o.c.lote || '—'} (${o.s.total}/4 dados iguais)</button>`)}
                 <button class="btn-sm" onClick=${() => setEscolhas((e) => ({ ...e, [r.chave]: 'novo' }))}>É um contrato novo</button></div>` : ''}

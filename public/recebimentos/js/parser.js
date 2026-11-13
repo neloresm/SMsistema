@@ -196,3 +196,86 @@ export async function pdfParaTexto(file) {
   return pages.join('\n');
 }
 
+
+// ---------------------------------------------------------------------------
+// Outros formatos de contrato (PDF da leiloeira)
+//  - "Nota de Leilão e Contrato de Compra e Venda" (vendedor, comprador, lote, forma de pagamento)
+//  - "Mapa de Compra" (sempre é compra)
+// A SM só recebe pelos contratos em que ela é a VENDEDORA. Quando a SM aparece como compradora,
+// o registro volta marcado como `compra` para a tela explicar que ele não entra nos recebimentos.
+// ---------------------------------------------------------------------------
+export const SM_NOMES = /fabio ferreira dias marcondes|sm agropecu|agro\s*sm\b/i;
+const colunas = (l) => String(l || '').trim().split(/\s{2,}|\t/).map((x) => x.trim()).filter(Boolean);
+const somaMeses = (iso, n) => {
+  const [y, m, d] = iso.split('-').map(Number); const t = new Date(Date.UTC(y, m - 1 + n, 1));
+  const ult = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0)).getUTCDate();
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${String(Math.min(d, ult)).padStart(2, '0')}`;
+};
+const linhaApos = (ls, re, pular = 0) => { const i = ls.findIndex((l) => re.test(l)); return i >= 0 ? ls[i + 1 + pular] || '' : ''; };
+
+export function parseNotaLeilao(text) {
+  const t = String(text || '').replace(/\r/g, '').replace(/ /g, ' ');
+  const out = []; const vistos = new Set();
+  const partes = t.split(/Nota de Leilão e Contrato de Compra e Venda[^\n]*/i).slice(1);
+  for (const p of partes) {
+    if (!/DADOS DO VENDEDOR/i.test(p)) continue;
+    const ls = p.split('\n');
+    const avisos = [];
+    const cab = colunas(linhaApos(ls, /Leilão\s+Número\s+(?:da\s+)?Nota/i));
+    const lm = (cab[0] || '').match(/^(.*?)\s*-\s*(\d{2}\/\d{2}\/\d{4})(?:\s*-\s*(.+))?$/);
+    const leilao = lm ? { nome: lm[1].trim(), data: dmy(lm[2]), local: (lm[3] || '').trim() } : { nome: cab[0] || '', data: '', local: '' };
+    const nota = cab[1] || ''; let lote = cab[2] || '';
+    if (!lote) lote = colunas(linhaApos(ls, /Leiloeiro\(s\)\s+Lote/i))[1] || '';
+    const chave = `${leilao.nome}|${nota}|${lote}`;
+    if (vistos.has(chave)) continue; vistos.add(chave);
+    const vend = colunas(linhaApos(ls, /DADOS DO VENDEDOR/i, 1));
+    const comp = colunas(linhaApos(ls, /DADOS DO COMPRADOR/i, 1));
+    const obj = linhaApos(ls, /OBJETO DO CONTRATO/i).trim();
+    const pct = obj.match(/^([\d.,]+)\s*%/);
+    const desc = obj.replace(/^([\d.,]+)\s*%\s*(da\(o\))?\s*/i, '').replace(/\s{2,}/g, ' ').trim();
+    const venda = colunas(linhaApos(ls, /Valor do Lance.*Total Líquido/i));
+    const valores = venda.filter((x) => /^R\$/.test(x)).map((x) => brNum(x.replace(/R\$\s*/, '')));
+    const valorTotal = valores.length ? valores[valores.length - 1] : 0;
+    const fi = ls.findIndex((l) => /FORMA DE PAGAMENTO/i.test(l)); const ff = ls.findIndex((l, i) => i > fi && /^\s*OBS\.?:/i.test(l));
+    const area = fi >= 0 ? ls.slice(fi + 1, ff > fi ? ff : fi + 20).join(' ') : '';
+    const parcelas = []; let m; const re = /(\d{1,3})º\s*-\s*R\$\s*([\d.]+,\d{2})\s*(?:-\s*(\d{2}\/\d{2}\/\d{4}))?/g;
+    while ((m = re.exec(area))) parcelas.push({ numero: +m[1], valor_previsto: brNum(m[2]).toFixed(2), vencimento: m[3] ? dmy(m[3]) : '' });
+    const base = parcelas.find((x) => x.vencimento);
+    let estimadas = 0;
+    for (const q of parcelas) if (!q.vencimento && base) { q.vencimento = somaMeses(base.vencimento, q.numero - base.numero); q.vencEstimado = true; estimadas++; }
+    if (estimadas) avisos.push(`${estimadas} vencimento(s) não aparecem no PDF; foram estimados mês a mês a partir de ${base.vencimento.split('-').reverse().join('/')} e não são comparados.`);
+    if (!parcelas.length) avisos.push('Forma de pagamento não encontrada.');
+    const r = {
+      id: null, fonte: 'nota_leilao', tipo_doc: 'Nota de Leilão', numero_nota: nota, leilao,
+      vendedor: vend[0] || '', comprador: { nome: comp[0] || '', documento: (comp[1] || '').replace(/\D/g, ''), email: '', telefone: comp.slice(2).join(' / ') },
+      descricao: desc, ...extrairAnimal(desc), tipo_venda: inferirTipo(desc), percentual: pct ? Number(pct[1].replace(',', '.')).toFixed(4) : '',
+      lote, data_contrato: leilao.data, valor_total: valorTotal.toFixed(2), qtd_parcelas: parcelas.length, parcelas, avisos,
+    };
+    if (SM_NOMES.test(r.comprador.nome) && !SM_NOMES.test(r.vendedor)) r.compra = `Contrato de compra: a SM (${r.comprador.nome}) é a compradora e o vendedor é ${r.vendedor || 'outro'}.`;
+    else if (!SM_NOMES.test(r.vendedor)) r.compra = `A SM não aparece como vendedora neste contrato (vendedor: ${r.vendedor || 'não identificado'}; comprador: ${r.comprador.nome || 'não identificado'}).`;
+    out.push(r);
+  }
+  return out;
+}
+
+export function parseMapaCompra(text) {
+  const t = String(text || '').replace(/\r/g, '');
+  if (!/MAPA DE COMPRA/i.test(t)) return [];
+  const ls = t.split('\n');
+  const ev = (linhaApos(ls, /MAPA DE COMPRA/i) || '').trim();
+  const em = ev.match(/^(.*?)\s*-\s*(\d{2}\/\d{2}\/\d{4})/);
+  const comprador = (t.match(/Comprador\s*:\s*(.+)/) || [])[1]?.trim() || '';
+  const total = (t.match(/=\s*R\$\s*([\d.]+,\d{2})/) || [])[1];
+  return [{ id: null, fonte: 'mapa_compra', tipo_doc: 'Mapa de Compra', leilao: { nome: em ? em[1].trim() : ev, data: em ? dmy(em[2]) : '' }, comprador: { nome: comprador },
+    valor_total: total ? brNum(total).toFixed(2) : '', parcelas: [], avisos: [],
+    compra: `Mapa de compra: a SM${comprador ? ` (${comprador})` : ''} é a compradora neste leilão.` }];
+}
+
+// Lê qualquer formato de contrato conhecido. Devolve [] se nenhum for reconhecido.
+export function lerContratos(text) {
+  const a = parseCobranca(text);
+  if (a.length) return a;
+  const b = parseNotaLeilao(text);
+  if (b.length) return b;
+  return parseMapaCompra(text);
+}
