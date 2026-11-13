@@ -233,3 +233,8 @@ th{background:#FBFAF7;color:var(--ink-2);text-transform:none;letter-spacing:0;fo
 .mes-chip.enviado{border-color:#9fd3b4;background:#eefaf2}
 .mes-chip.enviado.on{border-color:var(--em-700);box-shadow:0 0 0 2px var(--em-100)}
 @media (prefers-color-scheme:dark){.mes-chip.enviado{background:rgba(46,160,90,.14)}}
+
+.kv{width:100%;margin:0 0 12px;border-collapse:collapse;text-align:left}
+.kv th{width:120px;font-weight:500;color:var(--muted,#6b6b6b);vertical-align:top;padding:6px 10px 6px 0;white-space:nowrap}
+.kv td{padding:6px 0;overflow-wrap:anywhere}
+.kv tr+tr th,.kv tr+tr td{border-top:1px solid var(--line)}

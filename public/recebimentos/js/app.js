@@ -695,10 +695,11 @@ function RemoverRelatorio({ ctx, r, mes, outros = [], onClose }) {
   const [motivo, setMotivo] = useState('');
   const ultimo = !outros.length;
   return html`<${Modal} title="Excluir relatório" onClose=${onClose}>
-    <dl class="bridge" style="margin:0 0 12px"><dt>Arquivo</dt><dd style="text-align:right"><b>${r.arquivo_nome || r.titulo || '—'}</b></dd>
-      <dt>Mês afetado</dt><dd><b>${nomeMes(mes)}</b></dd>
-      <dt>Relatório</dt><dd class="small">${r.titulo || '—'} · créditos de ${C.fmtD(r.periodo_inicio)} a ${C.fmtD(r.periodo_fim)}</dd>
-      <dt>Valor final do arquivo</dt><dd>${C.brl(C.cents(r.valor_final))} (${r.linhas.length} linhas)</dd></dl>
+    <table class="kv"><tbody>
+      <tr><th>Arquivo</th><td><b>${r.arquivo_nome || r.titulo || '—'}</b></td></tr>
+      <tr><th>Mês afetado</th><td><b>${nomeMes(mes)}</b></td></tr>
+      <tr><th>Créditos de</th><td>${C.fmtD(r.periodo_inicio)} a ${C.fmtD(r.periodo_fim)} <span class="small muted">· ${r.titulo || ''}</span></td></tr>
+      <tr><th>Valor final</th><td>${C.brl(C.cents(r.valor_final))} <span class="small muted">(${r.linhas.length} linhas)</span></td></tr></tbody></table>
     <div class=${'banner ' + (ultimo ? 'warn' : 'info')} style="margin:0 0 12px"><span>${ultimo
       ? html`É o <b>único relatório</b> de ${nomeMes(mes)}. O mês volta para <b>“Aguardando relatório”</b> e o botão para enviar outro arquivo fica disponível.`
       : html`${nomeMes(mes)} será recalculado com ${outros.length === 1 ? 'o relatório que continua ativo' : `os ${outros.length} relatórios que continuam ativos`}: ${outros.map((x) => x.arquivo_nome || x.titulo).join(', ')}.`}</span></div>
