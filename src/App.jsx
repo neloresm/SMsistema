@@ -1,4 +1,4 @@
-/* SM-BUILD: pdf-a4-v15-2026-11-05 */
+/* SM-BUILD: pacotes-comissoes-2026-11-16 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -122,6 +122,34 @@ function comissaoCalc(a) {
   // A comissão incide SEMPRE sobre o valor total da minha compra, nunca sobre o valor total estimado do animal.
   return { pct, base: "Valor total da minha compra", total: cota * pct / 100 };
 }
+/* pagamentos de comissão registrados na ficha (ou no pacote). O valor guardado é SEMPRE a parte da SM:
+   quando o usuário informa o total pago pela sociedade, o sistema já grava total × % da SM. */
+const comissaoPagamentosDe = (a) => ((a && a.comissaoPagamentos) || []).filter((p) => p && num(p.valor) > 0);
+const comissaoPaga = (a) => comissaoPagamentosDe(a).reduce((s, p) => s + num(p.valor), 0);
+
+/* ------------------------ pacotes (várias doadoras) --------------------- *
+ * O pacote é UM registro (tipo "pacote") com os dados da compra: leilão, lotes, sociedade,
+ * parcelas e comissão — por isso entra uma única vez nos totais. Cada doadora continua sendo
+ * uma ficha própria de aspiração/prenhez (pacoteId aponta para o pacote), sem valores de compra,
+ * e mantém todo o acompanhamento individual (status, diagnóstico, nascimento, vínculos). */
+const ehPacote = (a) => !!a && a.tipo === "pacote";
+const TIPO_PAC_TXT = { aspiracao: "Pacote de aspirações", prenhez: "Pacote de prenhezes" };
+const doPacote = (ativos, id) => (id ? (ativos || []).filter((x) => x && x.pacoteId === id && x.tipo !== "pacote").sort((x, y) => (num(x.pacoteOrdem) || 999) - (num(y.pacoteOrdem) || 999)) : []);
+const pacoteDe = (ativos, a) => (a && a.pacoteId ? (ativos || []).find((x) => x && x.id === a.pacoteId) || null : null);
+function rotuloPacote(p) {
+  p = p || {};
+  return `${TIPO_PAC_TXT[p.subtipo] || "Pacote"}${p.leilao ? `: ${p.leilao}` : ""}${p.lote ? ` · lote ${p.lote}` : ""}`;
+}
+/* campos de compra que ficam SÓ no pacote (as doadoras não carregam valores) */
+const CAMPOS_COMPRA_PACOTE = ["leilao", "dataCompra", "vendedor", "lote", "obsCompra", "porcentagemComprada", "valorParcela", "parcelas", "primeiroVenc", "comissaoPct", "frete", "outros"];
+/* situação do pacote para a fila de aprovação */
+function statusPacotePref(d) {
+  if (!(num(d.porcentagemComprada) > 0)) return { status: "conferir", motivo: "% da SM não informado" };
+  const soc = (d.socios || []).filter((s) => s && (s.nome || "").trim());
+  if (soc.length) { const tot = num(d.porcentagemComprada) + soc.reduce((s, x) => s + num(x.pct), 0); if (Math.abs(tot - 100) > 0.5) return { status: "conferir", motivo: `SM + sócios somam ${Math.round(tot * 100) / 100}%` }; }
+  if (!(d.doadoras || []).some((x) => x && (x.doadora || "").trim())) return { status: "conferir", motivo: "nenhuma doadora informada" };
+  return { status: "ok", motivo: "" };
+}
 /* gera/atualiza parcelas preservando pagamentos; auto-paga vencidas se marcado */
 function ensureParcelas(a) {
   a = a || {};
@@ -194,8 +222,9 @@ function finance(a) {
     adicPago += l.reduce((s, p) => s + Math.min(num(p.valorPago), p.valor), 0);
     adicList = adicList.concat(l.map((p) => ({ ...p, compraId: c.id, compraData: c.data, origem: "adicional", origemLabel: "Compra adicional" + (c.data ? ` (${dataBR(c.data)})` : "") })));
   });
+  const comPaga = comissaoPaga(a);
   return {
-    valor, qtd, pct, cota, totalEstimado, com, custos, finalEstimado, list, adicList,
+    valor, qtd, pct, cota, totalEstimado, com, custos, finalEstimado, list, adicList, comPaga, comSaldo: Math.max(0, com.total - comPaga),
     pagas, restantes, jaPago, emAberto, devidas, ultimoVenc, proxima: prox ? prox.venc : "", vencidas,
     total: cota + custos + adicTotal, pago: jaPago + adicPago, aberto: emAberto + (adicTotal - adicPago), patrimonio: totalEstimado,
   };
@@ -1277,8 +1306,9 @@ function VideoBlock({ v }) {
 
 /* --------------------------- formulário de ficha ----------------------- */
 function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoNames, localNames, vendedorNames, socioNames,
-  onQuickAnimal, onQuickLeilao, onQuickLocal, onQuickVendedor, onQuickSocio, onSave, onApprove, onClose }) {
+  onQuickAnimal, onQuickLeilao, onQuickLocal, onQuickVendedor, onQuickSocio, onSave, onApprove, onClose, onPacote, pacoteNome }) {
   const ehPref = !!(initial && initial.__pref);
+  const doPac = !!(initial && initial.pacoteId);   // doadora de um pacote: compra, parcelas, comissão e sociedade ficam no pacote
   const [d, setD] = useState(() => initial || { id: uid(), tipo, raca: tipo === "animal" ? "Nelore" : undefined, socios: [], videos: [], historico: [], comissaoPct: 8 });
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
@@ -1391,8 +1421,18 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
           {initial && initial.__fromOrigem && (tipo === "animal"
             ? <div className="aviso" style={{ margin: "0 0 14px" }}>Nascimento de <b>{initial.origemLabel}</b> — genealogia e sociedade já preenchidas. Complete os dados do animal e confira o sexo.</div>
             : <div className="aviso" style={{ margin: "0 0 14px" }}>Prenhez gerada a partir de <b>{initial.origemLabel}</b> — doadora, pai, genealogia e sociedade já preenchidos.</div>)}
+          {!initial && onPacote && (tipo === "prenhez" || tipo === "aspiracao") && (
+            <div className="pac-modo" role="radiogroup" aria-label="Tipo de compra">
+              <span className="pac-modo-t">Tipo de compra</span>
+              <div className="segmented">
+                <button type="button" role="radio" aria-checked="true" className="seg on">Individual</button>
+                <button type="button" role="radio" aria-checked="false" className="seg" onClick={() => onPacote(tipo)}>Pacote (várias doadoras)</button>
+              </div>
+            </div>
+          )}
+          {doPac && <div className="aviso aviso-info" style={{ margin: "0 0 14px" }}>Esta doadora faz parte do <b>{pacoteNome || "pacote"}</b>. Compra, parcelas, comissão e sociedade ficam no pacote — aqui você edita só os dados desta doadora.</div>}
           {tipo === "prenhez" && !initial && <div className="aviso aviso-info" style={{ margin: "0 0 14px" }}>Prenhez de aspiração da SM? Use “Gerar prenhez” na ficha da aspiração. Embrião congelado? Use “Usar em transferência” no Banco de Embriões. Este formulário é para prenhez adquirida ou cadastro direto.</div>}
-          {SCHEMAS[tipo].map((sec) => RECOLHE[sec.g] && !secAberta[sec.g] && !secTemDados(sec) ? (
+          {SCHEMAS[tipo].filter((sec) => !(doPac && (sec.g === "Compra" || sec.g === "Pagamento"))).map((sec) => RECOLHE[sec.g] && !secAberta[sec.g] && !secTemDados(sec) ? (
             <div className="fsec" key={sec.g}><button type="button" className="fsec-abrir" onClick={() => setSecAberta((x) => ({ ...x, [sec.g]: true }))}>+ {sec.g} <span>· opcional, {RECOLHE[sec.g]}</span></button></div>
           ) : (
             <div className="fsec" key={sec.g}>
@@ -1416,7 +1456,7 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
           ))}
 
           {/* sociedade simplificada */}
-          <div className="fsec">
+          {!doPac && <div className="fsec">
             <div className="fsec-h">Sociedade <span className="muted small hint">— apenas informativo (não afeta seus valores)</span>{(d.socios || []).length > 0 && pctSocios !== 100 && <span className="warn">⚠ soma {pctSocios}% (deve fechar 100%)</span>}</div>
             {(d.socios || []).map((s) => (
               <div className="socio-row" key={s.id}>
@@ -1427,7 +1467,7 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
               </div>
             ))}
             <button className="btn btn-ghost" onClick={addSocio}>+ Adicionar sócio</button>
-          </div>
+          </div>}
 
           {/* vídeos */}
           <div className="fsec">
@@ -1450,6 +1490,264 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
             <button className="btn btn-gold" onClick={() => onSave(d)}>Salvar ficha</button>
           )}</div>
       </div>
+    </div>
+  );
+}
+
+/* ------------- pacote: cadastro / conferência / edição com várias doadoras ------------- */
+const novaLinhaDoadora = () => ({ id: uid(), doadora: "", regDoadora: "", qtd: 1, pai: "", status: "", receptora: "", previsaoParto: "", dataAspiracao: "", obs: "" });
+// modo: "novo" (vai para a fila de aprovação) · "pref" (conferir na fila) · "editar" (pacote já aprovado)
+function PacoteForm({ initial, modo, animalNames, animalReg, leilaoNames, vendedorNames, socioNames, onQuickLeilao, onQuickVendedor, onQuickSocio, onEnviar, onApprove, onSalvar, onIndividual, onClose }) {
+  const [d, setD] = useState(() => {
+    const base = initial || {};
+    const linhas = base.doadoras && base.doadoras.length ? base.doadoras : [novaLinhaDoadora(), novaLinhaDoadora()];
+    return { tipo: "pacote", subtipo: "aspiracao", comissaoPct: 8, socios: [], historico: [], ...base, id: base.id || uid(), doadoras: linhas.map((x) => ({ ...novaLinhaDoadora(), ...x })) };
+  });
+  const [erro, setErro] = useState("");
+  useEffect(() => {
+    const h = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+  const set = (k, v) => setD((p) => ({ ...p, [k]: v }));
+  const setLinha = (id, k, v) => setD((p) => ({ ...p, doadoras: p.doadoras.map((x) => {
+    if (x.id !== id) return x;
+    const n = { ...x, [k]: v };
+    if (k === "doadora") { const reg = (animalReg || {})[lc(v)]; if (reg && (!x.regDoadora || x.__regAuto)) { n.regDoadora = reg; n.__regAuto = true; } }
+    if (k === "regDoadora") n.__regAuto = false;
+    return n;
+  }) }));
+  const addLinha = () => setD((p) => ({ ...p, doadoras: [...p.doadoras, novaLinhaDoadora()] }));
+  const delLinha = (id) => setD((p) => ({ ...p, doadoras: p.doadoras.filter((x) => x.id !== id) }));
+  const addSocio = () => setD((p) => ({ ...p, socios: [...(p.socios || []), { id: uid(), nome: "", pct: "" }] }));
+  const setSocio = (id, k, v) => setD((p) => ({ ...p, socios: (p.socios || []).map((s) => (s.id === id ? { ...s, [k]: v } : s)) }));
+  const delSocio = (id) => setD((p) => ({ ...p, socios: (p.socios || []).filter((s) => s.id !== id) }));
+  const f = finance(d);
+  const pren = d.subtipo === "prenhez";
+  const soc = (d.socios || []).filter((s) => s && (s.nome || "").trim());
+  const pctTot = num(d.porcentagemComprada) + soc.reduce((s, x) => s + num(x.pct), 0);
+  const limpo = () => ({ ...d, socios: soc.map((s) => ({ ...s, nome: s.nome.replace(/\s+/g, " ").trim() })),
+    doadoras: d.doadoras.filter((x) => (x.doadora || "").trim()).map((x) => ({ ...x, doadora: x.doadora.replace(/\s+/g, " ").trim(), regDoadora: (x.regDoadora || "").trim(), pai: (x.pai || "").replace(/\s+/g, " ").trim() })) });
+  const agir = (fn) => {
+    const x = limpo();
+    if (!x.doadoras.length) { setErro("Informe pelo menos uma doadora."); return; }
+    if (!(x.leilao || "").trim() && !x.dataCompra) { setErro("Informe o leilão ou a data da compra."); return; }
+    setErro(""); fn(x);
+  };
+  const campo = (k, label, type, extra) => (
+    <label className={`field ${type === "textarea" ? "wide" : ""}`} key={k}><span>{label}</span>
+      {type === "textarea" ? <textarea rows={2} value={d[k] || ""} onChange={(e) => set(k, e.target.value)} />
+        : <input type={type === "money" || type === "number" || type === "pct" ? "number" : type === "date" ? "date" : "text"} step="any" value={d[k] ?? ""} onChange={(e) => set(k, e.target.value)} placeholder={type === "money" ? "R$ 0" : type === "pct" ? "ex.: 33,33" : extra || ""} />}
+    </label>
+  );
+  const titulo = modo === "pref" ? "Conferir pacote" : modo === "editar" ? "Editar pacote" : "Novo cadastro";
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal pac-form" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head"><h2>{titulo} — <span className="serif">{TIPO_PAC_TXT[d.subtipo]}</span></h2><button className="x" onClick={onClose} aria-label="Fechar">✕</button></div>
+        <div className="modal-body">
+          {modo === "novo" && (
+            <div className="pac-modo" role="radiogroup" aria-label="Tipo de compra">
+              <span className="pac-modo-t">Tipo de compra</span>
+              <div className="segmented">
+                <button type="button" role="radio" aria-checked="false" className="seg" onClick={() => onIndividual && onIndividual(d.subtipo)}>Individual</button>
+                <button type="button" role="radio" aria-checked="true" className="seg on">Pacote (várias doadoras)</button>
+              </div>
+            </div>
+          )}
+          {modo !== "editar" && (
+            <div className="pac-modo" role="radiogroup" aria-label="O pacote é de">
+              <span className="pac-modo-t">O pacote é de</span>
+              <div className="segmented">
+                {[["aspiracao", "Aspirações"], ["prenhez", "Prenhezes"]].map(([k, l]) => <button type="button" key={k} role="radio" aria-checked={d.subtipo === k} className={`seg ${d.subtipo === k ? "on" : ""}`} onClick={() => set("subtipo", k)}>{l}</button>)}
+              </div>
+            </div>
+          )}
+          <div className="aviso aviso-info" style={{ margin: "0 0 14px" }}>
+            {modo === "novo" ? "O pacote vai para a fila de aprovação (Importar). Ao aprovar, ele aparece como um único card, e cada doadora ganha a própria ficha para acompanhamento." : "Compra, parcelas e comissão são do pacote e entram uma única vez nos totais. Cada doadora tem acompanhamento próprio."}
+          </div>
+
+          <div className="fsec"><div className="fsec-h">Dados do pacote</div>
+            <div className="grid">
+              <label className="field"><span>Nome do leilão</span><AutoField value={d.leilao || ""} onChange={(v) => set("leilao", v)} suggestions={leilaoNames} onCreate={onQuickLeilao} placeholder="buscar ou cadastrar leilão" /></label>
+              {campo("dataCompra", "Data da compra", "date")}
+              {campo("lote", "Lote(s)", "text", "ex.: 21A, 21B, 21C")}
+              <label className="field"><span>Vendedor</span><AutoField value={d.vendedor || ""} onChange={(v) => set("vendedor", v)} suggestions={vendedorNames} onCreate={onQuickVendedor} placeholder="buscar ou cadastrar vendedor" /></label>
+              {campo("obsCompra", "Observações da compra", "textarea")}
+            </div>
+          </div>
+
+          <div className="fsec"><div className="fsec-h">Valor da compra e parcelamento <span className="muted small hint">— valores da parte da SM</span></div>
+            <div className="grid">
+              {campo("porcentagemComprada", "Participação da SM (%)", "pct")}
+              {campo("valorParcela", "Valor da parcela", "money")}
+              {campo("parcelas", "Quantidade de parcelas", "number")}
+              {campo("primeiroVenc", "Primeiro vencimento", "date")}
+              {campo("comissaoPct", "Percentual da comissão (%)", "pct")}
+              {campo("frete", "Frete", "money")}
+              {campo("outros", "Outros custos", "money")}
+            </div>
+            <div className="fin-live">
+              <span>Valor da compra (SM) <b>{fmt(f.cota)}</b></span>
+              <span>Comissão ({f.com.pct}%) <b>{fmt(f.com.total)}</b></span>
+              <span>Valor final c/ custos <b>{fmt(f.cota + f.custos)}</b></span>
+              <span>Último vencimento <b>{dataBR(f.ultimoVenc)}</b></span>
+            </div>
+          </div>
+
+          <div className="fsec">
+            <div className="fsec-h">Sociedade <span className="muted small hint">— outros sócios do pacote</span>{soc.length > 0 && Math.abs(pctTot - 100) > 0.5 && <span className="warn">⚠ SM + sócios = {Math.round(pctTot * 100) / 100}% (deve fechar 100%)</span>}</div>
+            {(d.socios || []).map((s) => (
+              <div className="socio-row" key={s.id}>
+                <div className="socio-auto"><AutoField value={s.nome} onChange={(v) => setSocio(s.id, "nome", v)} suggestions={socioNames} onCreate={onQuickSocio} placeholder="buscar ou cadastrar sócio" /></div>
+                <input type="number" step="any" placeholder="%" value={s.pct} onChange={(e) => setSocio(s.id, "pct", e.target.value)} style={{ maxWidth: 80 }} aria-label="Porcentagem do sócio" />
+                <button type="button" className="btn btn-mini" onClick={() => delSocio(s.id)}>remover</button>
+              </div>
+            ))}
+            <button type="button" className="btn btn-ghost" onClick={addSocio}>+ Adicionar sócio</button>
+          </div>
+
+          <div className="fsec">
+            <div className="fsec-h">Doadoras <span className="muted small hint">— {d.doadoras.filter((x) => (x.doadora || "").trim()).length} informada(s); cada uma terá ficha própria</span></div>
+            {d.doadoras.map((x, i) => (
+              <div className="pac-linha" key={x.id}>
+                <div className="pac-linha-h"><b>Doadora {i + 1}</b>{x.__existe ? <span className="muted small">cadastrada · para excluir, abra a ficha da doadora</span> : <button type="button" className="btn btn-mini" onClick={() => delLinha(x.id)}>remover</button>}</div>
+                <div className="grid">
+                  <label className="field"><span>Mãe doadora</span><AutoField value={x.doadora} onChange={(v) => setLinha(x.id, "doadora", v)} suggestions={animalNames} regMap={animalReg} placeholder="nome da doadora" /></label>
+                  <label className="field"><span>Registro{x.__regAuto ? <em className="new-hint"> · preenchido automaticamente</em> : ""}</span><input value={x.regDoadora || ""} onChange={(e) => setLinha(x.id, "regDoadora", e.target.value)} placeholder="RGD / série e número" /></label>
+                  <label className="field"><span>{pren ? "Quantidade de prenhezes" : "Quantidade de aspirações"}</span><input type="number" min="1" step="1" value={x.qtd ?? ""} onChange={(e) => setLinha(x.id, "qtd", e.target.value)} /></label>
+                  <label className="field"><span>{pren ? "Touro" : "Pai (se houver)"}</span><AutoField value={x.pai || ""} onChange={(v) => setLinha(x.id, "pai", v)} suggestions={animalNames} regMap={animalReg} placeholder="buscar animal" /></label>
+                  <label className="field"><span>Situação manual (opcional)</span><select value={x.status || ""} onChange={(e) => setLinha(x.id, "status", e.target.value)}><option value="">—</option>{(pren ? STATUS_PRENHEZ : STATUS_ASP).map((o) => <option key={o} value={o}>{o}</option>)}</select></label>
+                  {pren ? <>
+                    <label className="field"><span>Receptora</span><input value={x.receptora || ""} onChange={(e) => setLinha(x.id, "receptora", e.target.value)} /></label>
+                    <label className="field"><span>Previsão de parto</span><input type="date" value={x.previsaoParto || ""} onChange={(e) => setLinha(x.id, "previsaoParto", e.target.value)} /></label>
+                  </> : <label className="field"><span>Data da aspiração</span><input type="date" value={x.dataAspiracao || ""} onChange={(e) => setLinha(x.id, "dataAspiracao", e.target.value)} /></label>}
+                  <label className="field wide"><span>Observações</span><input value={x.obs || ""} onChange={(e) => setLinha(x.id, "obs", e.target.value)} /></label>
+                </div>
+              </div>
+            ))}
+            <button type="button" className="btn btn-ghost" onClick={addLinha}>+ Adicionar doadora</button>
+          </div>
+          {erro && <div className="aviso" role="alert">{erro}</div>}
+        </div>
+        <div className="modal-foot"><button type="button" className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+          {modo === "pref" ? (<>
+            <button type="button" className="btn btn-ghost" onClick={() => agir(onEnviar)}>Salvar rascunho</button>
+            <button type="button" className="btn btn-gold" onClick={() => agir(onApprove)}>✓ Aprovar e cadastrar</button>
+          </>) : modo === "editar" ? <button type="button" className="btn btn-gold" onClick={() => agir(onSalvar)}>Salvar pacote</button>
+            : <button type="button" className="btn btn-gold" onClick={() => agir(onEnviar)}>Enviar para aprovação</button>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* doadoras dentro da ficha do pacote: cada uma com situação e ações próprias */
+function SecaoPacote({ p, ativos, embrioes, onAbrir, onRepro, onAtualizar, onEditar }) {
+  const filhos = doPacote(ativos, p.id);
+  const [realiz, setRealiz] = useState(null);   // { id, data } — aspiração sendo marcada como realizada
+  const pren = p.subtipo === "prenhez";
+  const sit = (x) => { if (x.tipo === "prenhez") return statusPrenhez(x); const D = dadosAsp(x, ativos, embrioes); return { txt: D.st[0], tone: D.st[1] }; };
+  const marcar = (x) => {
+    if (!realiz || !realiz.data) return;
+    onAtualizar({ ...x, dataAspiracao: realiz.data, historico: [...(x.historico || []), { id: uid(), data: realiz.data, tipo: "Aspiração realizada", desc: "Marcada como realizada no card do pacote", responsavel: "" }] });
+    setRealiz(null);
+  };
+  return (
+    <div className="fsec" id="fx-pac"><div className="fsec-h">Doadoras do pacote <span className="muted small">— {filhos.length} · acompanhamento individual</span></div>
+      <div className="pac-lista">
+        {filhos.map((x) => {
+          const s = sit(x);
+          const nasc = (ativos || []).filter((an) => an && an.tipo === "animal" && an.origemId === x.id);
+          return (
+            <div className="pac-item" key={x.id}>
+              <div className="pac-item-h">
+                <div><b>{x.doadora || "Doadora não informada"}</b>{x.pai ? <span className="muted"> × {x.pai}</span> : null}
+                  <div className="muted small">{[x.regDoadora && `RG ${x.regDoadora}`, `${qtdTotal(x)} ${pren ? (qtdTotal(x) > 1 ? "prenhezes" : "prenhez") : (qtdTotal(x) > 1 ? "aspirações" : "aspiração")}`, x.receptora && `receptora ${x.receptora}`,
+                    (x.dataAspiracao || x.dataAsp) && `aspirada em ${dataBR(x.dataAspiracao || x.dataAsp)}`, x.previsaoParto && !x.dataParto && `parto previsto ${dataBR(x.previsaoParto)}`].filter(Boolean).join(" · ")}</div>
+                </div>
+                <Badge tone={s.tone}>{s.txt}</Badge>
+              </div>
+              {nasc.length > 0 && <div className="pac-nasc">Nascimento vinculado: {nasc.map((an) => <button type="button" key={an.id} className="rp-infolink" onClick={() => onAbrir(an)}>{an.nome || "animal"} ↗</button>)}</div>}
+              <div className="pac-acts">
+                <button type="button" className="btn btn-mini" onClick={() => onAbrir(x)}>Abrir ficha</button>
+                {x.tipo === "aspiracao" && !(x.dataAspiracao || x.dataAsp) && (realiz && realiz.id === x.id
+                  ? <span className="pac-inline"><input type="date" value={realiz.data} onChange={(e) => setRealiz({ id: x.id, data: e.target.value })} aria-label="Data da aspiração" />
+                      <button type="button" className="btn btn-mini btn-gold" disabled={!realiz.data} onClick={() => marcar(x)}>Confirmar</button>
+                      <button type="button" className="btn btn-mini" onClick={() => setRealiz(null)}>Cancelar</button></span>
+                  : <button type="button" className="btn btn-mini" onClick={() => setRealiz({ id: x.id, data: today() })}>Marcar como realizada</button>)}
+                {x.tipo === "aspiracao" && <button type="button" className="btn btn-mini" onClick={() => onRepro("transf", x)}>Gerar prenhez</button>}
+                {x.tipo === "prenhez" && qtdRest(x) > 0 && !faseReprod(x).cancel && <>
+                  <button type="button" className="btn btn-mini btn-gold" onClick={() => onRepro("nascVinc", x)}>Vincular a nascimento existente</button>
+                  <button type="button" className="btn btn-mini" onClick={() => onRepro("nasc", x)}>Registrar nascimento</button>
+                </>}
+              </div>
+            </div>
+          );
+        })}
+        {filhos.length === 0 && <p className="muted small">Nenhuma doadora neste pacote.</p>}
+      </div>
+      <button type="button" className="btn btn-ghost" onClick={onEditar}>+ Adicionar ou editar doadoras</button>
+    </div>
+  );
+}
+
+/* comissão: prevista (parte da SM) × pagamentos registrados (valor e data de cada um) */
+function ComissaoSecao({ a, onUpdate, onConfirm }) {
+  const f = finance(a);
+  const pctSM = num(a.porcentagemComprada);
+  const pags = comissaoPagamentosDe(a).slice().sort((x, y) => (x.data || "").localeCompare(y.data || ""));
+  const [nv, setNv] = useState(null);   // { data, valor, modo: "sm" | "total", obs }
+  const valorSM = nv ? Math.round((nv.modo === "total" ? (num(nv.valor) * pctSM) / 100 : num(nv.valor)) * 100) / 100 : 0;
+  const salvar = () => {
+    if (!nv || !nv.data || !(valorSM > 0)) return;
+    const pag = { id: uid(), data: nv.data, valor: valorSM, obs: (nv.obs || "").trim(), ...(nv.modo === "total" ? { valorTotalInformado: num(nv.valor), pctSM } : {}) };
+    onUpdate({ ...a, comissaoPagamentos: [...(a.comissaoPagamentos || []), pag],
+      historico: [...(a.historico || []), { id: uid(), data: nv.data, tipo: "Comissão paga", desc: `${fmt(valorSM)} (parte da SM)${nv.modo === "total" ? ` — ${pctTxt(pctSM)} de ${fmt(num(nv.valor))} pagos pela sociedade` : ""}`, responsavel: "" }] });
+    setNv(null);
+  };
+  const remover = (p) => {
+    const exec = () => onUpdate({ ...a, comissaoPagamentos: (a.comissaoPagamentos || []).filter((x) => x && x.id !== p.id),
+      historico: [...(a.historico || []), { id: uid(), data: today(), tipo: "Comissão", desc: `Pagamento de ${fmt(p.valor)} (${dataBR(p.data)}) removido`, responsavel: "" }] });
+    if (!onConfirm) return exec();
+    onConfirm({ titulo: "Remover este pagamento de comissão?", mensagem: `O pagamento de ${fmt(p.valor)} em ${dataBR(p.data)} deixa de contar em Comissões pagas.`, usos: [], botoes: [{ label: "Remover", tone: "danger", onClick: () => { exec(); onConfirm(null); } }] });
+  };
+  const situacao = f.com.total <= 0 ? "" : f.comPaga <= 0 ? "não paga" : f.comPaga + 0.005 < f.com.total ? "paga parcialmente" : "quitada";
+  return (
+    <div className="fsec" id="fx-com"><div className="fsec-h">Comissão <span className="muted small">— parte da SM{situacao ? ` · ${situacao}` : ""}</span></div>
+      <div className="fin-cards">
+        <KPI label="Comissão prevista (SM)" value={fmt(f.com.total)} sub={`${f.com.pct}% sobre ${fmt(f.cota)}`} />
+        <KPI label="Comissão paga" value={fmt(f.comPaga)} tone="pos" sub={`${pags.length} pagamento(s)`} />
+        <KPI label="Saldo da comissão" value={fmt(f.comSaldo)} tone={f.comSaldo > 0.004 ? "neg" : ""} />
+      </div>
+      {pags.length > 0 && (
+        <div className="tbl-wrap"><table className="tbl">
+          <thead><tr><th>Data</th><th>Valor pago (SM)</th><th>Como foi informado</th><th>Observações</th><th></th></tr></thead>
+          <tbody>{pags.map((p) => (
+            <tr key={p.id}><td>{dataBR(p.data)}</td><td>{fmt(p.valor)}</td>
+              <td className="muted small">{p.valorTotalInformado ? `${pctTxt(p.pctSM)} de ${fmt(p.valorTotalInformado)} (total da sociedade)` : "parte da SM"}</td>
+              <td className="muted small">{p.obs || "—"}</td>
+              <td><button type="button" className="btn btn-mini" onClick={() => remover(p)}>remover</button></td></tr>
+          ))}</tbody>
+        </table></div>
+      )}
+      {nv ? (
+        <div className="com-novo">
+          <div className="grid">
+            <label className="field"><span>Data do pagamento</span><input type="date" value={nv.data} onChange={(e) => setNv({ ...nv, data: e.target.value })} /></label>
+            <label className="field"><span>O valor informado é</span><select value={nv.modo} onChange={(e) => setNv({ ...nv, modo: e.target.value })}>
+              <option value="sm">a parte da SM</option>
+              <option value="total" disabled={!(pctSM > 0)}>o total pago pela sociedade{pctSM > 0 ? ` (SM ${pctTxt(pctSM)})` : " (informe a % da SM)"}</option></select></label>
+            <label className="field"><span>Valor pago</span><input type="number" step="any" min="0" value={nv.valor} onChange={(e) => setNv({ ...nv, valor: e.target.value })} placeholder="R$ 0" /></label>
+            <label className="field"><span>Observações</span><input value={nv.obs} onChange={(e) => setNv({ ...nv, obs: e.target.value })} placeholder="opcional" /></label>
+          </div>
+          <div className="com-novo-acts">
+            <span className="muted small">Entra em Comissões pagas: <b>{fmt(valorSM)}</b>{nv.modo === "total" && pctSM > 0 ? ` (${pctTxt(pctSM)} de ${fmt(num(nv.valor))})` : ""}</span>
+            <button type="button" className="btn btn-ghost" onClick={() => setNv(null)}>Cancelar</button>
+            <button type="button" className="btn btn-gold" disabled={!nv.data || !(valorSM > 0)} onClick={salvar}>Registrar pagamento</button>
+          </div>
+        </div>
+      ) : <button type="button" className="btn btn-ghost" onClick={() => setNv({ data: today(), valor: "", modo: "sm", obs: "" })}>+ Registrar pagamento de comissão</button>}
     </div>
   );
 }
@@ -1935,8 +2233,8 @@ function SituacaoSecao({ a, onInativar, onReativar }) {
    por trás de cada barra. Só leitura: nenhum dado é alterado aqui. */
 const FAIXAS_IDADE_PAINEL = [["< 1 ano", 0, 12, "< 1"], ["1 a 2 anos", 12, 24, "1–2"], ["2 a 4 anos", 24, 48, "2–4"], ["4 a 6 anos", 48, 72, "4–6"], ["6 a 8 anos", 72, 96, "6–8"], ["+ 8 anos", 96, Infinity, "8+"]];
 const FAIXAS_PART_PAINEL = [["100%", (p) => p >= 100], ["75–99%", (p) => p >= 75 && p < 100], ["50–74%", (p) => p >= 50 && p < 75], ["25–49%", (p) => p >= 25 && p < 50], ["1–24%", (p) => p > 0 && p < 25], ["0% (vendido)", (p) => p <= 0]];
-const TIPO_NOME_PAINEL = { animal: "Animais", prenhez: "Prenhezes", aspiracao: "Aspirações" };
-const TIPO_UM_PAINEL = { animal: "Animal", prenhez: "Prenhez", aspiracao: "Aspiração" };
+const TIPO_NOME_PAINEL = { animal: "Animais", prenhez: "Prenhezes", aspiracao: "Aspirações", pacote: "Pacotes" };
+const TIPO_UM_PAINEL = { animal: "Animal", prenhez: "Prenhez", aspiracao: "Aspiração", pacote: "Pacote" };
 const rgTxt = (a) => (a && a.registro ? (/^\s*rg/i.test(a.registro) ? a.registro : `RG ${a.registro}`) : "");
 const sexoTxt = (a) => { const s = lc(a && a.sexo); return s.startsWith("f") ? "Fêmea" : s.startsWith("m") ? "Macho" : ""; };
 const sociosDe = (a) => (a.sociedadeAtual || a.socios || []).filter((s) => s && s.nome);
@@ -2341,7 +2639,7 @@ function AnLista({ titulo, sub, itens, render, onAbrir, rowClick, ordem, setOrde
 }
 
 const AN_TITULOS = { idade: "Idade do plantel", evolucao: "Evolução financeira", socio: "Investimentos por sociedade", criatorio: "Investimentos por criatório", participacao: "Participação da SM",
-  "ind-patrimonio": "Patrimônio estimado", "ind-total": "Total investido", "ind-pago": "Já pago", "ind-aberto": "Saldo a pagar" };
+  "ind-patrimonio": "Patrimônio estimado", "ind-total": "Total investido", "ind-pago": "Já pago", "ind-aberto": "Saldo a pagar", "ind-comissao": "Comissões pagas" };
 
 /* Janela de análise. A abertura é uma transição de continuidade: um "cartão fantasma"
    parte da posição exata do cartão clicado e se expande até a janela; o conteúdo surge em
@@ -2690,7 +2988,7 @@ function AnPart({ animais, sel, alterna, estreito, onAbrir }) {
 }
 
 /* ---------- indicadores financeiros: quais registros compõem o valor ---------- */
-const IND_CAMPO = { patrimonio: ["totalEstimado", "Patrimônio estimado"], total: ["total", "Total investido"], pago: ["pago", "Já pago"], aberto: ["aberto", "Saldo a pagar"] };
+const IND_CAMPO = { patrimonio: ["totalEstimado", "Patrimônio estimado"], total: ["total", "Total investido"], pago: ["pago", "Já pago"], aberto: ["aberto", "Saldo a pagar"], comissao: ["comPaga", "Comissões pagas"] };
 function AnIndicador({ campo, base, sel, alterna, estreito, money, privado, onAbrir }) {
   const [ordem, setOrdem] = useState("valor");
   const [chave, nome] = IND_CAMPO[campo] || IND_CAMPO.total;
@@ -2698,7 +2996,7 @@ function AnIndicador({ campo, base, sel, alterna, estreito, money, privado, onAb
   const regs = useMemo(() => base.map((a) => { const f = finance(a); return { a, f, v: num(f[chave]) }; }), [base, chave]);
   const total = regs.reduce((s, r) => s + r.v, 0);
   const comValor = useMemo(() => regs.filter((r) => Math.abs(r.v) > 0.004).sort((x, y) => y.v - x.v), [regs]);
-  const porTipo = useMemo(() => ["animal", "prenhez", "aspiracao"].map((t) => { const l = comValor.filter((r) => r.a.tipo === t); const v = l.reduce((s, r) => s + r.v, 0); return { key: t, name: TIPO_NOME_PAINEL[t], value: v, qtd: l.length, pct: total ? (v / total) * 100 : 0 }; }).filter((x) => x.qtd), [comValor, total]);
+  const porTipo = useMemo(() => ["animal", "prenhez", "aspiracao", "pacote"].map((t) => { const l = comValor.filter((r) => r.a.tipo === t); const v = l.reduce((s, r) => s + r.v, 0); return { key: t, name: TIPO_NOME_PAINEL[t], value: v, qtd: l.length, pct: total ? (v / total) * 100 : 0 }; }).filter((x) => x.qtd), [comValor, total]);
   const lista = useMemo(() => {
     const l = (sel ? comValor.filter((r) => r.a.tipo === sel) : comValor).slice();
     if (ordem === "nome") l.sort((x, y) => lc(x.a.nome).localeCompare(lc(y.a.nome)));
@@ -2734,8 +3032,10 @@ function AnIndicador({ campo, base, sel, alterna, estreito, money, privado, onAb
       <AnLista titulo={sel ? `${TIPO_NOME_PAINEL[sel]} que compõem o valor` : "Todos os registros que compõem o valor"} sub={`${lista.length} registro(s)`}
         itens={lista} ordem={ordem} setOrdem={setOrdem} ordens={[["valor", "Maior valor"], ["menor", "Menor valor"], ["nome", "Nome (A–Z)"]]}
         extra={sel ? <button type="button" className="btn btn-mini" onClick={() => alterna(sel)}>Ver todos</button> : null} onAbrir={onAbrir}
-        render={({ a, v }) => ({ key: a.id, a, nome: a.nome || "(sem nome)", meta: [TIPO_UM_PAINEL[a.tipo] || a.tipo, rgTxt(a), a.tipo === "animal" ? `SM ${pctTxt(participacaoAtual(a))}` : a.status].filter(Boolean).join(" · "),
-          vals: [[nome, money(v)], ["Do total", total ? pctTxt((v / total) * 100) : "—"]] })} />
+        render={({ a, v, f }) => ({ key: a.id, a, nome: a.nome || "(sem nome)", meta: [TIPO_UM_PAINEL[a.tipo] || a.tipo, rgTxt(a), a.tipo === "animal" ? `SM ${pctTxt(participacaoAtual(a))}` : a.status].filter(Boolean).join(" · "),
+          vals: campo === "comissao"
+            ? [[nome, money(v)], ["Comissão prevista (SM)", money(f.com.total)], ["Pagamentos", comissaoPagamentosDe(a).length]]
+            : [[nome, money(v)], ["Do total", total ? pctTxt((v / total) * 100) : "—"]] })} />
     </>
   );
 }
@@ -3173,8 +3473,31 @@ function LinhaTempo({ eventos, onAbrir, onIrLote }) {
   );
 }
 
+/* ---------------- pacotes na listagem: um card por pacote ---------------- */
+// junta as doadoras de um mesmo pacote num único item, na posição da primeira que aparece na lista filtrada
+function agrupaPacotes(lst, rec) {
+  const vistos = new Set(), out = [];
+  lst.forEach((it) => { const r = rec(it); if (r && r.pacoteId) { if (vistos.has(r.pacoteId)) return; vistos.add(r.pacoteId); out.push({ pacoteId: r.pacoteId, it }); } else out.push({ it }); });
+  return out;
+}
+function CardPacote({ pacoteId, ativos, embrioes, onAbrir }) {
+  const pac = (ativos || []).find((x) => x && x.id === pacoteId);
+  const filhos = doPacote(ativos, pacoteId);
+  const sit = (x) => { if (x.tipo === "prenhez") return statusPrenhez(x); const D = dadosAsp(x, ativos, embrioes); return { txt: D.st[0], tone: D.st[1] }; };
+  return (
+    <button type="button" className="rp-card rp-pac" onClick={() => onAbrir(pac || filhos[0])}>
+      <div className="rp-card-h"><span className="rp-t">{pac ? rotuloPacote(pac) : "Pacote"}</span><Badge tone="gold">{filhos.length} doadora(s)</Badge></div>
+      <span className="rp-meta">{[pac && pac.dataCompra ? `compra em ${dataBR(pac.dataCompra)}` : "", pac && num(pac.porcentagemComprada) ? `SM ${pctTxt(num(pac.porcentagemComprada))}` : ""].filter(Boolean).join(" · ") || "pacote"}</span>
+      <ul className="rp-pac-lista">
+        {filhos.slice(0, 6).map((x) => { const s = sit(x); return <li key={x.id}><span>{x.doadora || "Doadora não informada"}</span><Badge tone={s.tone}>{s.txt}</Badge></li>; })}
+        {filhos.length > 6 && <li className="muted small">+ {filhos.length - 6} doadora(s)</li>}
+      </ul>
+    </button>
+  );
+}
+
 /* ---------------- página: Prenhezes ---------------- */
-function PaginaPrenhezes({ lista, onAbrir }) {
+function PaginaPrenhezes({ lista, ativos, embrioes, onAbrir }) {
   const [sit, setSit] = useState("todos");
   const [escopo, setEscopo] = useState("ativos");
   const [origem, setOrigem] = useState("");
@@ -3204,7 +3527,7 @@ function PaginaPrenhezes({ lista, onAbrir }) {
         {escopo !== "inativos" && <select value={ordem} onChange={(e) => setOrdem(e.target.value)} aria-label="Ordenar"><option value="parto">Ordenar por previsão de parto</option><option value="te">Ordenar pela TE mais recente</option></select>}
       </div>
       <div className="cards-grid rp-grid">
-        {lst.map(({ p, f, s }) => (
+        {agrupaPacotes(lst, (x) => x.p).map(({ pacoteId, it: { p, f, s } }) => pacoteId ? <CardPacote key={"pac-" + pacoteId} pacoteId={pacoteId} ativos={ativos || lista} embrioes={embrioes} onAbrir={onAbrir} /> : (
           <button type="button" className={`rp-card ${s.destaque}`} key={p.id} onClick={() => onAbrir(p)}>
             <div className="rp-card-h"><span className="rp-t">{p.doadora || "Doadora não informada"}{p.pai || p.touro ? ` × ${p.pai || p.touro}` : ""}</span><Badge tone={s.tone}>{s.destaque === "ok" ? "✓ " : ""}{s.txt}</Badge></div>
             <span className="rp-meta">{[p.receptora ? `Receptora ${p.receptora}` : "Receptora não informada", p.ondeEsta].filter(Boolean).join(" · ")}</span>
@@ -3243,7 +3566,8 @@ function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir }) {
       </div>
       <FiltroSituacao itens={base} escopo={escopo} setEscopo={setEscopo} valor={sit} setValor={setSit} tipo="asp" />
       <div className="cards-grid rp-grid">
-        {lst.map(({ a, D }) => {
+        {agrupaPacotes(lst, (x) => x.a).map(({ pacoteId, it: { a, D } }) => {
+          if (pacoteId) return <CardPacote key={"pac-" + pacoteId} pacoteId={pacoteId} ativos={ativos} embrioes={embrioes} onAbrir={onAbrir} />;
           const w = (v) => `${D.E ? (v / D.E) * 100 : 0}%`;
           return (
             <button type="button" className={`rp-card ${D.destaque}`} key={a.id} onClick={() => onAbrir(a)}>
@@ -3938,7 +4262,7 @@ function SecaoEmbrioesDoadora({ a, embrioes, ativos, onIrLote }) {
   );
 }
 
-function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, embrioes, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onGerarPrenhez, onConfirm, onRepro, onIrLote }) {
+function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAtualizarOutro, onAbrir, ativos, embrioes, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onGerarPrenhez, onConfirm, onRepro, onIrLote }) {
   useTravaFundo();
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
@@ -3950,7 +4274,11 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, embr
   const fase = faseAnimal(a, ativos);
   const com = f.com;
   const pctSocios = (a.socios || []).filter(Boolean).reduce((s, x) => s + num(x.pct), 0);
-  const titulo = { animal: "Animal", prenhez: "Prenhez", aspiracao: "Aspiração" }[a.tipo];
+  const titulo = ehPacote(a) ? (TIPO_PAC_TXT[a.subtipo] || "Pacote") : { animal: "Animal", prenhez: "Prenhez", aspiracao: "Aspiração" }[a.tipo];
+  const pac = pacoteDe(ativos, a);           // esta ficha é uma doadora de pacote?
+  const doPac = !!a.pacoteId;
+  const filhosPac = ehPacote(a) ? doPacote(ativos, a.id) : [];
+  const mostraCom = !doPac && a.origem !== "genealogia" && (f.com.total > 0 || comissaoPagamentosDe(a).length > 0);
   const Info = ({ l, v }) => (v || v === 0 ? <div className="info"><span>{l}</span><b>{v}</b></div> : null);
   const socioNames = (a.socios || []).filter(Boolean).map((s) => s.nome).filter(Boolean);
 
@@ -4061,6 +4389,8 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, embr
               {a.tipo !== "prenhez" && alertaParto(a) === "atrasado" && <Badge tone="neg">Parto atrasado</Badge>}
               {a.tipo !== "prenhez" && ["hoje", "7", "15", "30"].includes(alertaParto(a)) && <Badge tone="gold">Parto em {diasAteParto(a)} dia(s)</Badge>}
               {a.origemLabel && (() => { const org = a.origemId && (ativos || []).find((x) => x.id === a.origemId); return <span onClick={() => org && onAbrir && onAbrir(org)} style={{ cursor: org ? "pointer" : "default" }}><Badge tone="gold">Origem: {a.origemLabel}{org ? " ↗" : ""}</Badge></span>; })()}
+              {doPac && <span onClick={() => pac && onAbrir && onAbrir(pac)} style={{ cursor: pac ? "pointer" : "default" }}><Badge tone="gold">{pac ? `${rotuloPacote(pac)} ↗` : "Pacote não encontrado"}</Badge></span>}
+              {ehPacote(a) && <Badge tone="gold">{filhosPac.length} doadora(s)</Badge>}
             </div>
             <div className="ficha-actions"><button className={`btn ${a.tipo === "animal" ? "btn-gold" : "btn-ghost"}`} onClick={onEdit}>Editar</button>
               {a.tipo === "aspiracao" && a.origem !== "genealogia" && onRepro && <button className="btn btn-gold" onClick={() => onRepro("transf", a)}>Gerar prenhez</button>}
@@ -4084,7 +4414,7 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, embr
         </div>
 
         <nav className="ficha-nav" aria-label="Seções da ficha">
-          {[["fx-repro", "Reprodução"], ["fx-origem", "Origem"], ["fx-emb", "Embriões"], ["fx-fin", "Financeiro"], ["fx-gen", "Genealogia"], ["fx-dados", "Dados"], ["fx-parc", "Parcelas"], ["fx-soc", "Sociedade"], ["fx-pes", "Pesagens"], ["fx-vend", "Vendas"], ["fx-hist", "Histórico"]].filter(([id]) => { if (id === "fx-repro") return a.tipo === "prenhez" || a.tipo === "aspiracao"; if (id === "fx-origem") return a.tipo === "animal" && a.origem !== "genealogia"; if (id === "fx-emb") return a.tipo === "animal" && lotesDaDoadora(embrioes, a.id).length > 0; const proprio = a.tipo === "animal" && a.origem !== "genealogia"; if (id === "fx-pes" || id === "fx-vend") return proprio; if (id === "fx-soc") return proprio || (a.socios || []).length > 0; if (id === "fx-parc") return f.qtd > 0 || comprasAdic.length > 0; return true; }).map(([id, t]) => (
+          {[["fx-pac", "Doadoras"], ["fx-repro", "Reprodução"], ["fx-origem", "Origem"], ["fx-emb", "Embriões"], ["fx-fin", "Financeiro"], ["fx-com", "Comissão"], ["fx-gen", "Genealogia"], ["fx-dados", "Dados"], ["fx-parc", "Parcelas"], ["fx-soc", "Sociedade"], ["fx-pes", "Pesagens"], ["fx-vend", "Vendas"], ["fx-hist", "Histórico"]].filter(([id]) => { if (id === "fx-pac") return ehPacote(a); if (id === "fx-fin") return !doPac; if (id === "fx-com") return mostraCom; if (id === "fx-gen") return !ehPacote(a); if (id === "fx-repro") return a.tipo === "prenhez" || a.tipo === "aspiracao"; if (id === "fx-origem") return a.tipo === "animal" && a.origem !== "genealogia"; if (id === "fx-emb") return a.tipo === "animal" && lotesDaDoadora(embrioes, a.id).length > 0; const proprio = a.tipo === "animal" && a.origem !== "genealogia"; if (id === "fx-pes" || id === "fx-vend") return proprio; if (id === "fx-soc") return proprio || (a.socios || []).length > 0; if (id === "fx-parc") return f.qtd > 0 || comprasAdic.length > 0; return true; }).map(([id, t]) => (
             <button key={id} type="button" onClick={() => { const el = document.getElementById(id); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }}>{t}</button>
           ))}
         </nav>
@@ -4092,7 +4422,12 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, embr
           {(a.tipo === "prenhez" || a.tipo === "aspiracao") && a.origem !== "genealogia" && <SecaoRepro a={a} ativos={ativos} embrioes={embrioes} onAbrir={onAbrir} onIrLote={onIrLote || (() => {})} onAcao={onRepro} />}
           {a.tipo === "animal" && a.origem !== "genealogia" && onRepro && <SecaoOrigem a={a} ativos={ativos} embrioes={embrioes} onAbrir={onAbrir} onIrLote={onIrLote || (() => {})} onAcao={onRepro} />}
           {a.tipo === "animal" && <SecaoEmbrioesDoadora a={a} embrioes={embrioes} ativos={ativos} onIrLote={onIrLote || (() => {})} />}
-          <div className="fin-cards" id="fx-fin">
+          {ehPacote(a) && <SecaoPacote p={a} ativos={ativos} embrioes={embrioes} onAbrir={(x) => onAbrir && onAbrir(x)} onRepro={onRepro || (() => {})} onAtualizar={onAtualizarOutro || onUpdate} onEditar={onEdit} />}
+          {doPac && (
+            <div className="aviso aviso-info pac-aviso" id="fx-fin">Compra, parcelas e comissão desta doadora estão no <b>{pac ? rotuloPacote(pac) : "pacote"}</b> e entram uma única vez nos totais.
+              {pac && <button type="button" className="rp-infolink" onClick={() => onAbrir && onAbrir(pac)}>Abrir o pacote ↗</button>}</div>
+          )}
+          {!doPac && <><div className="fin-cards" id="fx-fin">
             <KPI label="Valor pago pela cota" value={fmt(f.cota)} sub={`${f.pct || 0}% comprado`} />
             <KPI label="Valor total estimado" value={fmt(f.totalEstimado)} tone="gold" />
             <KPI label="Valor final c/ custos" value={fmt(f.finalEstimado)} sub={`custos ${fmt(f.custos)}`} />
@@ -4109,9 +4444,10 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, embr
             <KPI label="Base da comissão" value={com.base} />
             <KPI label="Frete" value={fmt(num(a.frete))} />
             <KPI label="Outros custos" value={fmt(num(a.outros))} />
-          </div>
+          </div></>}
+          {mostraCom && <ComissaoSecao a={a} onUpdate={onUpdate} onConfirm={onConfirm} />}
 
-          {a.tipo === "aspiracao" && (() => {
+          {a.tipo === "aspiracao" && !doPac && (() => {
             // indicadores corrigidos: usam os campos que o formulário realmente grava e as prenhezes vinculadas
             const D = dadosAsp(a, ativos, embrioes);
             return (
@@ -4124,7 +4460,7 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, embr
             );
           })()}
 
-          <div className="fsec" id="fx-gen"><div className="fsec-h">Genealogia</div><Genealogia a={a} />{a.obsGen && <p className="obs">{a.obsGen}</p>}</div>
+          {!ehPacote(a) && <div className="fsec" id="fx-gen"><div className="fsec-h">Genealogia</div><Genealogia a={a} />{a.obsGen && <p className="obs">{a.obsGen}</p>}</div>}
 
           <div className="fsec" id="fx-dados"><div className="fsec-h">Dados</div>
             <div className="info-grid">
@@ -4133,7 +4469,9 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAbrir, ativos, embr
                 <Info l="Quantidade" v={qtdRestante(a)} /><Info l="Criatório responsável" v={a.ondeEsta} /></>}
               {a.tipo === "aspiracao" && <><Info l="Mãe doadora" v={a.doadora} /><Info l="Registro da mãe" v={a.regDoadora} /><Info l="Pai" v={a.pai} />
                 <Info l="Quantidade" v={qtdRestante(a)} /><Info l="Criatório responsável" v={a.ondeEsta} /></>}
-              <Info l="Leilão / origem" v={a.leilao} /><Info l="Vendedor" v={a.vendedor} /><Info l="Data da compra" v={dataBR(a.dataCompra)} />
+              {ehPacote(a) && <><Info l="Tipo" v={TIPO_PAC_TXT[a.subtipo]} /><Info l="Lote(s)" v={a.lote} /><Info l="Doadoras" v={filhosPac.map((x) => x.doadora).filter(Boolean).join(", ")} /></>}
+              {doPac && <Info l="Pacote" v={pac ? rotuloPacote(pac) : "não encontrado"} />}
+              <Info l="Leilão / origem" v={a.leilao} /><Info l="Vendedor" v={a.vendedor} /><Info l="Data da compra" v={a.dataCompra ? dataBR(a.dataCompra) : ""} />
             </div>
             {a.obs && <p className="obs">{a.obs}</p>}
           </div>
@@ -5137,7 +5475,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   };
 
   /* ---- conteúdo comum ao PDF e ao Excel (mesmos dados, filtros e totais) ---- */
-  const TIPO_LBL = { animal: "Animal", prenhez: "Prenhez", aspiracao: "Aspiração" };
+  const TIPO_LBL = { animal: "Animal", prenhez: "Prenhez", aspiracao: "Aspiração", pacote: "Pacote" };
   const ehMoeda = (k) => relTipoColuna(k) === "moeda";
   const ehPct = (k) => relTipoColuna(k) === "pct";
   const valorTxt = (k, v) => (v == null || v === "" ? "—" : typeof v === "number" && ehMoeda(k) ? fmt(v) : ehPct(k) && v !== "" ? `${String(v).replace(".", ",")}%` : k === "Tipo" ? TIPO_LBL[v] || v : String(v));
@@ -6470,7 +6808,7 @@ export default function App() {
   const abrirPreficha = (pref) => setForm({ tipo: pref.dados.tipo, initial: { ...pref.dados, __pref: pref.id } });
   const setEstadoPreficha = (id, estado) => { flushNext.current = true; setDb((p) => ({ ...p, prefichas: (p.prefichas || []).map((x) => (x.id === id ? { ...x, estado } : x)) })); };
   const removerPreficha = (id) => { flushNext.current = true; setDb((p) => ({ ...p, prefichas: (p.prefichas || []).filter((x) => x.id !== id) })); };
-  const limparImportados = () => { flushNext.current = true; setDb((p) => ({ ...p, prefichas: (p.prefichas || []).filter((x) => x.origem !== "excel" || (x.estado !== "aprovado" && x.estado !== "rejeitado")) })); };
+  const limparImportados = () => { flushNext.current = true; setDb((p) => ({ ...p, prefichas: (p.prefichas || []).filter((x) => (x.origem !== "excel" && x.origem !== "pacote") || (x.estado !== "aprovado" && x.estado !== "rejeitado")) })); };
   /* aprova (cadastra de verdade) a ficha — usa a MESMA lógica do cadastro manual */
   const aprovarFicha = (dd) => {
     const prefId = dd.__pref;
@@ -6484,6 +6822,84 @@ export default function App() {
     });
     setForm(null); setImpMsg(`Cadastrado: ${r.nome}`);
   };
+
+  /* ---- Pacotes: um registro de compra + uma ficha por doadora ---- */
+  const [pacForm, setPacForm] = useState(null);   // { modo: "novo"|"pref"|"editar", initial }
+  // monta a ficha individual de uma doadora do pacote (sem valores de compra: eles ficam no pacote)
+  const fichaDoadora = (pacote, x, antiga, ordem) => {
+    const base = antiga || { id: uid(), videos: [], historico: [], comissaoPct: 0 };
+    let c = { ...base, tipo: pacote.subtipo, pacoteId: pacote.id, pacoteOrdem: ordem || base.pacoteOrdem || 0,
+      doadora: x.doadora, regDoadora: x.regDoadora || "", pai: x.pai || "", qtd: Math.max(1, Math.round(num(x.qtd)) || 1), status: x.status || "", obs: x.obs || "",
+      ...(pacote.subtipo === "prenhez" ? { receptora: x.receptora || "", previsaoParto: x.previsaoParto || "" } : { dataAspiracao: x.dataAspiracao || "" }),
+      porcentagemComprada: pacote.porcentagemComprada ?? "",   // só o percentual (herdado por nascimentos); valores ficam no pacote
+      socios: (pacote.socios || []).filter((s) => s && s.nome).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct, obs: s.obs || "" })) };
+    CAMPOS_COMPRA_PACOTE.filter((k) => k !== "porcentagemComprada").forEach((k) => { delete c[k]; });
+    delete c.parcelasList; delete c.__regAuto; delete c.__existe;
+    if (!antiga) c = genCompleta(c);
+    return { ...c, nome: rotuloReprod(c) };
+  };
+  const dadosPacote = (d) => {
+    const p = { ...d }; delete p.doadoras; delete p.__pref;
+    p.tipo = "pacote"; p.subtipo = d.subtipo === "prenhez" ? "prenhez" : "aspiracao";
+    p.socios = (d.socios || []).filter((s) => s && (s.nome || "").trim()).map((s) => ({ id: s.id || uid(), nome: s.nome.trim(), pct: s.pct, obs: s.obs || "" }));
+    p.nome = rotuloPacote(p);
+    return { ...p, parcelasList: ensureParcelas(p) };
+  };
+  // novo pacote ou rascunho: vai (ou continua) na fila de aprovação do Importar
+  const enviarPacote = (d) => {
+    flushNext.current = true;
+    const prefId = d.__pref;
+    const dados = { ...d, tipo: "pacote" }; delete dados.__pref;
+    const st = statusPacotePref(dados);
+    if (prefId) setDb((p) => ({ ...p, prefichas: (p.prefichas || []).map((x) => (x.id === prefId ? { ...x, dados, status: st.status, motivo: st.motivo, lote: dados.lote || "" } : x)) }));
+    else setDb((p) => ({ ...p, prefichas: [{ id: uid(), origem: "pacote", criadoEm: today(), criadoPor: quemReg(), estado: st.status === "conferir" ? "pendente" : "novo", status: st.status, motivo: st.motivo, lote: dados.lote || "", dados }, ...(p.prefichas || [])] }));
+    setPacForm(null);
+    setToast(prefId ? "Rascunho do pacote salvo na fila de aprovação." : `Pacote enviado para a fila de aprovação (Importar) com ${(d.doadoras || []).length} doadora(s).`);
+  };
+  // aprovar: cria o pacote (compra única) e uma ficha por doadora, com a mesma gravação do cadastro manual
+  const aprovarPacote = (d) => {
+    const prefId = d.__pref;
+    const pacote = { ...dadosPacote(d), id: uid() };
+    flushNext.current = true;
+    setDb((p0) => {
+      let st = aplicarNovoRegistro(p0, pacote, quemReg(), false, null);
+      (d.doadoras || []).forEach((x, i) => { st = aplicarNovoRegistro(st, fichaDoadora(pacote, x, null, i + 1), quemReg(), false, null); });
+      return { ...st, prefichas: (st.prefichas || []).filter((x) => x.id !== prefId) };
+    });
+    setPacForm(null); setImpMsg(`Cadastrado: ${pacote.nome} (${(d.doadoras || []).length} doadora(s))`);
+    setToast(`Pacote aprovado: ${(d.doadoras || []).length} doadora(s) com ficha própria.`);
+  };
+  // editar pacote já aprovado: atualiza a compra e cada doadora; doadoras novas ganham ficha
+  const salvarPacote = (d) => {
+    flushNext.current = true;
+    const quem = quemReg();
+    setDb((p0) => {
+      const antigo = p0.ativos.find((x) => x && x.id === d.id);
+      if (!antigo) return p0;
+      // preserva o que é registrado fora do formulário: pagamentos de parcelas, pagamentos de comissão e histórico
+      const pac = { ...antigo, ...dadosPacote(d), id: antigo.id, parcelasList: antigo.parcelasList || [], comissaoPagamentos: antigo.comissaoPagamentos || [],
+        historico: [...(antigo.historico || []), histE("Pacote editado", "Dados do pacote atualizados")] };
+      pac.parcelasList = ensureParcelas(pac);
+      let st = { ...p0, ativos: p0.ativos.map((x) => (x && x.id === pac.id ? pac : x)) };
+      (d.doadoras || []).forEach((x, i) => {
+        const velha = x.__existe ? st.ativos.find((y) => y && y.id === x.id) : null;
+        if (velha) st = { ...st, ativos: st.ativos.map((y) => (y && y.id === velha.id ? fichaDoadora(pac, x, velha, i + 1) : y)) };
+        else st = aplicarNovoRegistro(st, fichaDoadora(pac, x, null, i + 1), quem, false, null);
+      });
+      // a % da SM e a sociedade do pacote valem para todas as doadoras
+      st = { ...st, ativos: st.ativos.map((y) => (y && y.pacoteId === pac.id && y.tipo !== "pacote" ? { ...y, porcentagemComprada: pac.porcentagemComprada ?? "", socios: (pac.socios || []).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct, obs: s.obs || "" })) } : y)) };
+      let leiloes = st.leiloes || []; if (pac.leilao && !leiloes.some((l) => l && lc(l.nome) === lc(pac.leilao))) leiloes = [...leiloes, { id: uid(), nome: pac.leilao }];
+      return { ...st, leiloes };
+    });
+    setPacForm(null); setToast("Pacote atualizado.");
+  };
+  const abrirPacoteEdicao = (pac) => {
+    const doadoras = doPacote(ativos, pac.id).map((x) => ({ id: x.id, __existe: true, doadora: x.doadora || "", regDoadora: x.regDoadora || "", qtd: x.qtd || 1, pai: x.pai || "", status: x.status || "", receptora: x.receptora || "", previsaoParto: x.previsaoParto || "", dataAspiracao: x.dataAspiracao || "", obs: x.obs || "" }));
+    const initial = { ...pac, doadoras: doadoras.length ? doadoras : [novaLinhaDoadora()] }; delete initial.parcelasList; delete initial.comissaoPagamentos; delete initial.historico;
+    setAberto(null); setPacForm({ modo: "editar", initial });
+  };
+  // grava uma ficha sem trocar a janela aberta (ações feitas dentro do card do pacote)
+  const atualizarSemAbrir = (d) => { flushNext.current = true; if (d.tipo === "prenhez" || d.tipo === "aspiracao") d = { ...d, nome: rotuloReprod(d) }; setDb((p) => ({ ...p, ativos: p.ativos.map((a) => (a.id === d.id ? d : a)) })); };
 
   const updateAtivo = (d) => { flushNext.current = true; if (d.tipo === "prenhez" || d.tipo === "aspiracao") d = { ...d, nome: rotuloReprod(d) }; setDb((p) => ({ ...p, ativos: p.ativos.map((a) => (a.id === d.id ? d : a)) })); setAberto(d); };
 
@@ -6858,8 +7274,11 @@ export default function App() {
     setDb((p) => {
       const alvo = (p.ativos || []).find((a) => a && a.id === id);
       if (!alvo) return p;
-      const reg = { ...alvo, __deletedAt: new Date().toISOString(), __deletedBy: (profile && profile.nome) || "" };
-      return { ...p, ativos: p.ativos.filter((a) => a.id !== id), lixeira: [...(p.lixeira || []), reg] };
+      const marca = { __deletedAt: new Date().toISOString(), __deletedBy: (profile && profile.nome) || "" };
+      // pacote: as fichas das doadoras vão junto para a lixeira (cada uma pode ser restaurada)
+      const ids = new Set([id, ...(ehPacote(alvo) ? doPacote(p.ativos, id).map((x) => x.id) : [])]);
+      const regs = p.ativos.filter((a) => a && ids.has(a.id)).map((a) => ({ ...a, ...marca }));
+      return { ...p, ativos: p.ativos.filter((a) => !ids.has(a.id)), lixeira: [...(p.lixeira || []), ...regs] };
     });
     setAberto(null);
   };
@@ -6920,7 +7339,7 @@ export default function App() {
   const restaurarLeilao = (l) => setDb((p) => ({ ...p, leiloes: (p.leiloes || []).map((x) => (x.id === l.id ? { ...x, arquivado: false } : x)) }));
   const pedirExcluirAtivo = (a) => setConfirmar({
     titulo: `Excluir ${a.nome || "este registro"}?`,
-    mensagem: "Tem certeza de que deseja excluir este registro? Esta ação não pode ser desfeita.",
+    mensagem: ehPacote(a) ? `O pacote e as fichas das ${doPacote(ativos, a.id).length} doadora(s) vão para a Lixeira, de onde podem ser restaurados.` : "Tem certeza de que deseja excluir este registro? Esta ação não pode ser desfeita.",
     usos: [],
     botoes: [{ label: "Excluir", tone: "danger", onClick: () => { excluir(a.id); setConfirmar(null); } }],
   });
@@ -6994,7 +7413,9 @@ export default function App() {
   const criatoriosDash = useMemo(() => { const s = new Set(); reais.forEach((a) => { const c = (a.ondeEsta || a.criatorio || "").trim(); if (c) s.add(c); }); return [...s].sort((x, y) => lc(x).localeCompare(lc(y))); }, [ativos]);
 
   // KPIs financeiros (respeitam os filtros do painel)
-  const fKpis = useMemo(() => { const acc = { total: 0, pago: 0, aberto: 0, patrimonio: 0 }; fReais.forEach((a) => { const f = finance(a); acc.total += f.total; acc.pago += f.pago; acc.aberto += f.aberto; acc.patrimonio += f.totalEstimado; }); return acc; }, [fReais]);
+  const fKpis = useMemo(() => { const acc = { total: 0, pago: 0, aberto: 0, patrimonio: 0, comPaga: 0, comPrev: 0, comPags: 0, comRegs: 0 }; fReais.forEach((a) => { const f = finance(a); acc.total += f.total; acc.pago += f.pago; acc.aberto += f.aberto; acc.patrimonio += f.totalEstimado;
+    // comissões: soma do que a SM já pagou (parte da SM), pagamento a pagamento; parcial conta só o que foi pago
+    acc.comPaga += f.comPaga; acc.comPrev += f.com.total; const n = comissaoPagamentosDe(a).length; acc.comPags += n; if (n) acc.comRegs += 1; }); return acc; }, [fReais]);
 
   // contagens do rebanho (sempre o total real, não dependem dos filtros)
   const nAtivos = useMemo(() => (ativos || []).filter((a) => a && a.tipo === "animal" && a.origem !== "genealogia" && !a.arquivada && ehAtivo(a)).length, [ativos]);
@@ -7215,6 +7636,11 @@ export default function App() {
                     <MoneyViva v={fKpis.aberto} money={money} className="fh-v" />
                     <span className="fh-d">Este mês: {money(parcelasMes.total)} · {parcelasMes.pagas} de {parcelasMes.qtd} pagas</span>
                   </div>
+                  <div className="fh-card fh-clk" {...cartao("ind-comissao", "Comissões pagas")}>
+                    <span className="fh-k">Comissões pagas</span>
+                    <MoneyViva v={fKpis.comPaga} money={money} className="fh-v" />
+                    <span className="fh-d">{fKpis.comPags} pagamento(s) em {fKpis.comRegs} compra(s) · previsto {money(fKpis.comPrev)}</span>
+                  </div>
                 </div>
               );
             })()}
@@ -7328,7 +7754,7 @@ export default function App() {
           </section>
         )}
 
-        {view === "prenhez" && <PaginaPrenhezes lista={visiveis} onAbrir={setAberto} />}
+        {view === "prenhez" && <PaginaPrenhezes lista={visiveis} ativos={ativos} embrioes={embrioes} onAbrir={setAberto} />}
         {view === "aspiracao" && <PaginaAspiracoes lista={visiveis} ativos={ativos} embrioes={embrioes} onAbrir={setAberto} />}
         {view === "embrioes" && <PaginaBanco embrioes={embrioes} ativos={ativos} busca={busca} sel={loteSel} setSel={setLoteSel} onAcao={acaoBanco} onAbrir={setAberto} filtroDoadora={bancoDoadora} onLimparDoadora={() => setBancoDoadora(null)} aviso={avisoMig} onFecharAviso={() => setAvisoMig(null)} migracoes={db.migracoes} />}
         {view === "animal" && (() => {
@@ -7560,6 +7986,39 @@ export default function App() {
                 </div>
                 {vis.length === 0 ? <div className="empty">Nada neste filtro.</div> : vis.map((pref) => {
                   const d = pref.dados; const conf = pref.status === "conferir"; const rej = pref.estado === "rejeitado";
+                  if (d && d.tipo === "pacote") {
+                    const fp = finance(d); const ds = (d.doadoras || []).filter((x) => x && x.doadora);
+                    return (
+                      <div className={`card imp-card ${conf ? "imp-red" : ""} ${rej ? "imp-rej" : ""}`} key={pref.id}>
+                        <div className="imp-top">
+                          <div>
+                            <span className="imp-badge pacote">{TIPO_PAC_TXT[d.subtipo] || "Pacote"}</span>
+                            <div className="serif imp-nome">{ds.length} doadora(s)</div>
+                            <div className="muted small">{ds.map((x) => x.doadora + (x.regDoadora ? ` (${x.regDoadora})` : "")).join(" · ")}</div>
+                          </div>
+                          {rej && <span className="imp-state">rejeitado</span>}
+                        </div>
+                        <div className="imp-meta">
+                          <span>Leilão: <b>{d.leilao || "—"}</b></span>
+                          <span>Lote(s): <b>{d.lote || "—"}</b></span>
+                          <span>Data: <b>{dataBR(d.dataCompra)}</b></span>
+                          <span>SM: <b>{d.porcentagemComprada !== "" && d.porcentagemComprada != null ? d.porcentagemComprada + "%" : "—"}</b></span>
+                          <span>Parcela SM: <b>{d.valorParcela ? fmt(num(d.valorParcela)) : "—"}</b> × {d.parcelas || "—"}</span>
+                          <span>Comissão: <b>{fmt(fp.com.total)}</b></span>
+                        </div>
+                        {conf ? <div className="imp-flag conf">⚠ Confira antes de aprovar — {pref.motivo}.</div>
+                          : <div className="imp-flag ok">✓ Pacote completo. Ao aprovar, vira um único card com uma ficha por doadora.</div>}
+                        <div className="imp-acts">
+                          <button className="btn btn-ghost" onClick={() => setPacForm({ modo: "pref", initial: { ...d, __pref: pref.id } })}>Abrir / conferir</button>
+                          {!rej && <button className="btn btn-gold" onClick={() => aprovarPacote({ ...d, __pref: pref.id })} disabled={conf} title={conf ? "Abra e ajuste antes de aprovar" : ""}>✓ Aprovar e cadastrar</button>}
+                          {!rej
+                            ? <button className="btn btn-ghost" onClick={() => setEstadoPreficha(pref.id, "rejeitado")}>Rejeitar</button>
+                            : <button className="btn btn-ghost" onClick={() => setEstadoPreficha(pref.id, "pendente")}>Restaurar</button>}
+                          <button className="btn btn-ghost btn-mini" onClick={() => removerPreficha(pref.id)}>Excluir</button>
+                        </div>
+                      </div>
+                    );
+                  }
                   return (
                     <div className={`card imp-card ${conf ? "imp-red" : ""} ${rej ? "imp-rej" : ""}`} key={pref.id}>
                       <div className="imp-top">
@@ -7628,10 +8087,17 @@ export default function App() {
       {form && <FichaForm tipo={form.tipo} initial={form.initial}
         animalNames={animalNames} animalReg={animalReg} genIndex={genIndex} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
-        onSave={salvar} onApprove={aprovarFicha} onClose={() => setForm(null)} />}
-      {abertoAtual && <Detalhe a={abertoAtual} ativos={ativos} embrioes={embrioes} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onGerarPrenhez={gerarPrenhez} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo}
+        onSave={salvar} onApprove={aprovarFicha} onClose={() => setForm(null)}
+        onPacote={(t) => { setForm(null); setPacForm({ modo: "novo", initial: { subtipo: t } }); }}
+        pacoteNome={form.initial && form.initial.pacoteId ? (() => { const pc = pacoteDe(ativos, form.initial); return pc ? rotuloPacote(pc) : ""; })() : ""} />}
+      {pacForm && <PacoteForm key={pacForm.modo + (pacForm.initial && pacForm.initial.id)} modo={pacForm.modo} initial={pacForm.initial}
+        animalNames={animalNames} animalReg={animalReg} leilaoNames={leilaoNames} vendedorNames={vendedorNames} socioNames={socioNames}
+        onQuickLeilao={quickLeilao} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
+        onEnviar={enviarPacote} onApprove={aprovarPacote} onSalvar={salvarPacote}
+        onIndividual={(t) => { setPacForm(null); setForm({ tipo: t }); }} onClose={() => setPacForm(null)} />}
+      {abertoAtual && <Detalhe a={abertoAtual} ativos={ativos} embrioes={embrioes} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onGerarPrenhez={gerarPrenhez} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo} onAtualizarOutro={atualizarSemAbrir}
         onRepro={acaoRepro} onIrLote={irLote}
-        onEdit={() => { setForm({ tipo: abertoAtual.tipo, initial: abertoAtual }); setAberto(null); }} onDelete={() => pedirExcluirAtivo(abertoAtual)} />}
+        onEdit={() => { if (ehPacote(abertoAtual)) { abrirPacoteEdicao(abertoAtual); return; } setForm({ tipo: abertoAtual.tipo, initial: abertoAtual }); setAberto(null); }} onDelete={() => pedirExcluirAtivo(abertoAtual)} />}
       {repro && repro.tipo === "transf" && (() => {
         const asp = repro.alvo ? ((ativos || []).find((x) => x && x.id === repro.alvo.id) || repro.alvo) : null;
         const lote = repro.lote ? (embrioes.find((l) => l.id === repro.lote.id) || repro.lote) : null;
@@ -8694,4 +9160,27 @@ button.rp-elo:hover{background:var(--surf2);border-color:rgba(23,107,70,.3)}
 @keyframes folha{from{transform:translateY(40px);opacity:.001}to{transform:none;opacity:1}}
 @media print{.side,.topbar,.head-tools,.rep-tools,.btn,.ficha-nav,.ped-zoom{display:none!important}.main{padding:0}}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+/* pacotes (várias doadoras) e comissões */
+.pac-modo{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 14px}
+.pac-modo-t{font-size:13px;font-weight:600;color:var(--muted)}
+.pac-linha{border:1px solid var(--line);border-radius:var(--r2,12px);padding:12px 14px;margin-bottom:12px;background:var(--surf2)}
+.pac-linha-h{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+.pac-lista{display:flex;flex-direction:column;gap:10px;margin-bottom:12px}
+.pac-item{border:1px solid var(--line);border-radius:var(--r2,12px);padding:12px 14px;background:var(--surf);display:flex;flex-direction:column;gap:8px}
+.pac-item-h{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.pac-item-h .muted.small{margin-top:3px}
+.pac-acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.pac-inline{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap}
+.pac-inline input{border:1px solid var(--line2);border-radius:8px;padding:5px 8px;font:inherit;font-size:13px}
+.pac-nasc{font-size:13px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.pac-aviso{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0 0 14px}
+.rp-pac{border-color:var(--champ)}
+.rp-pac-lista{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.rp-pac-lista li{display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:13px}
+.rp-pac-lista li span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.imp-badge.pacote{background:var(--em-l);color:var(--em)}
+.com-novo{border:1px solid var(--line);border-radius:var(--r2,12px);padding:12px 14px;background:var(--surf2);margin-top:8px}
+.com-novo-acts{display:flex;gap:10px;align-items:center;justify-content:flex-end;flex-wrap:wrap;margin-top:8px}
+.com-novo-acts .muted{margin-right:auto}
+@media(min-width:1201px){.fin-hero{grid-template-columns:1.35fr 1fr 1fr 1fr 1fr}}
 `;
