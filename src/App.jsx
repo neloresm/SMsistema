@@ -1,4 +1,4 @@
-/* SM-BUILD: pacotes-comissoes-2026-11-16 */
+/* SM-BUILD: pacotes-comissoes-v2-2026-11-16 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -125,7 +125,13 @@ function comissaoCalc(a) {
 /* pagamentos de comissão registrados na ficha (ou no pacote). O valor guardado é SEMPRE a parte da SM:
    quando o usuário informa o total pago pela sociedade, o sistema já grava total × % da SM. */
 const comissaoPagamentosDe = (a) => ((a && a.comissaoPagamentos) || []).filter((p) => p && num(p.valor) > 0);
-const comissaoPaga = (a) => comissaoPagamentosDe(a).reduce((s, p) => s + num(p.valor), 0);
+// regra da SM: a comissão é paga na hora da compra. Sem pagamentos lançados na ficha, ela conta como paga
+// integralmente na data da compra — a não ser que a ficha marque "ainda não paga" (comissaoNaCompra = false).
+// Quando há pagamentos lançados (ex.: pagamento parcial), valem só eles.
+const comissaoNaCompra = (a) => !!a && !comissaoPagamentosDe(a).length && a.comissaoNaCompra !== false && (!a.dataCompra || a.dataCompra <= today());
+const comissaoPaga = (a) => { const l = comissaoPagamentosDe(a); return l.length ? l.reduce((s, p) => s + num(p.valor), 0) : comissaoNaCompra(a) ? comissaoCalc(a).total : 0; };
+// quantidade de pagamentos considerados (o automático da compra conta como 1)
+const comissaoQtdPag = (a) => { const n = comissaoPagamentosDe(a).length; return n || (comissaoNaCompra(a) && comissaoCalc(a).total > 0 ? 1 : 0); };
 
 /* ------------------------ pacotes (várias doadoras) --------------------- *
  * O pacote é UM registro (tipo "pacote") com os dados da compra: leilão, lotes, sociedade,
@@ -1421,13 +1427,14 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
           {initial && initial.__fromOrigem && (tipo === "animal"
             ? <div className="aviso" style={{ margin: "0 0 14px" }}>Nascimento de <b>{initial.origemLabel}</b> — genealogia e sociedade já preenchidas. Complete os dados do animal e confira o sexo.</div>
             : <div className="aviso" style={{ margin: "0 0 14px" }}>Prenhez gerada a partir de <b>{initial.origemLabel}</b> — doadora, pai, genealogia e sociedade já preenchidos.</div>)}
-          {!initial && onPacote && (tipo === "prenhez" || tipo === "aspiracao") && (
+          {onPacote && (tipo === "prenhez" || tipo === "aspiracao") && !doPac && !(initial && (initial.__fromOrigem || initial.origemId || initial.loteOrigemId)) && (
             <div className="pac-modo" role="radiogroup" aria-label="Tipo de compra">
               <span className="pac-modo-t">Tipo de compra</span>
               <div className="segmented">
                 <button type="button" role="radio" aria-checked="true" className="seg on">Individual</button>
-                <button type="button" role="radio" aria-checked="false" className="seg" onClick={() => onPacote(tipo)}>Pacote (várias doadoras)</button>
+                <button type="button" role="radio" aria-checked="false" className="seg" onClick={() => onPacote(tipo, d)}>Pacote (várias doadoras)</button>
               </div>
+              {initial && <span className="muted small">{ehPref ? "Transforma este pré-cadastro num pacote: a doadora (ou as doadoras escritas juntas, como “A / B / C”) vira a primeira linha e você acrescenta as outras." : "Transforma esta compra num pacote: esta ficha vira a primeira doadora (mantendo o histórico) e você acrescenta as outras. Os valores passam para o pacote, sem duplicar."}</span>}
             </div>
           )}
           {doPac && <div className="aviso aviso-info" style={{ margin: "0 0 14px" }}>Esta doadora faz parte do <b>{pacoteNome || "pacote"}</b>. Compra, parcelas, comissão e sociedade ficam no pacote — aqui você edita só os dados desta doadora.</div>}
@@ -1530,17 +1537,17 @@ function PacoteForm({ initial, modo, animalNames, animalReg, leilaoNames, vended
     doadoras: d.doadoras.filter((x) => (x.doadora || "").trim()).map((x) => ({ ...x, doadora: x.doadora.replace(/\s+/g, " ").trim(), regDoadora: (x.regDoadora || "").trim(), pai: (x.pai || "").replace(/\s+/g, " ").trim() })) });
   const agir = (fn) => {
     const x = limpo();
-    if (!x.doadoras.length) { setErro("Informe pelo menos uma doadora."); return; }
-    if (!(x.leilao || "").trim() && !x.dataCompra) { setErro("Informe o leilão ou a data da compra."); return; }
+    if (!x.doadoras.length) { setErro("Informe o nome de pelo menos uma mãe doadora."); return; }
     setErro(""); fn(x);
   };
+  const editando = modo === "editar" || modo === "converter";   // pacote já cadastrado (ou cadastro existente virando pacote): grava direto
   const campo = (k, label, type, extra) => (
     <label className={`field ${type === "textarea" ? "wide" : ""}`} key={k}><span>{label}</span>
       {type === "textarea" ? <textarea rows={2} value={d[k] || ""} onChange={(e) => set(k, e.target.value)} />
         : <input type={type === "money" || type === "number" || type === "pct" ? "number" : type === "date" ? "date" : "text"} step="any" value={d[k] ?? ""} onChange={(e) => set(k, e.target.value)} placeholder={type === "money" ? "R$ 0" : type === "pct" ? "ex.: 33,33" : extra || ""} />}
     </label>
   );
-  const titulo = modo === "pref" ? "Conferir pacote" : modo === "editar" ? "Editar pacote" : "Novo cadastro";
+  const titulo = modo === "pref" ? "Conferir pacote" : modo === "editar" ? "Editar pacote" : modo === "converter" ? "Transformar em pacote" : "Novo cadastro";
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal pac-form" onClick={(e) => e.stopPropagation()}>
@@ -1555,7 +1562,7 @@ function PacoteForm({ initial, modo, animalNames, animalReg, leilaoNames, vended
               </div>
             </div>
           )}
-          {modo !== "editar" && (
+          {!editando && (
             <div className="pac-modo" role="radiogroup" aria-label="O pacote é de">
               <span className="pac-modo-t">O pacote é de</span>
               <div className="segmented">
@@ -1564,7 +1571,9 @@ function PacoteForm({ initial, modo, animalNames, animalReg, leilaoNames, vended
             </div>
           )}
           <div className="aviso aviso-info" style={{ margin: "0 0 14px" }}>
-            {modo === "novo" ? "O pacote vai para a fila de aprovação (Importar). Ao aprovar, ele aparece como um único card, e cada doadora ganha a própria ficha para acompanhamento." : "Compra, parcelas e comissão são do pacote e entram uma única vez nos totais. Cada doadora tem acompanhamento próprio."}
+            {modo === "novo" ? "O pacote vai para a fila de aprovação (Importar). Ao aprovar, ele aparece como um único card, e cada doadora ganha a própria ficha para acompanhamento."
+              : modo === "converter" ? "A ficha atual vira a primeira doadora do pacote (com o histórico e os vínculos dela). A compra, as parcelas e a comissão passam para o pacote — os totais não mudam. Acrescente as outras mães doadoras abaixo."
+              : "Compra, parcelas e comissão são do pacote e entram uma única vez nos totais. Cada doadora tem acompanhamento próprio."}
           </div>
 
           <div className="fsec"><div className="fsec-h">Dados do pacote</div>
@@ -1574,6 +1583,7 @@ function PacoteForm({ initial, modo, animalNames, animalReg, leilaoNames, vended
               {campo("lote", "Lote(s)", "text", "ex.: 21A, 21B, 21C")}
               <label className="field"><span>Vendedor</span><AutoField value={d.vendedor || ""} onChange={(v) => set("vendedor", v)} suggestions={vendedorNames} onCreate={onQuickVendedor} placeholder="buscar ou cadastrar vendedor" /></label>
               {campo("obsCompra", "Observações da compra", "textarea")}
+              {campo("obs", "Observações do pacote", "textarea")}
             </div>
           </div>
 
@@ -1628,13 +1638,12 @@ function PacoteForm({ initial, modo, animalNames, animalReg, leilaoNames, vended
             ))}
             <button type="button" className="btn btn-ghost" onClick={addLinha}>+ Adicionar doadora</button>
           </div>
-          {erro && <div className="aviso" role="alert">{erro}</div>}
         </div>
-        <div className="modal-foot"><button type="button" className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+        <div className="modal-foot">{erro && <span className="pac-erro" role="alert">{erro}</span>}<button type="button" className="btn btn-ghost" onClick={onClose}>Cancelar</button>
           {modo === "pref" ? (<>
             <button type="button" className="btn btn-ghost" onClick={() => agir(onEnviar)}>Salvar rascunho</button>
             <button type="button" className="btn btn-gold" onClick={() => agir(onApprove)}>✓ Aprovar e cadastrar</button>
-          </>) : modo === "editar" ? <button type="button" className="btn btn-gold" onClick={() => agir(onSalvar)}>Salvar pacote</button>
+          </>) : editando ? <button type="button" className="btn btn-gold" onClick={() => agir(onSalvar)}>Salvar pacote</button>
             : <button type="button" className="btn btn-gold" onClick={() => agir(onEnviar)}>Enviar para aprovação</button>}
         </div>
       </div>
@@ -1713,13 +1722,18 @@ function ComissaoSecao({ a, onUpdate, onConfirm }) {
     onConfirm({ titulo: "Remover este pagamento de comissão?", mensagem: `O pagamento de ${fmt(p.valor)} em ${dataBR(p.data)} deixa de contar em Comissões pagas.`, usos: [], botoes: [{ label: "Remover", tone: "danger", onClick: () => { exec(); onConfirm(null); } }] });
   };
   const situacao = f.com.total <= 0 ? "" : f.comPaga <= 0 ? "não paga" : f.comPaga + 0.005 < f.com.total ? "paga parcialmente" : "quitada";
+  const auto = comissaoNaCompra(a) && f.com.total > 0;   // paga na hora da compra (regra padrão)
+  const marcarNaCompra = (v) => onUpdate({ ...a, comissaoNaCompra: v,
+    historico: [...(a.historico || []), { id: uid(), data: today(), tipo: "Comissão", desc: v ? "Comissão marcada como paga na compra" : "Comissão marcada como ainda não paga (lançar os pagamentos)", responsavel: "" }] });
   return (
     <div className="fsec" id="fx-com"><div className="fsec-h">Comissão <span className="muted small">— parte da SM{situacao ? ` · ${situacao}` : ""}</span></div>
       <div className="fin-cards">
         <KPI label="Comissão prevista (SM)" value={fmt(f.com.total)} sub={`${f.com.pct}% sobre ${fmt(f.cota)}`} />
-        <KPI label="Comissão paga" value={fmt(f.comPaga)} tone="pos" sub={`${pags.length} pagamento(s)`} />
+        <KPI label="Comissão paga" value={fmt(f.comPaga)} tone="pos" sub={auto ? `na compra${a.dataCompra ? ` · ${dataBR(a.dataCompra)}` : ""}` : `${pags.length} pagamento(s)`} />
         <KPI label="Saldo da comissão" value={fmt(f.comSaldo)} tone={f.comSaldo > 0.004 ? "neg" : ""} />
       </div>
+      {auto && <p className="muted small com-auto">Paga na hora da compra{a.dataCompra ? `, em ${dataBR(a.dataCompra)}` : ""}: {fmt(f.com.total)}. Se foi diferente, lance os pagamentos abaixo (eles substituem este valor) ou <button type="button" className="rp-infolink" onClick={() => marcarNaCompra(false)}>marque como ainda não paga</button>.</p>}
+      {!auto && !pags.length && f.com.total > 0 && a.comissaoNaCompra === false && <p className="muted small com-auto">Marcada como ainda não paga. <button type="button" className="rp-infolink" onClick={() => marcarNaCompra(true)}>Foi paga na compra</button></p>}
       {pags.length > 0 && (
         <div className="tbl-wrap"><table className="tbl">
           <thead><tr><th>Data</th><th>Valor pago (SM)</th><th>Como foi informado</th><th>Observações</th><th></th></tr></thead>
@@ -3034,7 +3048,7 @@ function AnIndicador({ campo, base, sel, alterna, estreito, money, privado, onAb
         extra={sel ? <button type="button" className="btn btn-mini" onClick={() => alterna(sel)}>Ver todos</button> : null} onAbrir={onAbrir}
         render={({ a, v, f }) => ({ key: a.id, a, nome: a.nome || "(sem nome)", meta: [TIPO_UM_PAINEL[a.tipo] || a.tipo, rgTxt(a), a.tipo === "animal" ? `SM ${pctTxt(participacaoAtual(a))}` : a.status].filter(Boolean).join(" · "),
           vals: campo === "comissao"
-            ? [[nome, money(v)], ["Comissão prevista (SM)", money(f.com.total)], ["Pagamentos", comissaoPagamentosDe(a).length]]
+            ? [[nome, money(v)], ["Comissão prevista (SM)", money(f.com.total)], ["Pagamentos", comissaoNaCompra(a) ? `na compra${a.dataCompra ? ` (${dataBR(a.dataCompra)})` : ""}` : comissaoPagamentosDe(a).length]]
             : [[nome, money(v)], ["Do total", total ? pctTxt((v / total) * 100) : "—"]] })} />
     </>
   );
@@ -4262,7 +4276,7 @@ function SecaoEmbrioesDoadora({ a, embrioes, ativos, onIrLote }) {
   );
 }
 
-function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAtualizarOutro, onAbrir, ativos, embrioes, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onGerarPrenhez, onConfirm, onRepro, onIrLote }) {
+function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAtualizarOutro, onVirarPacote, onAbrir, ativos, embrioes, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onGerarPrenhez, onConfirm, onRepro, onIrLote }) {
   useTravaFundo();
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
@@ -4409,6 +4423,8 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAtualizarOutro, onA
                   {filhos.length > 0 && <button className="btn btn-ghost" onClick={() => onAbrir(filhos[filhos.length - 1])}>Ver animal</button>}
                 </>;
               })()}
+              {onVirarPacote && (a.tipo === "prenhez" || a.tipo === "aspiracao") && !doPac && !a.origemId && !a.loteOrigemId && a.origem !== "genealogia" &&
+                <button className="btn btn-ghost" onClick={() => onVirarPacote(a)} title="Transforma esta compra num pacote e acrescenta outras mães doadoras no mesmo card">+ Mais doadoras (pacote)</button>}
               {canDelete && <button className="btn btn-ghost" onClick={onDelete}>Excluir</button>}<button className="x abs" onClick={onClose} aria-label="Fechar"><Ico n="fechar" size={18} /></button></div>
           </div>
         </div>
@@ -6834,12 +6850,12 @@ export default function App() {
       porcentagemComprada: pacote.porcentagemComprada ?? "",   // só o percentual (herdado por nascimentos); valores ficam no pacote
       socios: (pacote.socios || []).filter((s) => s && s.nome).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct, obs: s.obs || "" })) };
     CAMPOS_COMPRA_PACOTE.filter((k) => k !== "porcentagemComprada").forEach((k) => { delete c[k]; });
-    delete c.parcelasList; delete c.__regAuto; delete c.__existe;
+    delete c.parcelasList; delete c.__regAuto; delete c.__existe; delete c.comissaoPagamentos; delete c.comissaoNaCompra;
     if (!antiga) c = genCompleta(c);
     return { ...c, nome: rotuloReprod(c) };
   };
   const dadosPacote = (d) => {
-    const p = { ...d }; delete p.doadoras; delete p.__pref;
+    const p = { ...d }; delete p.doadoras; delete p.__pref; delete p.__converteDe;
     p.tipo = "pacote"; p.subtipo = d.subtipo === "prenhez" ? "prenhez" : "aspiracao";
     p.socios = (d.socios || []).filter((s) => s && (s.nome || "").trim()).map((s) => ({ id: s.id || uid(), nome: s.nome.trim(), pct: s.pct, obs: s.obs || "" }));
     p.nome = rotuloPacote(p);
@@ -6874,13 +6890,26 @@ export default function App() {
     flushNext.current = true;
     const quem = quemReg();
     setDb((p0) => {
-      const antigo = p0.ativos.find((x) => x && x.id === d.id);
-      if (!antigo) return p0;
-      // preserva o que é registrado fora do formulário: pagamentos de parcelas, pagamentos de comissão e histórico
-      const pac = { ...antigo, ...dadosPacote(d), id: antigo.id, parcelasList: antigo.parcelasList || [], comissaoPagamentos: antigo.comissaoPagamentos || [],
-        historico: [...(antigo.historico || []), histE("Pacote editado", "Dados do pacote atualizados")] };
-      pac.parcelasList = ensureParcelas(pac);
-      let st = { ...p0, ativos: p0.ativos.map((x) => (x && x.id === pac.id ? pac : x)) };
+      let antigo = p0.ativos.find((x) => x && x.id === d.id && x.tipo === "pacote");
+      let st;
+      if (!antigo) {
+        // cadastro individual virando pacote: o pacote nasce com a compra dele (parcelas pagas e comissão inclusas)
+        const orig = d.__converteDe ? p0.ativos.find((x) => x && x.id === d.__converteDe) : null;
+        if (!orig) return p0;
+        const novo = { ...dadosPacote(d), id: d.id, parcelasList: orig.parcelasList || [], comissaoPagamentos: orig.comissaoPagamentos || [],
+          ...(orig.comissaoNaCompra === false ? { comissaoNaCompra: false } : {}), historico: [histE("Pacote criado", `Criado a partir de ${orig.nome || "um cadastro individual"}`)] };
+        novo.parcelasList = ensureParcelas(novo);
+        st = aplicarNovoRegistro(p0, novo, quem, false, null);
+        antigo = st.ativos.find((x) => x && x.id === novo.id);
+      } else {
+        // preserva o que é registrado fora do formulário: pagamentos de parcelas, pagamentos de comissão e histórico
+        const pac = { ...antigo, ...dadosPacote(d), id: antigo.id, parcelasList: antigo.parcelasList || [], comissaoPagamentos: antigo.comissaoPagamentos || [],
+          historico: [...(antigo.historico || []), histE("Pacote editado", "Dados do pacote atualizados")] };
+        pac.parcelasList = ensureParcelas(pac);
+        st = { ...p0, ativos: p0.ativos.map((x) => (x && x.id === pac.id ? pac : x)) };
+        antigo = pac;
+      }
+      const pac = antigo;
       (d.doadoras || []).forEach((x, i) => {
         const velha = x.__existe ? st.ativos.find((y) => y && y.id === x.id) : null;
         if (velha) st = { ...st, ativos: st.ativos.map((y) => (y && y.id === velha.id ? fichaDoadora(pac, x, velha, i + 1) : y)) };
@@ -6891,7 +6920,41 @@ export default function App() {
       let leiloes = st.leiloes || []; if (pac.leilao && !leiloes.some((l) => l && lc(l.nome) === lc(pac.leilao))) leiloes = [...leiloes, { id: uid(), nome: pac.leilao }];
       return { ...st, leiloes };
     });
-    setPacForm(null); setToast("Pacote atualizado.");
+    setPacForm(null); setToast(d.__converteDe ? `Pacote criado com ${(d.doadoras || []).length} doadora(s).` : "Pacote atualizado.");
+  };
+  /* ficha individual (pré-cadastro ou cadastro) → dados do formulário de pacote.
+     Doadoras escritas juntas ("A / B / C", "COMBO A E B") viram linhas separadas. */
+  const separarDoadoras = (txt) => {
+    const orig = (txt || "").replace(/\s+/g, " ").trim(); if (!orig) return [];
+    const combo = /^(combo|pacote)\b/i.test(orig);
+    const t = orig.replace(/^(combo|pacote)(\s+aspira[cç][aã]o)?\s+/i, "");
+    const partes = t.includes("/") ? t.split(/\s*\/\s*/) : combo ? t.split(/\s+E\s+/) : [t];
+    return partes.map((s) => s.trim()).filter(Boolean);
+  };
+  const paraPacote = (x, t) => {
+    const pc = { tipo: "pacote", subtipo: t };
+    CAMPOS_COMPRA_PACOTE.forEach((k) => { if (x[k] != null && x[k] !== "") pc[k] = x[k]; });
+    if (!pc.lote) { const m = (x.obsCompra || "").match(/Lote: ([^·]+)/); if (m) pc.lote = m[1].trim(); }
+    if (x.comissaoNaCompra === false) pc.comissaoNaCompra = false;
+    pc.socios = (x.socios || []).filter((s) => s && s.nome).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct, obs: s.obs || "" }));
+    const nomes = separarDoadoras(x.doadora);
+    const base = { qtd: x.qtd || 1, pai: x.pai || "", status: x.status || "", receptora: x.receptora || "", previsaoParto: x.previsaoParto || "", dataAspiracao: x.dataAspiracao || "" };
+    pc.doadoras = (nomes.length ? nomes : [""]).map((n) => ({ ...novaLinhaDoadora(), ...base, doadora: n, regDoadora: nomes.length <= 1 ? (x.regDoadora || "") : "" }));
+    if (pc.doadoras.length === 1) pc.doadoras.push(novaLinhaDoadora());
+    pc.obs = x.obs || "";
+    return pc;
+  };
+  // botão "Pacote" dentro de uma ficha individual aberta no formulário
+  const virarPacote = (t, atual, iniDireto) => {
+    const ini = iniDireto || (form && form.initial); setForm(null); setAberto(null);
+    if (!ini) { setPacForm({ modo: "novo", initial: { subtipo: t } }); return; }
+    const pc = paraPacote(atual || ini, t);
+    if (ini.__pref) { setPacForm({ modo: "pref", initial: { ...pc, __pref: ini.__pref } }); return; }
+    // cadastro existente: a própria ficha é a doadora 1 (mantém id, histórico e vínculos)
+    const x = atual || ini;
+    pc.doadoras = [{ ...novaLinhaDoadora(), id: ini.id, __existe: true, doadora: x.doadora || "", regDoadora: x.regDoadora || "", qtd: x.qtd || 1, pai: x.pai || "", status: x.status || "", receptora: x.receptora || "", previsaoParto: x.previsaoParto || "", dataAspiracao: x.dataAspiracao || "", obs: x.obs || "" }, novaLinhaDoadora()];
+    pc.obs = "";
+    setPacForm({ modo: "converter", initial: { ...pc, __converteDe: ini.id } });
   };
   const abrirPacoteEdicao = (pac) => {
     const doadoras = doPacote(ativos, pac.id).map((x) => ({ id: x.id, __existe: true, doadora: x.doadora || "", regDoadora: x.regDoadora || "", qtd: x.qtd || 1, pai: x.pai || "", status: x.status || "", receptora: x.receptora || "", previsaoParto: x.previsaoParto || "", dataAspiracao: x.dataAspiracao || "", obs: x.obs || "" }));
@@ -7415,7 +7478,7 @@ export default function App() {
   // KPIs financeiros (respeitam os filtros do painel)
   const fKpis = useMemo(() => { const acc = { total: 0, pago: 0, aberto: 0, patrimonio: 0, comPaga: 0, comPrev: 0, comPags: 0, comRegs: 0 }; fReais.forEach((a) => { const f = finance(a); acc.total += f.total; acc.pago += f.pago; acc.aberto += f.aberto; acc.patrimonio += f.totalEstimado;
     // comissões: soma do que a SM já pagou (parte da SM), pagamento a pagamento; parcial conta só o que foi pago
-    acc.comPaga += f.comPaga; acc.comPrev += f.com.total; const n = comissaoPagamentosDe(a).length; acc.comPags += n; if (n) acc.comRegs += 1; }); return acc; }, [fReais]);
+    acc.comPaga += f.comPaga; acc.comPrev += f.com.total; const n = comissaoQtdPag(a); acc.comPags += n; if (n) acc.comRegs += 1; }); return acc; }, [fReais]);
 
   // contagens do rebanho (sempre o total real, não dependem dos filtros)
   const nAtivos = useMemo(() => (ativos || []).filter((a) => a && a.tipo === "animal" && a.origem !== "genealogia" && !a.arquivada && ehAtivo(a)).length, [ativos]);
@@ -8045,6 +8108,7 @@ export default function App() {
                       {pref.genSug > 0 && <div className="imp-flag gen">🧬 {pref.genSug} avô(s)/avó(s) sugerido(s) pela genealogia — confira ao abrir.</div>}
                       <div className="imp-acts">
                         <button className="btn btn-ghost" onClick={() => abrirPreficha(pref)}>Abrir / conferir</button>
+                        {!rej && (d.tipo === "prenhez" || d.tipo === "aspiracao") && <button className="btn btn-ghost" onClick={() => setPacForm({ modo: "pref", initial: { ...paraPacote(d, d.tipo), __pref: pref.id } })} title="Cadastrar várias mães doadoras neste mesmo card">Transformar em pacote</button>}
                         {!rej && <button className="btn btn-gold" onClick={() => aprovarFicha({ ...d, __pref: pref.id })} disabled={conf} title={conf ? "Abra e ajuste o % da SM antes de aprovar" : ""}>✓ Aprovar e cadastrar</button>}
                         {!rej
                           ? <button className="btn btn-ghost" onClick={() => setEstadoPreficha(pref.id, "rejeitado")}>Rejeitar</button>
@@ -8088,14 +8152,14 @@ export default function App() {
         animalNames={animalNames} animalReg={animalReg} genIndex={genIndex} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
         onSave={salvar} onApprove={aprovarFicha} onClose={() => setForm(null)}
-        onPacote={(t) => { setForm(null); setPacForm({ modo: "novo", initial: { subtipo: t } }); }}
+        onPacote={virarPacote}
         pacoteNome={form.initial && form.initial.pacoteId ? (() => { const pc = pacoteDe(ativos, form.initial); return pc ? rotuloPacote(pc) : ""; })() : ""} />}
       {pacForm && <PacoteForm key={pacForm.modo + (pacForm.initial && pacForm.initial.id)} modo={pacForm.modo} initial={pacForm.initial}
         animalNames={animalNames} animalReg={animalReg} leilaoNames={leilaoNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickLeilao={quickLeilao} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
         onEnviar={enviarPacote} onApprove={aprovarPacote} onSalvar={salvarPacote}
         onIndividual={(t) => { setPacForm(null); setForm({ tipo: t }); }} onClose={() => setPacForm(null)} />}
-      {abertoAtual && <Detalhe a={abertoAtual} ativos={ativos} embrioes={embrioes} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onGerarPrenhez={gerarPrenhez} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo} onAtualizarOutro={atualizarSemAbrir}
+      {abertoAtual && <Detalhe a={abertoAtual} ativos={ativos} embrioes={embrioes} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onGerarPrenhez={gerarPrenhez} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo} onAtualizarOutro={atualizarSemAbrir} onVirarPacote={(x) => virarPacote(x.tipo, x, x)}
         onRepro={acaoRepro} onIrLote={irLote}
         onEdit={() => { if (ehPacote(abertoAtual)) { abrirPacoteEdicao(abertoAtual); return; } setForm({ tipo: abertoAtual.tipo, initial: abertoAtual }); setAberto(null); }} onDelete={() => pedirExcluirAtivo(abertoAtual)} />}
       {repro && repro.tipo === "transf" && (() => {
@@ -9182,5 +9246,7 @@ button.rp-elo:hover{background:var(--surf2);border-color:rgba(23,107,70,.3)}
 .com-novo{border:1px solid var(--line);border-radius:var(--r2,12px);padding:12px 14px;background:var(--surf2);margin-top:8px}
 .com-novo-acts{display:flex;gap:10px;align-items:center;justify-content:flex-end;flex-wrap:wrap;margin-top:8px}
 .com-novo-acts .muted{margin-right:auto}
+.com-auto{margin:4px 0 10px}
+.pac-erro{margin-right:auto;color:var(--neg);font-size:13px;font-weight:600;align-self:center}
 @media(min-width:1201px){.fin-hero{grid-template-columns:1.35fr 1fr 1fr 1fr 1fr}}
 `;
