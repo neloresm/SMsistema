@@ -1,4 +1,4 @@
-/* SM-BUILD: pacotes-comissoes-v2-2026-11-16 */
+/* SM-BUILD: pacotes-v3-2026-11-16 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -510,7 +510,9 @@ function rotuloReprod(a) {
   if (!d && !p) return a.nome || pre;
   return `${pre}: ${d}${p ? ` x ${p}` : ""}`;
 }
-const qtdTotal = (a) => Math.max(1, Math.round(num(a && a.qtd) || 1));
+// quantidade da ficha: vazia conta 1; 0 só quando informado de propósito (ex.: não deu nenhuma prenhez)
+const qtdZero = (a) => !!a && (a.qtd === 0 || a.qtd === "0");
+const qtdTotal = (a) => (qtdZero(a) ? 0 : Math.max(1, Math.round(num(a && a.qtd) || 1)));
 const qtdConvertidos = (a) => Math.max(0, Math.round(num(a && a.convertidos) || 0));
 const qtdPerdas = (a) => Math.max(0, Math.round(num(a && a.perdas) || 0));   // perdas gestacionais registradas na ficha
 const qtdRest = (a) => Math.max(0, qtdTotal(a) - qtdConvertidos(a) - qtdPerdas(a));
@@ -569,6 +571,7 @@ function faseReprod(p) {
   const s = lc(p && p.status);
   const nasc = qtdConvertidos(p);
   if (s.includes("cancel")) return { k: "enc", txt: "Cancelada", tone: "red", cancel: true };
+  if (qtdZero(p)) return { k: "enc", txt: "Sem prenhez", tone: "red" };   // quantidade 0: não deu prenhez
   if (p.arquivada || (nasc > 0 && qtdRest(p) === 0)) return { k: "enc", txt: nasc > 1 ? `${nasc} nascidos` : nasc ? "Nascida" : "Encerrada", tone: "gold" };
   if (s.includes("vendida")) return { k: "enc", txt: "Vendida", tone: "gold" };
   if (s.includes("concluída") || s.includes("concluida") || s.includes("parida")) return { k: "enc", txt: p.status, tone: "gold" };
@@ -1621,11 +1624,11 @@ function PacoteForm({ initial, modo, animalNames, animalReg, leilaoNames, vended
             <div className="fsec-h">Doadoras <span className="muted small hint">— {d.doadoras.filter((x) => (x.doadora || "").trim()).length} informada(s); cada uma terá ficha própria</span></div>
             {d.doadoras.map((x, i) => (
               <div className="pac-linha" key={x.id}>
-                <div className="pac-linha-h"><b>Doadora {i + 1}</b>{x.__existe ? <span className="muted small">cadastrada · para excluir, abra a ficha da doadora</span> : <button type="button" className="btn btn-mini" onClick={() => delLinha(x.id)}>remover</button>}</div>
+                <div className="pac-linha-h"><b>Doadora {i + 1}</b>{x.__existe ? <span className="muted small">cadastrada · para tirar do pacote, use “Excluir doadora” no card do pacote</span> : <button type="button" className="btn btn-mini" onClick={() => delLinha(x.id)}>remover</button>}</div>
                 <div className="grid">
                   <label className="field"><span>Mãe doadora</span><AutoField value={x.doadora} onChange={(v) => setLinha(x.id, "doadora", v)} suggestions={animalNames} regMap={animalReg} placeholder="nome da doadora" /></label>
                   <label className="field"><span>Registro{x.__regAuto ? <em className="new-hint"> · preenchido automaticamente</em> : ""}</span><input value={x.regDoadora || ""} onChange={(e) => setLinha(x.id, "regDoadora", e.target.value)} placeholder="RGD / série e número" /></label>
-                  <label className="field"><span>{pren ? "Quantidade de prenhezes" : "Quantidade de aspirações"}</span><input type="number" min="1" step="1" value={x.qtd ?? ""} onChange={(e) => setLinha(x.id, "qtd", e.target.value)} /></label>
+                  <label className="field"><span>{pren ? "Quantidade de prenhezes" : "Quantidade de aspirações"}</span><input type="number" min="0" step="1" value={x.qtd ?? ""} onChange={(e) => setLinha(x.id, "qtd", e.target.value)} /></label>
                   <label className="field"><span>{pren ? "Touro" : "Pai (se houver)"}</span><AutoField value={x.pai || ""} onChange={(v) => setLinha(x.id, "pai", v)} suggestions={animalNames} regMap={animalReg} placeholder="buscar animal" /></label>
                   <label className="field"><span>Situação manual (opcional)</span><select value={x.status || ""} onChange={(e) => setLinha(x.id, "status", e.target.value)}><option value="">—</option>{(pren ? STATUS_PRENHEZ : STATUS_ASP).map((o) => <option key={o} value={o}>{o}</option>)}</select></label>
                   {pren ? <>
@@ -1652,7 +1655,7 @@ function PacoteForm({ initial, modo, animalNames, animalReg, leilaoNames, vended
 }
 
 /* doadoras dentro da ficha do pacote: cada uma com situação e ações próprias */
-function SecaoPacote({ p, ativos, embrioes, onAbrir, onRepro, onAtualizar, onEditar }) {
+function SecaoPacote({ p, ativos, embrioes, onAbrir, onRepro, onAtualizar, onEditar, onExcluirDoadora }) {
   const filhos = doPacote(ativos, p.id);
   const [realiz, setRealiz] = useState(null);   // { id, data } — aspiração sendo marcada como realizada
   const pren = p.subtipo === "prenhez";
@@ -1680,6 +1683,7 @@ function SecaoPacote({ p, ativos, embrioes, onAbrir, onRepro, onAtualizar, onEdi
               {nasc.length > 0 && <div className="pac-nasc">Nascimento vinculado: {nasc.map((an) => <button type="button" key={an.id} className="rp-infolink" onClick={() => onAbrir(an)}>{an.nome || "animal"} ↗</button>)}</div>}
               <div className="pac-acts">
                 <button type="button" className="btn btn-mini" onClick={() => onAbrir(x)}>Abrir ficha</button>
+                {onExcluirDoadora && <button type="button" className="btn btn-mini" onClick={() => onExcluirDoadora(x)}>Excluir doadora</button>}
                 {x.tipo === "aspiracao" && !(x.dataAspiracao || x.dataAsp) && (realiz && realiz.id === x.id
                   ? <span className="pac-inline"><input type="date" value={realiz.data} onChange={(e) => setRealiz({ id: x.id, data: e.target.value })} aria-label="Data da aspiração" />
                       <button type="button" className="btn btn-mini btn-gold" disabled={!realiz.data} onClick={() => marcar(x)}>Confirmar</button>
@@ -3377,6 +3381,7 @@ function statusPrenhez(p) {
   if (f.cancel) return { txt: "Cancelada", tone: "red", grupo: "cancelado", destaque: "cancel" };
   if (f.k === "enc") {
     if (nasc > 0) return { txt: nasc > 1 ? `Nascimentos registrados (${nasc})` : "Nascimento registrado", tone: "green", grupo: "concluido", destaque: "ok" };
+    if (f.txt === "Sem prenhez") return { txt: "Encerrada sem nascimento", motivo: "quantidade 0 (não deu prenhez)", tone: "red", grupo: "concluido", destaque: "atencao" };
     if (f.txt === "Perda gestacional" || f.txt === "Não confirmada") return { txt: "Encerrada sem nascimento", motivo: f.txt === "Perda gestacional" ? "perda gestacional" : "diagnóstico negativo", tone: "red", grupo: "concluido", destaque: "atencao" };
     if (f.txt === "Encerrada") return { txt: "Encerrada sem nascimento", tone: "gold", grupo: "concluido", destaque: "" };
     return { txt: f.txt, tone: "gold", grupo: "concluido", destaque: "" };
@@ -4276,7 +4281,7 @@ function SecaoEmbrioesDoadora({ a, embrioes, ativos, onIrLote }) {
   );
 }
 
-function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAtualizarOutro, onVirarPacote, onAbrir, ativos, embrioes, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onGerarPrenhez, onConfirm, onRepro, onIrLote }) {
+function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAtualizarOutro, onVirarPacote, onDesfazerPacote, onExcluirDoadora, onAbrir, ativos, embrioes, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onGerarPrenhez, onConfirm, onRepro, onIrLote }) {
   useTravaFundo();
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
@@ -4425,6 +4430,7 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAtualizarOutro, onV
               })()}
               {onVirarPacote && (a.tipo === "prenhez" || a.tipo === "aspiracao") && !doPac && !a.origemId && !a.loteOrigemId && a.origem !== "genealogia" &&
                 <button className="btn btn-ghost" onClick={() => onVirarPacote(a)} title="Transforma esta compra num pacote e acrescenta outras mães doadoras no mesmo card">+ Mais doadoras (pacote)</button>}
+              {ehPacote(a) && onDesfazerPacote && <button className="btn btn-ghost" onClick={() => onDesfazerPacote(a)} title="Volta a ser cadastro individual: a compra volta para a ficha de uma doadora">Desfazer pacote</button>}
               {canDelete && <button className="btn btn-ghost" onClick={onDelete}>Excluir</button>}<button className="x abs" onClick={onClose} aria-label="Fechar"><Ico n="fechar" size={18} /></button></div>
           </div>
         </div>
@@ -4438,7 +4444,7 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAtualizarOutro, onV
           {(a.tipo === "prenhez" || a.tipo === "aspiracao") && a.origem !== "genealogia" && <SecaoRepro a={a} ativos={ativos} embrioes={embrioes} onAbrir={onAbrir} onIrLote={onIrLote || (() => {})} onAcao={onRepro} />}
           {a.tipo === "animal" && a.origem !== "genealogia" && onRepro && <SecaoOrigem a={a} ativos={ativos} embrioes={embrioes} onAbrir={onAbrir} onIrLote={onIrLote || (() => {})} onAcao={onRepro} />}
           {a.tipo === "animal" && <SecaoEmbrioesDoadora a={a} embrioes={embrioes} ativos={ativos} onIrLote={onIrLote || (() => {})} />}
-          {ehPacote(a) && <SecaoPacote p={a} ativos={ativos} embrioes={embrioes} onAbrir={(x) => onAbrir && onAbrir(x)} onRepro={onRepro || (() => {})} onAtualizar={onAtualizarOutro || onUpdate} onEditar={onEdit} />}
+          {ehPacote(a) && <SecaoPacote p={a} ativos={ativos} embrioes={embrioes} onAbrir={(x) => onAbrir && onAbrir(x)} onRepro={onRepro || (() => {})} onAtualizar={onAtualizarOutro || onUpdate} onEditar={onEdit} onExcluirDoadora={onExcluirDoadora} />}
           {doPac && (
             <div className="aviso aviso-info pac-aviso" id="fx-fin">Compra, parcelas e comissão desta doadora estão no <b>{pac ? rotuloPacote(pac) : "pacote"}</b> e entram uma única vez nos totais.
               {pac && <button type="button" className="rp-infolink" onClick={() => onAbrir && onAbrir(pac)}>Abrir o pacote ↗</button>}</div>
@@ -6845,7 +6851,7 @@ export default function App() {
   const fichaDoadora = (pacote, x, antiga, ordem) => {
     const base = antiga || { id: uid(), videos: [], historico: [], comissaoPct: 0 };
     let c = { ...base, tipo: pacote.subtipo, pacoteId: pacote.id, pacoteOrdem: ordem || base.pacoteOrdem || 0,
-      doadora: x.doadora, regDoadora: x.regDoadora || "", pai: x.pai || "", qtd: Math.max(1, Math.round(num(x.qtd)) || 1), status: x.status || "", obs: x.obs || "",
+      doadora: x.doadora, regDoadora: x.regDoadora || "", pai: x.pai || "", qtd: x.qtd === 0 || x.qtd === "0" ? 0 : Math.max(1, Math.round(num(x.qtd)) || 1), status: x.status || "", obs: x.obs || "",
       ...(pacote.subtipo === "prenhez" ? { receptora: x.receptora || "", previsaoParto: x.previsaoParto || "" } : { dataAspiracao: x.dataAspiracao || "" }),
       porcentagemComprada: pacote.porcentagemComprada ?? "",   // só o percentual (herdado por nascimentos); valores ficam no pacote
       socios: (pacote.socios || []).filter((s) => s && s.nome).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct, obs: s.obs || "" })) };
@@ -6962,6 +6968,58 @@ export default function App() {
     setAberto(null); setPacForm({ modo: "editar", initial });
   };
   // grava uma ficha sem trocar a janela aberta (ações feitas dentro do card do pacote)
+  /* tirar UMA doadora do pacote: a ficha vai para a Lixeira (restaurável); a compra do pacote não muda */
+  const pedirExcluirDoadora = (x) => {
+    const filhos = (ativos || []).filter((an) => an && an.tipo === "animal" && an.origemId === x.id).length;
+    setConfirmar({ titulo: `Excluir ${x.doadora || "esta doadora"} do pacote?`,
+      mensagem: `A ficha desta doadora vai para a Lixeira e pode ser restaurada de lá. A compra, as parcelas e a comissão do pacote não mudam.${filhos ? ` Atenção: há ${filhos} nascimento(s) vinculado(s) a ela — o animal continua cadastrado.` : ""}`, usos: [],
+      botoes: [{ label: "Excluir doadora", tone: "danger", onClick: () => {
+        flushNext.current = true;
+        setDb((p) => {
+          const alvo = p.ativos.find((a) => a && a.id === x.id); if (!alvo) return p;
+          const reg = { ...alvo, __deletedAt: new Date().toISOString(), __deletedBy: quemReg() };
+          return { ...p, lixeira: [...(p.lixeira || []), reg], ativos: p.ativos.filter((a) => a && a.id !== x.id).map((a) => (a.id === x.pacoteId ? { ...a, historico: [...(a.historico || []), histE("Doadora excluída", `${x.doadora || "Doadora"} saiu do pacote (ficha na Lixeira)`, x.id)] } : a)) };
+        });
+        setConfirmar(null); setToast(`${x.doadora || "Doadora"} excluída do pacote. A ficha está na Lixeira.`);
+      } }] });
+  };
+  /* desfazer o pacote: volta a ser cadastro individual. A compra (leilão, valores, parcelas pagas, comissão)
+     vai para a ficha da doadora escolhida; as outras viram fichas individuais SEM valores (nada é duplicado). */
+  const desfazerPacote = (pac, manterId) => {
+    flushNext.current = true;
+    setDb((p) => {
+      const P = p.ativos.find((a) => a && a.id === pac.id); if (!P) return p;
+      const filhos = doPacote(p.ativos, P.id);
+      const alvo = filhos.find((f) => f.id === manterId) || filhos[0]; if (!alvo) return p;
+      const compra = {}; CAMPOS_COMPRA_PACOTE.forEach((k) => { if (P[k] != null && P[k] !== "") compra[k] = P[k]; });
+      if (P.lote && !/Lote:/.test(P.obsCompra || "")) compra.obsCompra = [P.obsCompra, `Lote: ${P.lote}`].filter(Boolean).join(" · ");
+      const solto = (f) => { const n = { ...f }; delete n.pacoteId; delete n.pacoteOrdem; return n; };
+      const ativosN = p.ativos.filter((a) => a && a.id !== P.id).map((a) => {
+        if (!a || a.pacoteId !== P.id) return a;
+        if (a.id === alvo.id) {
+          const n = { ...solto(a), ...compra, socios: (P.socios || []).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct, obs: s.obs || "" })),
+            parcelasList: P.parcelasList || [], comissaoPagamentos: P.comissaoPagamentos || [], ...(P.comissaoNaCompra === false ? { comissaoNaCompra: false } : {}),
+            obs: [a.obs, P.obs].filter((t) => t && t.trim()).join("\n\n"),
+            historico: [...(a.historico || []), histE("Pacote desfeito", `${rotuloPacote(P)} desfeito: a compra voltou para esta ficha`)] };
+          n.parcelasList = ensureParcelas(n);
+          return { ...n, nome: rotuloReprod(n) };
+        }
+        return { ...solto(a), historico: [...(a.historico || []), histE("Pacote desfeito", `Saiu de ${rotuloPacote(P)}; a compra ficou na ficha de ${alvo.doadora || "outra doadora"}`)] };
+      });
+      return { ...p, ativos: ativosN };
+    });
+    setConfirmar(null); setAberto(null);
+    setToast("Pacote desfeito: voltou a ser cadastro individual.");
+  };
+  const pedirDesfazerPacote = (pac) => {
+    const filhos = doPacote(ativos, pac.id);
+    if (!filhos.length) { setToast("Este pacote não tem doadoras. Para removê-lo, use Excluir."); return; }
+    const um = filhos.length === 1;
+    setConfirmar({ titulo: "Desfazer este pacote?",
+      mensagem: um ? `${rotuloPacote(pac)} volta a ser ${pac.subtipo === "prenhez" ? "uma prenhez" : "uma aspiração"} individual de ${filhos[0].doadora || "doadora sem nome"}, com a compra, as parcelas e a comissão do pacote. Os totais não mudam.`
+        : `Escolha em qual ficha a compra (leilão, parcelas e comissão) vai ficar. As outras ${filhos.length - 1} doadora(s) viram fichas individuais sem valores — a compra não é duplicada. Se alguma entrou por engano, você pode excluí-la antes.`, usos: [],
+      botoes: filhos.slice(0, 8).map((f) => ({ label: um ? "Desfazer pacote" : `Compra fica em ${f.doadora || "doadora"}`, tone: "gold", onClick: () => desfazerPacote(pac, f.id) })) });
+  };
   const atualizarSemAbrir = (d) => { flushNext.current = true; if (d.tipo === "prenhez" || d.tipo === "aspiracao") d = { ...d, nome: rotuloReprod(d) }; setDb((p) => ({ ...p, ativos: p.ativos.map((a) => (a.id === d.id ? d : a)) })); };
 
   const updateAtivo = (d) => { flushNext.current = true; if (d.tipo === "prenhez" || d.tipo === "aspiracao") d = { ...d, nome: rotuloReprod(d) }; setDb((p) => ({ ...p, ativos: p.ativos.map((a) => (a.id === d.id ? d : a)) })); setAberto(d); };
@@ -8159,7 +8217,7 @@ export default function App() {
         onQuickLeilao={quickLeilao} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
         onEnviar={enviarPacote} onApprove={aprovarPacote} onSalvar={salvarPacote}
         onIndividual={(t) => { setPacForm(null); setForm({ tipo: t }); }} onClose={() => setPacForm(null)} />}
-      {abertoAtual && <Detalhe a={abertoAtual} ativos={ativos} embrioes={embrioes} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onGerarPrenhez={gerarPrenhez} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo} onAtualizarOutro={atualizarSemAbrir} onVirarPacote={(x) => virarPacote(x.tipo, x, x)}
+      {abertoAtual && <Detalhe a={abertoAtual} ativos={ativos} embrioes={embrioes} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onGerarPrenhez={gerarPrenhez} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo} onAtualizarOutro={atualizarSemAbrir} onVirarPacote={(x) => virarPacote(x.tipo, x, x)} onDesfazerPacote={pedirDesfazerPacote} onExcluirDoadora={pedirExcluirDoadora}
         onRepro={acaoRepro} onIrLote={irLote}
         onEdit={() => { if (ehPacote(abertoAtual)) { abrirPacoteEdicao(abertoAtual); return; } setForm({ tipo: abertoAtual.tipo, initial: abertoAtual }); setAberto(null); }} onDelete={() => pedirExcluirAtivo(abertoAtual)} />}
       {repro && repro.tipo === "transf" && (() => {
