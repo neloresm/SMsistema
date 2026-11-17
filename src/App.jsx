@@ -1,4 +1,4 @@
-/* SM-BUILD: pacotes-v4-agrupar-2026-11-17 */
+/* SM-BUILD: venc15-2026-11-17 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -44,6 +44,14 @@ function addMonths(s, n) {
   const d = new Date(s + "T00:00:00");
   d.setMonth(d.getMonth() + n);
   return d.toISOString().slice(0, 10);
+}
+/* regra única: 1º vencimento = dia 15 do mês seguinte à data da compra (vazio se a data estiver vazia) */
+function primeiroVencDaCompra(data) {
+  const m = /^(\d{4})-(\d{2})-\d{2}$/.exec(data || "");
+  if (!m) return "";
+  let y = +m[1], mo = +m[2] + 1;
+  if (mo > 12) { mo = 1; y += 1; }
+  return `${String(y).padStart(4, "0")}-${String(mo).padStart(2, "0")}-15`;
 }
 function idade(nasc) {
   if (!nasc) return "—";
@@ -1325,7 +1333,7 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
   // editar um campo tira a marca de "sugerido" dele
-  const set = (k, v) => setD((p) => { const np = { ...p, [k]: v }; if (np.__genSug && np.__genSug.includes(k)) np.__genSug = np.__genSug.filter((x) => x !== k); return np; });
+  const set = (k, v) => setD((p) => { const np = { ...p, [k]: v }; if (k === "dataCompra") np.primeiroVenc = primeiroVencDaCompra(v); if (np.__genSug && np.__genSug.includes(k)) np.__genSug = np.__genSug.filter((x) => x !== k); return np; });
   // qual campo é a "mãe" neste tipo (animal: mae; prenhez/aspiração: doadora)
   const maeKey = tipo === "animal" ? "mae" : "doadora";
   const sugerido = (k) => (d.__genSug || []).includes(k);
@@ -1519,7 +1527,7 @@ function PacoteForm({ initial, modo, animalNames, animalReg, leilaoNames, vended
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
-  const set = (k, v) => setD((p) => ({ ...p, [k]: v }));
+  const set = (k, v) => setD((p) => ({ ...p, [k]: v, ...(k === "dataCompra" ? { primeiroVenc: primeiroVencDaCompra(v) } : {}) }));
   const setLinha = (id, k, v) => setD((p) => ({ ...p, doadoras: p.doadoras.map((x) => {
     if (x.id !== id) return x;
     const n = { ...x, [k]: v };
@@ -1978,11 +1986,11 @@ function VendasSecao({ a, vendas, partAtual, socAtual, socioNames, onQuickSocio,
 
 /* -------------------- seção Compra de participação adicional ----------- */
 function ComprasAdicSecao({ a, compras, partAtual, socAtual, socioNames, onQuickSocio, onAdd, onDel, canDelete }) {
-  const vazio = { data: today(), partFinal: "", valor: "", valorParcela: "", parcelas: "", dataInicial: today(), obs: "" };
+  const vazio = { data: today(), partFinal: "", valor: "", valorParcela: "", parcelas: "", dataInicial: primeiroVencDaCompra(today()), obs: "" };
   const [f, setF] = useState(vazio);
   const [aberto, setAberto] = useState(false);
   const [socLinhas, setSocLinhas] = useState([]);
-  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v, ...(k === "data" ? { dataInicial: primeiroVencDaCompra(v) } : {}) }));
 
   // participação adquirida = participação final informada − participação atual
   const adquirida = Math.round((num(f.partFinal) - partAtual) * 100) / 100;
