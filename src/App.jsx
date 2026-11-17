@@ -1,4 +1,4 @@
-/* SM-BUILD: pacotes-v3-2026-11-16 */
+/* SM-BUILD: pacotes-v4-agrupar-2026-11-17 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -3499,12 +3499,12 @@ function agrupaPacotes(lst, rec) {
   lst.forEach((it) => { const r = rec(it); if (r && r.pacoteId) { if (vistos.has(r.pacoteId)) return; vistos.add(r.pacoteId); out.push({ pacoteId: r.pacoteId, it }); } else out.push({ it }); });
   return out;
 }
-function CardPacote({ pacoteId, ativos, embrioes, onAbrir }) {
+function CardPacote({ pacoteId, ativos, embrioes, onAbrir, desab }) {
   const pac = (ativos || []).find((x) => x && x.id === pacoteId);
   const filhos = doPacote(ativos, pacoteId);
   const sit = (x) => { if (x.tipo === "prenhez") return statusPrenhez(x); const D = dadosAsp(x, ativos, embrioes); return { txt: D.st[0], tone: D.st[1] }; };
   return (
-    <button type="button" className="rp-card rp-pac" onClick={() => onAbrir(pac || filhos[0])}>
+    <button type="button" className={`rp-card rp-pac ${desab ? "rp-desab" : ""}`} disabled={!!desab} title={desab ? "Já é um pacote" : ""} onClick={() => onAbrir(pac || filhos[0])}>
       <div className="rp-card-h"><span className="rp-t">{pac ? rotuloPacote(pac) : "Pacote"}</span><Badge tone="gold">{filhos.length} doadora(s)</Badge></div>
       <span className="rp-meta">{[pac && pac.dataCompra ? `compra em ${dataBR(pac.dataCompra)}` : "", pac && num(pac.porcentagemComprada) ? `SM ${pctTxt(num(pac.porcentagemComprada))}` : ""].filter(Boolean).join(" · ") || "pacote"}</span>
       <ul className="rp-pac-lista">
@@ -3515,8 +3515,53 @@ function CardPacote({ pacoteId, ativos, embrioes, onAbrir }) {
   );
 }
 
+/* ---------- agrupar fichas já cadastradas num pacote (correção de cadastro) ---------- */
+const marcaAgr = (setAgr, id) => setAgr((s) => { const n = new Set(s || []); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+function BarraAgrupar({ agr, setAgr, onAgrupar, regs }) {
+  if (!onAgrupar) return null;
+  if (!agr) return <button type="button" className="btn btn-ghost btn-mini" onClick={() => setAgr(new Set())} title="Juntar num único pacote fichas que eram da mesma compra">Agrupar em pacote</button>;
+  return (
+    <div className="rp-agr-bar" role="status">
+      <span>Toque nas fichas da mesma compra · <b>{agr.size}</b> marcada(s)</span>
+      <button type="button" className="btn btn-gold btn-mini" disabled={agr.size < 2} onClick={() => { onAgrupar((regs || []).filter((x) => x && agr.has(x.id))); setAgr(null); }}>Agrupar {agr.size >= 2 ? agr.size : ""} em pacote</button>
+      <button type="button" className="btn btn-mini" onClick={() => setAgr(null)}>Cancelar</button>
+    </div>
+  );
+}
+function AgruparPacote({ regs, onConfirm, onClose }) {
+  const comValor = (r) => finance(r).total;
+  const [base, setBase] = useState(() => (regs.slice().sort((a, b) => comValor(b) - comValor(a))[0] || {}).id);
+  useEffect(() => { const h = (e) => { if (e.key === "Escape") onClose(); }; window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h); }, [onClose]);
+  const descarte = regs.filter((r) => r.id !== base).reduce((s, r) => s + comValor(r), 0);
+  const pren = regs[0] && regs[0].tipo === "prenhez";
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal pac-form" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head"><h2>Agrupar em pacote — <span className="serif">{regs.length} {pren ? "prenhezes" : "aspirações"}</span></h2><button className="x" onClick={onClose} aria-label="Fechar">✕</button></div>
+        <div className="modal-body">
+          <p className="muted small" style={{ marginTop: 0 }}>As fichas viram um único card. Cada doadora continua com a própria ficha (histórico, diagnósticos e nascimentos). Escolha <b>qual ficha tem a compra certa</b> — leilão, parcelas e comissão dela passam para o pacote.</p>
+          <div className="pac-lista" role="radiogroup" aria-label="Compra que fica no pacote">
+            {regs.map((r) => { const f = finance(r); return (
+              <label className={`pac-item agr-op ${base === r.id ? "on" : ""}`} key={r.id}>
+                <input type="radio" name="agr-base" checked={base === r.id} onChange={() => setBase(r.id)} />
+                <span><b>{r.doadora || r.nome}</b>{r.pai ? <span className="muted"> × {r.pai}</span> : null}
+                  <span className="muted small" style={{ display: "block" }}>{[r.leilao, r.dataCompra && dataBR(r.dataCompra), f.qtd ? `${fmt(f.valor)} × ${f.qtd}` : "sem valores de compra", f.total ? `total ${fmt(f.total)}` : ""].filter(Boolean).join(" · ")}</span></span>
+              </label>); })}
+          </div>
+          {descarte > 0.004
+            ? <div className="aviso" style={{ marginTop: 12 }}>Os valores das outras fichas (<b>{fmt(descarte)}</b>) deixam de contar nos totais, por estarem repetidos. Eles ficam anotados no histórico de cada ficha.</div>
+            : <div className="aviso aviso-info" style={{ marginTop: 12 }}>As outras fichas não têm valores de compra: os totais não mudam.</div>}
+        </div>
+        <div className="modal-foot"><button type="button" className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+          <button type="button" className="btn btn-gold" disabled={!base} onClick={() => onConfirm(regs.map((r) => r.id), base)}>Agrupar em pacote</button></div>
+      </div>
+    </div>
+  );
+}
+
 /* ---------------- página: Prenhezes ---------------- */
-function PaginaPrenhezes({ lista, ativos, embrioes, onAbrir }) {
+function PaginaPrenhezes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
+  const [agr, setAgr] = useState(null);   // fichas marcadas para agrupar em pacote (null = fora do modo de seleção)
   const [sit, setSit] = useState("todos");
   const [escopo, setEscopo] = useState("ativos");
   const [origem, setOrigem] = useState("");
@@ -3544,10 +3589,12 @@ function PaginaPrenhezes({ lista, ativos, embrioes, onAbrir }) {
         <select value={origem} onChange={(e) => setOrigem(e.target.value)} aria-label="Origem"><option value="">Todas as origens</option><option value="aspiracao">Aspiração da SM</option><option value="banco">Banco de Embriões</option><option value="compra">Adquirida / direta</option></select>
         <select value={cri} onChange={(e) => setCri(e.target.value)} aria-label="Criatório"><option value="">Todos os criatórios</option>{criatorios.map((c) => <option key={c} value={c}>{c}</option>)}</select>
         {escopo !== "inativos" && <select value={ordem} onChange={(e) => setOrdem(e.target.value)} aria-label="Ordenar"><option value="parto">Ordenar por previsão de parto</option><option value="te">Ordenar pela TE mais recente</option></select>}
+        <BarraAgrupar agr={agr} setAgr={setAgr} onAgrupar={onAgrupar} regs={base.map((x) => x.p)} />
       </div>
       <div className="cards-grid rp-grid">
-        {agrupaPacotes(lst, (x) => x.p).map(({ pacoteId, it: { p, f, s } }) => pacoteId ? <CardPacote key={"pac-" + pacoteId} pacoteId={pacoteId} ativos={ativos || lista} embrioes={embrioes} onAbrir={onAbrir} /> : (
-          <button type="button" className={`rp-card ${s.destaque}`} key={p.id} onClick={() => onAbrir(p)}>
+        {agrupaPacotes(lst, (x) => x.p).map(({ pacoteId, it: { p, f, s } }) => pacoteId ? <CardPacote key={"pac-" + pacoteId} pacoteId={pacoteId} ativos={ativos || lista} embrioes={embrioes} onAbrir={onAbrir} desab={!!agr} /> : (
+          <button type="button" className={`rp-card ${s.destaque} ${agr && agr.has(p.id) ? "rp-sel" : ""}`} key={p.id} aria-pressed={agr ? agr.has(p.id) : undefined} onClick={() => (agr ? marcaAgr(setAgr, p.id) : onAbrir(p))}>
+            {agr && <span className="rp-check" aria-hidden="true">{agr.has(p.id) ? "✓" : ""}</span>}
             <div className="rp-card-h"><span className="rp-t">{p.doadora || "Doadora não informada"}{p.pai || p.touro ? ` × ${p.pai || p.touro}` : ""}</span><Badge tone={s.tone}>{s.destaque === "ok" ? "✓ " : ""}{s.txt}</Badge></div>
             <span className="rp-meta">{[p.receptora ? `Receptora ${p.receptora}` : "Receptora não informada", p.ondeEsta].filter(Boolean).join(" · ")}</span>
             <div className="rp-chips">
@@ -3567,7 +3614,8 @@ function PaginaPrenhezes({ lista, ativos, embrioes, onAbrir }) {
 }
 
 /* ---------------- página: Aspirações ---------------- */
-function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir }) {
+function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
+  const [agr, setAgr] = useState(null);
   const [sit, setSit] = useState("todos");
   const [escopo, setEscopo] = useState("ativos");
   const base = (lista || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia").map((a) => { const D = dadosAsp(a, ativos, embrioes); return { a, D, grupo: D.grupo }; });
@@ -3584,12 +3632,14 @@ function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir }) {
         <KPI label="Taxa de prenhez" value={soma("diag") ? Math.round((soma("conf") / soma("diag")) * 100) + "%" : "—"} sub="confirmadas ÷ diagnosticadas" />
       </div>
       <FiltroSituacao itens={base} escopo={escopo} setEscopo={setEscopo} valor={sit} setValor={setSit} tipo="asp" />
+      {onAgrupar && <div className="rp-filtros"><BarraAgrupar agr={agr} setAgr={setAgr} onAgrupar={onAgrupar} regs={base.map((x) => x.a)} /></div>}
       <div className="cards-grid rp-grid">
         {agrupaPacotes(lst, (x) => x.a).map(({ pacoteId, it: { a, D } }) => {
-          if (pacoteId) return <CardPacote key={"pac-" + pacoteId} pacoteId={pacoteId} ativos={ativos} embrioes={embrioes} onAbrir={onAbrir} />;
+          if (pacoteId) return <CardPacote key={"pac-" + pacoteId} pacoteId={pacoteId} ativos={ativos} embrioes={embrioes} onAbrir={onAbrir} desab={!!agr} />;
           const w = (v) => `${D.E ? (v / D.E) * 100 : 0}%`;
           return (
-            <button type="button" className={`rp-card ${D.destaque}`} key={a.id} onClick={() => onAbrir(a)}>
+            <button type="button" className={`rp-card ${D.destaque} ${agr && agr.has(a.id) ? "rp-sel" : ""}`} key={a.id} aria-pressed={agr ? agr.has(a.id) : undefined} onClick={() => (agr ? marcaAgr(setAgr, a.id) : onAbrir(a))}>
+              {agr && <span className="rp-check" aria-hidden="true">{agr.has(a.id) ? "✓" : ""}</span>}
               <div className="rp-card-h"><span className="rp-t">{a.doadora || a.nome}{a.pai || a.touro ? ` × ${a.pai || a.touro}` : ""}</span><Badge tone={D.st[1]}>{D.destaque === "ok" ? "✓ " : ""}{D.st[0]}</Badge></div>
               <span className="rp-meta">{[a.dataAspiracao || a.dataAsp ? dataBR(a.dataAspiracao || a.dataAsp) : "data não informada", a.ondeEsta].filter(Boolean).join(" · ")}</span>
               {D.E != null && <div className="rp-dest" aria-hidden="true"><i style={{ width: w(D.transf), background: "var(--em)" }} /><i style={{ width: w(D.congelados), background: "#C9AE74" }} /><i style={{ width: w(D.disp), background: "#9CC5AF" }} /></div>}
@@ -7011,6 +7061,38 @@ export default function App() {
     setConfirmar(null); setAberto(null);
     setToast("Pacote desfeito: voltou a ser cadastro individual.");
   };
+  /* agrupar fichas individuais já cadastradas num pacote: a compra vem da ficha escolhida;
+     os valores das outras (lançados repetidos) deixam de contar e ficam anotados nelas */
+  const [agrupar, setAgrupar] = useState(null);   // lista de fichas marcadas
+  const agruparEmPacote = (ids, baseId) => {
+    flushNext.current = true;
+    const quem = quemReg();
+    let nomePac = "";
+    setDb((p) => {
+      const regs = ids.map((id) => p.ativos.find((a) => a && a.id === id && !a.pacoteId && (a.tipo === "prenhez" || a.tipo === "aspiracao"))).filter(Boolean);
+      if (regs.length < 2) return p;
+      const base = regs.find((r) => r.id === baseId) || regs[0];
+      const pc = paraPacote(base, base.tipo); pc.obs = "";
+      const pac = { ...dadosPacote({ ...pc, doadoras: [] }), id: uid(), parcelasList: base.parcelasList || [], comissaoPagamentos: base.comissaoPagamentos || [],
+        ...(base.comissaoNaCompra === false ? { comissaoNaCompra: false } : {}) };
+      pac.parcelasList = ensureParcelas(pac);
+      nomePac = pac.nome;
+      let st = aplicarNovoRegistro(p, pac, quem, false, null);
+      st = { ...st, ativos: st.ativos.map((a) => {
+        const i = a ? regs.findIndex((r) => r.id === a.id) : -1; if (i < 0) return a;
+        const linha = { doadora: a.doadora, regDoadora: a.regDoadora, qtd: a.qtd, pai: a.pai, status: a.status, receptora: a.receptora, previsaoParto: a.previsaoParto, dataAspiracao: a.dataAspiracao, obs: a.obs };
+        const c = fichaDoadora(pac, linha, a, i + 1);
+        const fa = finance(a);
+        if (a.id !== base.id && fa.total > 0.004) c.compraDescartada = { leilao: a.leilao || "", dataCompra: a.dataCompra || "", porcentagemComprada: a.porcentagemComprada ?? "", valorParcela: a.valorParcela ?? "", parcelas: a.parcelas ?? "", primeiroVenc: a.primeiroVenc || "", comissaoPct: a.comissaoPct ?? "", total: fa.total, em: today() };
+        c.historico = [...(c.historico || []), histE("Agrupada em pacote", a.id === base.id ? `Entrou em ${pac.nome}; a compra desta ficha passou para o pacote`
+          : `Entrou em ${pac.nome}${fa.total > 0.004 ? `; a compra lançada nesta ficha (${a.leilao || "sem leilão"} · ${fmt(num(a.valorParcela))} × ${a.parcelas || 0} · total ${fmt(fa.total)}) foi desconsiderada por estar repetida` : ""}`)];
+        return c;
+      }) };
+      return st;
+    });
+    setAgrupar(null);
+    setToast(`${ids.length} fichas agrupadas em um pacote.`);
+  };
   const pedirDesfazerPacote = (pac) => {
     const filhos = doPacote(ativos, pac.id);
     if (!filhos.length) { setToast("Este pacote não tem doadoras. Para removê-lo, use Excluir."); return; }
@@ -7875,8 +7957,8 @@ export default function App() {
           </section>
         )}
 
-        {view === "prenhez" && <PaginaPrenhezes lista={visiveis} ativos={ativos} embrioes={embrioes} onAbrir={setAberto} />}
-        {view === "aspiracao" && <PaginaAspiracoes lista={visiveis} ativos={ativos} embrioes={embrioes} onAbrir={setAberto} />}
+        {view === "prenhez" && <PaginaPrenhezes lista={visiveis} ativos={ativos} embrioes={embrioes} onAbrir={setAberto} onAgrupar={setAgrupar} />}
+        {view === "aspiracao" && <PaginaAspiracoes lista={visiveis} ativos={ativos} embrioes={embrioes} onAbrir={setAberto} onAgrupar={setAgrupar} />}
         {view === "embrioes" && <PaginaBanco embrioes={embrioes} ativos={ativos} busca={busca} sel={loteSel} setSel={setLoteSel} onAcao={acaoBanco} onAbrir={setAberto} filtroDoadora={bancoDoadora} onLimparDoadora={() => setBancoDoadora(null)} aviso={avisoMig} onFecharAviso={() => setAvisoMig(null)} migracoes={db.migracoes} />}
         {view === "animal" && (() => {
           // conta ativos/inativos (só animais com cadastro próprio)
@@ -8212,6 +8294,7 @@ export default function App() {
         onSave={salvar} onApprove={aprovarFicha} onClose={() => setForm(null)}
         onPacote={virarPacote}
         pacoteNome={form.initial && form.initial.pacoteId ? (() => { const pc = pacoteDe(ativos, form.initial); return pc ? rotuloPacote(pc) : ""; })() : ""} />}
+      {agrupar && <AgruparPacote regs={agrupar} onConfirm={agruparEmPacote} onClose={() => setAgrupar(null)} />}
       {pacForm && <PacoteForm key={pacForm.modo + (pacForm.initial && pacForm.initial.id)} modo={pacForm.modo} initial={pacForm.initial}
         animalNames={animalNames} animalReg={animalReg} leilaoNames={leilaoNames} vendedorNames={vendedorNames} socioNames={socioNames}
         onQuickLeilao={quickLeilao} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
@@ -9305,6 +9388,14 @@ button.rp-elo:hover{background:var(--surf2);border-color:rgba(23,107,70,.3)}
 .com-novo-acts{display:flex;gap:10px;align-items:center;justify-content:flex-end;flex-wrap:wrap;margin-top:8px}
 .com-novo-acts .muted{margin-right:auto}
 .com-auto{margin:4px 0 10px}
+.rp-agr-bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px;background:var(--champ-l);border-radius:10px;padding:6px 10px}
+.rp-card{position:relative}
+.rp-card.rp-sel{border-color:var(--em);box-shadow:0 0 0 2px var(--em-l)}
+.rp-check{position:absolute;top:-9px;left:-9px;z-index:1;width:22px;height:22px;border-radius:6px;border:1.5px solid var(--line3);background:var(--surf);display:grid;place-items:center;font-size:13px;font-weight:700;color:var(--em)}
+.rp-sel .rp-check{background:var(--em);border-color:var(--em);color:#fff}
+.rp-card.rp-desab{opacity:.45;cursor:not-allowed}
+.agr-op{flex-direction:row;align-items:flex-start;gap:10px;cursor:pointer}
+.agr-op.on{border-color:var(--em);background:var(--em-l)}
 .pac-erro{margin-right:auto;color:var(--neg);font-size:13px;font-weight:600;align-self:center}
 @media(min-width:1201px){.fin-hero{grid-template-columns:1.35fr 1fr 1fr 1fr 1fr}}
 `;
