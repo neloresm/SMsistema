@@ -1,4 +1,4 @@
-/* SM-BUILD: banco-precadastro-2026-11-18 */
+/* SM-BUILD: banco-azul-2026-11-18 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -3513,12 +3513,14 @@ function CardPacote({ pacoteId, ativos, embrioes, onAbrir, desab }) {
   const pac = (ativos || []).find((x) => x && x.id === pacoteId);
   const filhos = doPacote(ativos, pacoteId);
   const sit = (x) => { if (x.tipo === "prenhez") return statusPrenhez(x); const D = dadosAsp(x, ativos, embrioes); return { txt: D.st[0], tone: D.st[1] }; };
+  const noBanco = (x) => (x.tipo === "aspiracao" ? dadosAsp(x, ativos, embrioes).saldoBanco : 0);
+  const totBanco = filhos.reduce((s, x) => s + noBanco(x), 0);
   return (
-    <button type="button" className={`rp-card rp-pac ${desab ? "rp-desab" : ""}`} disabled={!!desab} title={desab ? "Já é um pacote" : ""} onClick={() => onAbrir(pac || filhos[0])}>
+    <button type="button" className={`rp-card rp-pac ${totBanco > 0 ? "banco-faixa" : ""} ${desab ? "rp-desab" : ""}`} disabled={!!desab} title={desab ? "Já é um pacote" : ""} onClick={() => onAbrir(pac || filhos[0])}>
       <div className="rp-card-h"><span className="rp-t">{pac ? rotuloPacote(pac) : "Pacote"}</span><Badge tone="gold">{filhos.length} doadora(s)</Badge></div>
       <span className="rp-meta">{[pac && pac.dataCompra ? `compra em ${dataBR(pac.dataCompra)}` : "", pac && num(pac.porcentagemComprada) ? `SM ${pctTxt(num(pac.porcentagemComprada))}` : ""].filter(Boolean).join(" · ") || "pacote"}</span>
       <ul className="rp-pac-lista">
-        {filhos.slice(0, 6).map((x) => { const s = sit(x); return <li key={x.id}><span>{x.doadora || "Doadora não informada"}</span><Badge tone={s.tone}>{s.txt}</Badge></li>; })}
+        {filhos.slice(0, 6).map((x) => { const s = sit(x), nb = noBanco(x); return <li key={x.id}><span>{x.doadora || "Doadora não informada"}{nb > 0 && <span className="rp-banco-selo mini">🧊 {nb}</span>}</span><Badge tone={s.tone}>{s.txt}</Badge></li>; })}
         {filhos.length > 6 && <li className="muted small">+ {filhos.length - 6} doadora(s)</li>}
       </ul>
     </button>
@@ -3648,10 +3650,11 @@ function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
           if (pacoteId) return <CardPacote key={"pac-" + pacoteId} pacoteId={pacoteId} ativos={ativos} embrioes={embrioes} onAbrir={onAbrir} desab={!!agr} />;
           const w = (v) => `${D.E ? (v / D.E) * 100 : 0}%`;
           return (
-            <button type="button" className={`rp-card ${D.destaque} ${agr && agr.has(a.id) ? "rp-sel" : ""}`} key={a.id} aria-pressed={agr ? agr.has(a.id) : undefined} onClick={() => (agr ? marcaAgr(setAgr, a.id) : onAbrir(a))}>
+            <button type="button" className={`rp-card ${D.destaque} ${D.saldoBanco > 0 && D.destaque !== "cancel" ? (D.destaque === "ok" ? "banco-faixa" : "banco") : ""} ${agr && agr.has(a.id) ? "rp-sel" : ""}`} key={a.id} aria-pressed={agr ? agr.has(a.id) : undefined} onClick={() => (agr ? marcaAgr(setAgr, a.id) : onAbrir(a))}>
               {agr && <span className="rp-check" aria-hidden="true">{agr.has(a.id) ? "✓" : ""}</span>}
               <div className="rp-card-h"><span className="rp-t">{a.doadora || a.nome}{a.pai || a.touro ? ` × ${a.pai || a.touro}` : ""}</span><Badge tone={D.st[1]}>{D.destaque === "ok" ? "✓ " : ""}{D.st[0]}</Badge></div>
               <span className="rp-meta">{[a.dataAspiracao || a.dataAsp ? dataBR(a.dataAspiracao || a.dataAsp) : "data não informada", a.ondeEsta].filter(Boolean).join(" · ")}</span>
+              {D.saldoBanco > 0 && <span className="rp-banco-selo">🧊 {D.saldoBanco} {D.saldoBanco > 1 ? "embriões" : "embrião"} no banco</span>}
               {D.E != null && <div className="rp-dest" aria-hidden="true"><i style={{ width: w(D.transf), background: "var(--em)" }} /><i style={{ width: w(D.congelados), background: "#C9AE74" }} /><i style={{ width: w(D.disp), background: "#9CC5AF" }} /></div>}
               <span className="rp-meta tab-num">{D.E == null ? `${D.oocitos || "—"} oócitos · resultado do laboratório não lançado${D.ps.length ? ` · ${D.transf} transferido(s) · ${D.conf} prenhez(es)` : ""}` : `${D.oocitos} oócitos · ${D.E} embriões · ${D.transf} transferidos · ${D.conf} prenhez(es) · ${D.nasc} nascido(s)`}</span>
               {D.prox && <span className="rp-prox">{D.prox}</span>}
@@ -7505,10 +7508,12 @@ export default function App() {
         const ativosN = A ? p.ativos.map((x) => (x.id === A.id ? { ...x, historico: [...(x.historico || []), { id: uid(), data: today(), tipo: "Banco de Embriões", desc: `${qtd} embrião(ões) congelado(s) · Banco de Embriões ${codEmb(cod, 1, qtd)}${qtd > 1 ? ` a ${codEmb(cod, qtd, qtd)}` : ""}`, responsavel: quem }] } : x)) : p.ativos;
         return { ...p, ativos: ativosN, socios, embrioes: [...(p.embrioes || []), ...novos] };
       });
-      setLoteSel(ids[0]);
+      // depois de cadastrar/enviar, abre o Banco de Embriões com os embriões novos selecionados
+      setLoteSel(ids[0]); setView("embrioes");
+      if (envioId) setAberto(null);
       if (envioId && String(limpo.aspiracaoId || "").startsWith("pref:")) setToast(`${qtd} embrião(ões) enviado(s) ao Banco de Embriões. Ao aprovar o pré-cadastro, eles ficam ligados à aspiração.`);
-      else if (envioId) setToast(`${qtd} embrião(ões) enviado(s) ao Banco de Embriões e ligado(s) a esta aspiração.`);   // continua na ficha, que já mostra o saldo
-      else { setView("embrioes"); setToast(`${qtd} embrião(ões) cadastrado(s), cada um com registro próprio.`); }
+      else if (envioId) setToast(`${qtd} embrião(ões) enviado(s) ao Banco de Embriões e ligado(s) à aspiração.`);
+      else setToast(`${qtd} embrião(ões) cadastrado(s), cada um com registro próprio.`);
     }
     setRepro(null);
   };
@@ -9232,6 +9237,12 @@ a{color:var(--em)}
 .rp-card.atencao{border-color:rgba(164,68,58,.26);background:rgba(164,68,58,.028)}
 .rp-card.cancel{background:#F3F2EE;border-style:dashed;box-shadow:none}
 .rp-card.cancel .rp-t{color:var(--muted)}
+.rp-card.banco{background:linear-gradient(180deg,#DCEAF4,#EAF2F8);border-color:rgba(63,110,140,.45);box-shadow:0 1px 2px rgba(63,110,140,.10),inset 0 1px 0 rgba(255,255,255,.6)}
+.rp-card.banco:hover{border-color:rgba(63,110,140,.55);box-shadow:0 10px 24px rgba(63,110,140,.12)}
+.rp-card.banco-faixa{box-shadow:inset 4px 0 0 var(--info),var(--sh1)}
+@media(hover:hover){.rp-card.banco-faixa:hover{box-shadow:inset 4px 0 0 var(--info),var(--sh2)}}
+.rp-banco-selo{align-self:flex-start;display:inline-flex;align-items:center;gap:4px;background:var(--info-l);color:var(--info);border-radius:999px;padding:2px 9px;font-size:12px;font-weight:600}
+.rp-banco-selo.mini{margin-left:6px;padding:0 7px;font-size:11px;vertical-align:middle}
 .rp-sitbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;margin:16px 0 8px}
 .rp-sitbar .rp-tabs{margin:0}
 .rp-ocultar{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);cursor:pointer}
