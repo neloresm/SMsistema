@@ -1,4 +1,4 @@
-/* SM-BUILD: venc15-2026-11-17 */
+/* SM-BUILD: banco-envio-2026-11-18 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -1688,6 +1688,7 @@ function SecaoPacote({ p, ativos, embrioes, onAbrir, onRepro, onAtualizar, onEdi
                 </div>
                 <Badge tone={s.tone}>{s.txt}</Badge>
               </div>
+              {x.tipo === "aspiracao" && (() => { const Dx = dadosAsp(x, ativos, embrioes); return Dx.lotes.length > 0 ? <div className="pac-nasc">Banco de Embriões: {Dx.congelados} enviado(s) · {Dx.saldoBanco} em estoque</div> : null; })()}
               {nasc.length > 0 && <div className="pac-nasc">Nascimento vinculado: {nasc.map((an) => <button type="button" key={an.id} className="rp-infolink" onClick={() => onAbrir(an)}>{an.nome || "animal"} ↗</button>)}</div>}
               <div className="pac-acts">
                 <button type="button" className="btn btn-mini" onClick={() => onAbrir(x)}>Abrir ficha</button>
@@ -1698,6 +1699,7 @@ function SecaoPacote({ p, ativos, embrioes, onAbrir, onRepro, onAtualizar, onEdi
                       <button type="button" className="btn btn-mini" onClick={() => setRealiz(null)}>Cancelar</button></span>
                   : <button type="button" className="btn btn-mini" onClick={() => setRealiz({ id: x.id, data: today() })}>Marcar como realizada</button>)}
                 {x.tipo === "aspiracao" && <button type="button" className="btn btn-mini" onClick={() => onRepro("transf", x)}>Gerar prenhez</button>}
+                {x.tipo === "aspiracao" && <button type="button" className="btn btn-mini" onClick={() => onRepro("banco", x)}>Enviar ao Banco de Embriões</button>}
                 {x.tipo === "prenhez" && qtdRest(x) > 0 && !faseReprod(x).cancel && <>
                   <button type="button" className="btn btn-mini btn-gold" onClick={() => onRepro("nascVinc", x)}>Vincular a nascimento existente</button>
                   <button type="button" className="btn btn-mini" onClick={() => onRepro("nasc", x)}>Registrar nascimento</button>
@@ -4058,17 +4060,41 @@ function BuscaAnimal({ rotulo, animais, nome, id, onTexto, onEscolher, onDesvinc
   );
 }
 
-function FolhaLote({ inicial, ativos, embrioes, animalReg, localNames, onQuickLocal, leilaoNames, onQuickLeilao, vendedorNames, onQuickVendedor, socioNames, onQuickSocio, onConfirm, onExcluir, onAbrirAnimal, onClose }) {
+function FolhaLote({ inicial, envio, ativos, embrioes, animalReg, localNames, onQuickLocal, leilaoNames, onQuickLeilao, vendedorNames, onQuickVendedor, socioNames, onQuickSocio, onConfirm, onExcluir, onAbrirAnimal, onClose }) {
   const editando = !!(inicial && inicial.id);
-  const asps = (ativos || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia" && (!a.arquivada || (inicial && a.id === inicial.aspiracaoId)));
+  const asps = (ativos || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia" && (!a.arquivada || (inicial && a.id === inicial.aspiracaoId) || (envio && a.id === envio.aspId)));
   const animais = (ativos || []).filter((a) => a && a.tipo === "animal" && a.nome);
   const ehF = (a) => (lc(a.sexo || "").startsWith("f") ? 1 : 0);
   // a mesma base de animais do sistema (plantel e cadastros de referência da genealogia)
   const doadoras = [...animais].sort((x, y) => (x.origem === "genealogia") - (y.origem === "genealogia") || ehF(y) - ehF(x) || x.nome.localeCompare(y.nome));
   const touros = [...animais].sort((x, y) => ehF(x) - ehF(y) || (x.origem === "genealogia") - (y.origem === "genealogia") || x.nome.localeCompare(y.nome));
-  const [d, setD] = useState(() => inicial ? { regDoadora: "", regPai: "", doadoraId: "", touroId: "", parceiro: "", origemDesc: "", criatorioOrigem: "", ...inicial, socios: (inicial.socios || []).map((s) => ({ ...s })), compra: { ...(inicial.compra || {}) } }
-    : { origem: "aspiracao", aspiracaoId: "", doadora: "", regDoadora: "", doadoraId: "", pai: "", regPai: "", touroId: "", parceiro: "", origemDesc: "", criatorioOrigem: "", dataCongelamento: "", local: "", propriedade: "", metodo: "", sexado: "", partSM: 100, socios: [], compra: {}, obs: "" });
-  const [qtd, setQtd] = useState(1);
+  // envio direto da ficha: só as aspirações daquela ficha (ou as doadoras do pacote) podem ser a origem
+  const opcEnvio = envio ? (envio.opcoes || [envio.aspId]).filter(Boolean) : null;
+  const regDe0 = (nome) => (animalReg || {})[lc((nome || "").trim())] || "";
+  // preenche doadora, touro, laboratório/criatório e sócios a partir da aspiração (trocar = substitui o que veio de outra aspiração)
+  const daAsp = (p, a, trocar) => {
+    const doa = a.doadora || "", pai = a.pai || a.touro || "";
+    const md = achaAnimal(doadoras, doa, a.regDoadora), mt = achaAnimal(touros, pai, a.regPai);
+    const lab = a.laboratorio || a.criatorio || a.ondeEsta || "";
+    const pac = a.pacoteId ? (ativos || []).find((x) => x && x.id === a.pacoteId) : null;
+    const socs = (a.socios && a.socios.length ? a.socios : pac ? pac.socios || [] : []).filter(Boolean);
+    return { ...p, aspiracaoId: a.id,
+      doadora: md ? md.nome : doa, regDoadora: md ? md.registro || a.regDoadora || "" : a.regDoadora || regDe0(doa), doadoraId: md ? md.id : "",
+      pai: mt ? mt.nome : pai, regPai: mt ? mt.registro || a.regPai || "" : a.regPai || regDe0(pai), touroId: mt ? mt.id : "",
+      criatorioOrigem: trocar ? lab : p.criatorioOrigem || lab,
+      propriedade: trocar ? p.propriedade || a.ondeEsta || "" : p.propriedade || a.ondeEsta || "",
+      partSM: trocar && num(a.porcentagemComprada || (pac && pac.porcentagemComprada)) > 0 ? num(a.porcentagemComprada || pac.porcentagemComprada) : p.partSM,
+      socios: trocar || !p.socios.length ? socs.map((s) => ({ id: uid(), nome: s.nome, pct: s.pct })) : p.socios };
+  };
+  const vazioLote = { origem: "aspiracao", aspiracaoId: "", doadora: "", regDoadora: "", doadoraId: "", pai: "", regPai: "", touroId: "", parceiro: "", origemDesc: "", criatorioOrigem: "", dataCongelamento: "", local: "", propriedade: "", metodo: "", sexado: "", partSM: 100, socios: [], compra: {}, obs: "" };
+  const [d, setD] = useState(() => {
+    if (inicial) return { regDoadora: "", regPai: "", doadoraId: "", touroId: "", parceiro: "", origemDesc: "", criatorioOrigem: "", ...inicial, socios: (inicial.socios || []).map((s) => ({ ...s })), compra: { ...(inicial.compra || {}) } };
+    const a0 = envio && envio.aspId ? asps.find((x) => x.id === envio.aspId) : null;
+    return a0 ? daAsp(vazioLote, a0, true) : vazioLote;
+  });
+  // envio parcial: sugere os embriões da aspiração que ainda não têm destino
+  const [qtd, setQtd] = useState(() => { const a0 = envio && envio.aspId ? asps.find((x) => x.id === envio.aspId) : null; const D0 = a0 ? dadosAsp(a0, ativos, embrioes) : null; return D0 && D0.E != null && D0.disp > 0 ? D0.disp : 1; });
+  const enviado = useRef(false);   // trava contra duplo clique: um formulário aberto envia uma vez só
   const [confExc, setConfExc] = useState(false);
   const [todos, setTodos] = useState(false);
   const [conflitos, setConflitos] = useState([]);
@@ -4088,13 +4114,9 @@ function FolhaLote({ inicial, ativos, embrioes, animalReg, localNames, onQuickLo
   const escolheAsp = (id) => {
     const a = asps.find((x) => x.id === id);
     if (!a) { set("aspiracaoId", ""); return; }
-    const doa = a.doadora || "", pai = a.pai || a.touro || "";
-    const md = achaAnimal(doadoras, doa, a.regDoadora), mt = achaAnimal(touros, pai, a.regPai);
-    setD((p) => ({ ...p, aspiracaoId: id,
-      doadora: md ? md.nome : doa, regDoadora: md ? md.registro || a.regDoadora || "" : a.regDoadora || regDe(doa), doadoraId: md ? md.id : "",
-      pai: mt ? mt.nome : pai, regPai: mt ? mt.registro || a.regPai || "" : a.regPai || regDe(pai), touroId: mt ? mt.id : "",
-      criatorioOrigem: p.criatorioOrigem || a.criatorio || a.ondeEsta || "",
-      propriedade: p.propriedade || a.ondeEsta || "", socios: !p.socios.length ? (a.socios || []).filter(Boolean).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct })) : p.socios }));
+    setConflitos([]); setDecisao({});
+    setD((p) => daAsp(p, a, !!envio));
+    if (envio) { const Dn = dadosAsp(a, ativos, embrioes); setQtd(Dn.E != null && Dn.disp > 0 ? Dn.disp : 1); }
   };
   const nd = chaveNome(d.doadora);
   const aspsOrd = [...asps].sort((x, y) => (nd && chaveNome(y.doadora) === nd) - (nd && chaveNome(x.doadora) === nd) || (y.dataAspiracao || "").localeCompare(x.dataAspiracao || ""));
@@ -4158,7 +4180,7 @@ function FolhaLote({ inicial, ativos, embrioes, animalReg, localNames, onQuickLo
   useEffect(() => { if (reenviar) { setReenviar(false); salvar(); } });   // continua o cadastro depois da escolha no conflito
 
   const pctSoc = (d.socios || []).reduce((s, x) => s + num(x.pct), 0);
-  const ok = (d.doadora || "").trim() && (editando || qtd >= 1);
+  const ok = (d.doadora || "").trim() && (editando || qtd >= 1) && (!envio || (d.origem === "aspiracao" && d.aspiracaoId));
   const usadoEmTE = editando && ((inicial.movs || []).some((m) => m && m.tipo === "uso") || (ativos || []).some((p) => p && p.embriaoId === inicial.id));
   const nJuntos = editando ? doGrupo(embrioes, grupoDe(inicial)).length : 0;
   const salvar = () => {
@@ -4166,23 +4188,40 @@ function FolhaLote({ inicial, ativos, embrioes, animalReg, localNames, onQuickLo
     if (confs.length) { setConflitos(confs); return; }
     const comp = { ...(nd2.compra || {}) };
     if (nd2.origem === "compra") { comp.leilao = nomeCanonico(leilaoNames, comp.leilao); comp.vendedor = nomeCanonico(vendedorNames, comp.vendedor); }
+    if (!editando) { if (enviado.current) return; enviado.current = true; }
     onConfirm({ ...nd2, compra: comp, aspiracaoId: nd2.origem === "aspiracao" ? nd2.aspiracaoId || "" : "",
       criatorioOrigem: nomeCanonico(localNames, nd2.criatorioOrigem), propriedade: nomeCanonico(localNames, nd2.propriedade),
       parceiro: nd2.origem === "parceiro" ? nomeCanonico(socioNames, nd2.parceiro) : nd2.parceiro || "",
-      socios: (nd2.socios || []).map((s) => ({ ...s, nome: nomeCanonico(socioNames, s.nome) })) }, qtd, { todos, plano });
+      socios: (nd2.socios || []).map((s) => ({ ...s, nome: nomeCanonico(socioNames, s.nome) })) }, qtd, { todos, plano, envioId: envio && !editando ? envio.chave : "" });
   };
   const ORIGENS = [["aspiracao", "Produção própria — Aspiração"], ["compra", "Compra de embriões"], ["parceiro", "Recebimento de sócio ou parceiro"], ["outra", "Outra origem"], ...(d.origem === "existente" ? [["existente", "Estoque existente"]] : [])];
   return (
-    <Folha eyebrow="Banco de Embriões" titulo={editando ? `Editar embrião ${inicial.cod}` : "Cadastrar embriões"}
-      sub={editando ? "Altera só este embrião, a menos que você marque para aplicar aos que foram cadastrados junto. Entradas e saídas são feitas por movimentação, para manter o histórico." : "Preencha uma vez: o sistema cria um registro individual para cada embrião e cadastra na base o que ainda não existir (doadora, touro, leilão, criatório)."} onClose={onClose}
+    <Folha eyebrow="Banco de Embriões" titulo={editando ? `Editar embrião ${inicial.cod}` : envio ? "Enviar ao Banco de Embriões" : "Cadastrar embriões"}
+      sub={editando ? "Altera só este embrião, a menos que você marque para aplicar aos que foram cadastrados junto. Entradas e saídas são feitas por movimentação, para manter o histórico." : envio ? "Embriões congelados produzidos nesta aspiração. Os dados da aspiração já vêm preenchidos; complete quantidade, data do congelamento e armazenamento. Pode enviar só parte agora e o restante depois." : "Preencha uma vez: o sistema cria um registro individual para cada embrião e cadastra na base o que ainda não existir (doadora, touro, leilão, criatório)."} onClose={onClose}
       rodape={<>
         {editando && onExcluir && <button className="btn btn-ghost rp-exc" disabled={usadoEmTE} title={usadoEmTE ? "Este embrião já foi usado em transferência e não pode ser excluído. Use “Arquivar”." : ""}
           onClick={() => (confExc ? onExcluir(inicial) : setConfExc(true))}>{confExc ? "Confirmar exclusão" : "Excluir embrião"}</button>}
         <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
-        <button className="btn btn-gold" disabled={!ok} onClick={salvar}>{editando ? "Salvar" : qtd > 1 ? `Cadastrar ${qtd} embriões` : "Cadastrar embrião"}</button></>}>
-      <div className="field wide"><span>Origem dos embriões</span><div className="segmented rp-seg-wrap">
+        <button className="btn btn-gold" disabled={!ok} onClick={salvar}>{editando ? "Salvar" : envio ? `Enviar ${qtd} ${qtd > 1 ? "embriões" : "embrião"} ao banco` : qtd > 1 ? `Cadastrar ${qtd} embriões` : "Cadastrar embrião"}</button></>}>
+      {!envio && <div className="field wide"><span>Origem dos embriões</span><div className="segmented rp-seg-wrap">
         {ORIGENS.map(([k, l]) => (
-          <button key={k} type="button" className={`seg ${d.origem === k ? "on" : ""}`} onClick={() => set("origem", k)}>{l}</button>))}</div></div>
+          <button key={k} type="button" className={`seg ${d.origem === k ? "on" : ""}`} onClick={() => set("origem", k)}>{l}</button>))}</div></div>}
+      {envio && !editando && (() => {
+        const opts = asps.filter((a) => opcEnvio.includes(a.id));
+        const rot = (a) => `${a.doadora || "Doadora não informada"}${a.pai || a.touro ? ` × ${a.pai || a.touro}` : ""}`;
+        return <>
+          {opts.length > 1 || (envio.opcoes && !envio.aspId) ? (
+            <label className="field wide"><span>Origem dos embriões <em className="new-hint">· doadora × touro do pacote</em></span>
+              <select value={d.aspiracaoId || ""} onChange={(e) => escolheAsp(e.target.value)} aria-label="Origem dos embriões">
+                <option value="">Escolha a doadora / cruzamento…</option>
+                {opts.map((a) => { const x = dadosAsp(a, ativos, embrioes); return <option key={a.id} value={a.id}>{rot(a)}{a.dataAspiracao ? ` · aspirada ${dataBR(a.dataAspiracao)}` : ""}{x.E != null ? ` · ${x.disp} sem destino` : ""}{x.congelados ? ` · ${x.congelados} já no banco` : ""}</option>; })}
+              </select></label>
+          ) : null}
+          {asp && D ? <div className="aviso aviso-info rp-envio-res"><b>Aspiração de origem: {asp.nome || rot(asp)}</b>
+            <span>{[asp.dataAspiracao && `aspirada em ${dataBR(asp.dataAspiracao)}`, D.E != null ? `${D.E} embrião(ões) produzido(s)` : "resultado do laboratório não lançado", `${D.congelados} já enviado(s) ao banco (${D.saldoBanco} em estoque)`, `${D.frescas} transferido(s) a fresco`, D.E != null ? `${D.disp} sem destino` : ""].filter(Boolean).join(" · ")}</span></div>
+            : <div className="aviso">Escolha de qual doadora / cruzamento vieram os embriões.</div>}
+        </>;
+      })()}
       {d.origem === "existente" && <div className="aviso">Embrião que a SM já possuía antes do sistema, sem aspiração cadastrada.</div>}
       {confExc && <div className="aviso">O embrião {inicial.cod} e o histórico dele serão excluídos. Os outros embriões não são afetados. Clique em “Confirmar exclusão” para continuar.</div>}
       {editando && nJuntos > 1 && <label className="rp-todos"><input type="checkbox" checked={todos} onChange={(e) => setTodos(e.target.checked)} /> Aplicar estas alterações aos {nJuntos} embriões cadastrados junto com este</label>}
@@ -4203,7 +4242,7 @@ function FolhaLote({ inicial, ativos, embrioes, animalReg, localNames, onQuickLo
       </div>
       <div className="rp-bloco">Origem</div>
       <div className="grid">
-        {d.origem === "aspiracao" && <label className="field wide"><span>Aspiração cadastrada <em className="new-hint">· opcional</em></span>
+        {d.origem === "aspiracao" && !envio && <label className="field wide"><span>Aspiração cadastrada <em className="new-hint">· opcional</em></span>
           <select value={d.aspiracaoId || ""} onChange={(e) => escolheAsp(e.target.value)}><option value="">Nenhuma (aspiração não cadastrada no sistema)</option>
             {aspsOrd.map((a) => { const x = dadosAsp(a, ativos, embrioes); return <option key={a.id} value={a.id}>{a.nome}{a.dataAspiracao ? ` · ${dataBR(a.dataAspiracao)}` : ""}{x.E != null ? ` · ${x.disp} a transferir` : ""}</option>; })}</select></label>}
         <label className="field"><span>Criatório de origem <em className="new-hint">· onde foram produzidos ou de onde vieram</em></span>
@@ -4227,6 +4266,7 @@ function FolhaLote({ inicial, ativos, embrioes, animalReg, localNames, onQuickLo
         <label className="field"><span>Botijão e caneca</span><input value={d.local || ""} onChange={(e) => set("local", e.target.value)} placeholder="ex.: Botijão 2 · Caneca 4" /></label>
       </div>
       {D && D.E != null && !editando && qtd > D.disp && <div className="aviso">A aspiração tem {D.disp} embrião(ões) ainda sem destino. Confira a quantidade antes de cadastrar.</div>}
+      {envio && D && D.E == null && !editando && <div className="aviso">O resultado do laboratório desta aspiração não foi lançado, então o sistema não confere o saldo. Se possível, informe os embriões produzidos na ficha.</div>}
       <div className="rp-bloco">Propriedade</div>
       <div className="grid">
         <label className="field"><span>Participação da SM (%)</span><input type="number" step="any" value={d.partSM ?? ""} onChange={(e) => set("partSM", e.target.value)} /></label>
@@ -4471,6 +4511,8 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAtualizarOutro, onV
             </div>
             <div className="ficha-actions"><button className={`btn ${a.tipo === "animal" ? "btn-gold" : "btn-ghost"}`} onClick={onEdit}>Editar</button>
               {a.tipo === "aspiracao" && a.origem !== "genealogia" && onRepro && <button className="btn btn-gold" onClick={() => onRepro("transf", a)}>Gerar prenhez</button>}
+              {((a.tipo === "aspiracao" && a.origem !== "genealogia") || (ehPacote(a) && a.subtipo !== "prenhez")) && onRepro &&
+                <button className="btn btn-ghost" onClick={() => onRepro("banco", a)} title="Registrar no Banco de Embriões os embriões congelados produzidos nesta aspiração">Enviar ao Banco de Embriões</button>}
               {a.tipo === "aspiracao" && a.origem !== "genealogia" && onRepro && (() => { const D = dadosAsp(a, ativos, embrioes);
                 return a.concluidaManual ? <button className="btn btn-ghost" onClick={() => onRepro("reabrirAsp", a)}>Reabrir aspiração</button>
                   : D.grupo === "pendente" || D.grupo === "andamento" ? <button className="btn btn-ghost" onClick={() => onRepro("concluirAsp", a)}>Concluir aspiração</button> : null; })()}
@@ -7351,6 +7393,13 @@ export default function App() {
     if (tipo === "concluirAsp") return concluirAsp(a);
     if (tipo === "reabrirAsp") return reabrirAsp(a);
     if (tipo === "nascVinc") return setRepro({ tipo: "nasc", alvo: a, modo: "existente" });
+    if (tipo === "banco") {
+      // envio direto ao Banco de Embriões a partir da ficha (aspiração, doadora de pacote ou pacote inteiro)
+      const pacId = ehPacote(a) ? a.id : a.pacoteId || "";
+      const opcoes = pacId ? doPacote(ativos, pacId).filter((x) => x && x.tipo === "aspiracao").map((x) => x.id) : null;
+      const aspId = ehPacote(a) ? (opcoes && opcoes.length === 1 ? opcoes[0] : "") : a.id;
+      return setRepro({ tipo: "lote", envio: { aspId, opcoes, pacoteId: pacId, chave: uid() } });
+    }
     setRepro({ tipo, alvo: a });
   };
   // campos que pertencem ao embrião individual e não são copiados entre embriões do mesmo lote
@@ -7400,7 +7449,11 @@ export default function App() {
     } else {
       const gid = uid(), gEnt = uid(), ids = [];
       for (let i = 0; i < qtd; i++) ids.push(uid());
+      const envioId = (opc && opc.envioId) || "";
+      // mesma tentativa de envio (duplo clique ou repetição): não cadastra de novo
+      if (envioId && (db.embrioes || []).some((u) => u && u.envioId === envioId)) { setRepro(null); setToast("Estes embriões já foram enviados ao Banco de Embriões; nada foi duplicado."); return; }
       setDb((p0) => {
+        if (envioId && (p0.embrioes || []).some((u) => u && u.envioId === envioId)) return p0;
         const p = aplicaCadastros(p0, limpo, plano, quem);
         const cod = proxCodLote(p.embrioes);
         const A = limpo.origem === "aspiracao" ? (p.ativos || []).find((x) => x && x.id === limpo.aspiracaoId) : null;
@@ -7408,15 +7461,17 @@ export default function App() {
           : limpo.origem === "parceiro" ? `Recebido de ${limpo.parceiro || "sócio ou parceiro"}` : limpo.origem === "outra" ? (limpo.origemDesc || "Outra origem") : "Estoque existente · inventário inicial";
         const campos = { ...limpo }; CAMPOS_PROPRIOS.forEach((k) => delete campos[k]);
         const novos = ids.map((id, i) => ({ ...campos, socios: campos.socios.map((s) => ({ ...s })), compra: campos.compra ? { ...campos.compra } : campos.compra,
-          aspiracaoId: A ? A.id : "", id, loteId: gid, loteCod: cod, seq: i + 1, cod: codEmb(cod, i + 1, qtd), arquivado: false, criadoEm: agora, criadoPor: quem,
+          aspiracaoId: A ? A.id : "", pacoteId: A && A.pacoteId ? A.pacoteId : "", ...(envioId ? { envioId } : {}),
+          id, loteId: gid, loteCod: cod, seq: i + 1, cod: codEmb(cod, i + 1, qtd), arquivado: false, criadoEm: agora, criadoPor: quem,
           movs: [{ id: uid(), grupo: gEnt, data: limpo.dataCongelamento || today(), tipo: "entrada", qtd: 1, ref, responsavel: quem, criadoEm: agora }] }));
         const socios = [...(p.socios || [])];
         campos.socios.forEach((x) => { if (!socios.some((y) => y && lc(y.nome) === lc(x.nome))) socios.push({ id: uid(), nome: x.nome, doc: "", tel: "", email: "", endereco: "", obs: "" }); });
         const ativosN = A ? p.ativos.map((x) => (x.id === A.id ? { ...x, historico: [...(x.historico || []), { id: uid(), data: today(), tipo: "Banco de Embriões", desc: `${qtd} embrião(ões) congelado(s) · Banco de Embriões ${codEmb(cod, 1, qtd)}${qtd > 1 ? ` a ${codEmb(cod, qtd, qtd)}` : ""}`, responsavel: quem }] } : x)) : p.ativos;
         return { ...p, ativos: ativosN, socios, embrioes: [...(p.embrioes || []), ...novos] };
       });
-      setLoteSel(ids[0]); setView("embrioes");
-      setToast(`${qtd} embrião(ões) cadastrado(s), cada um com registro próprio.`);
+      setLoteSel(ids[0]);
+      if (envioId) setToast(`${qtd} embrião(ões) enviado(s) ao Banco de Embriões e ligado(s) a esta aspiração.`);   // continua na ficha, que já mostra o saldo
+      else { setView("embrioes"); setToast(`${qtd} embrião(ões) cadastrado(s), cada um com registro próprio.`); }
     }
     setRepro(null);
   };
@@ -8325,7 +8380,7 @@ export default function App() {
         onFull={() => { const a = repro.alvo; setRepro(null); nascer(a); }} onClose={() => setRepro(null)} />}
       {repro && repro.tipo === "mov" && <FolhaMovLote lote={embrioes.find((l) => l.id === repro.lote.id) || repro.lote} embrioes={embrioes} tipoInicial={repro.mov} onConfirm={(v) => movimentarLote(repro.lote, v)} onClose={() => setRepro(null)} />}
       {repro && repro.tipo === "lote" && <FolhaLote inicial={repro.lote ? (embrioes.find((l) => l.id === repro.lote.id) || repro.lote) : null} ativos={ativos} embrioes={embrioes} animalNames={animalNames} animalReg={animalReg} localNames={localNames} onQuickLocal={quickLocal} leilaoNames={leilaoNames} onQuickLeilao={quickLeilao} vendedorNames={vendedorNames} onQuickVendedor={quickVendedor} onAbrirAnimal={(an) => { setRepro(null); setAberto(an); }} socioNames={socioNames} onQuickSocio={quickSocio}
-        onConfirm={salvarLote} onExcluir={isAdmin ? excluirLote : null} onClose={() => setRepro(null)} />}
+        envio={repro.envio || null} onConfirm={salvarLote} onExcluir={isAdmin ? excluirLote : null} onClose={() => setRepro(null)} />}
       {novaVersao && <div className="rp-versao" role="status"><span>Há uma versão nova do sistema publicada.</span>
         <button type="button" onClick={() => { if (temPendencia()) { flushNext.current = true; doSave().finally(() => window.location.reload()); } else window.location.reload(); }}>Atualizar agora</button></div>}
       {toast && <div className="rp-toast" role="status"><span>{toast}</span><button type="button" onClick={() => setToast("")}>Fechar</button></div>}
@@ -9405,5 +9460,6 @@ button.rp-elo:hover{background:var(--surf2);border-color:rgba(23,107,70,.3)}
 .agr-op{flex-direction:row;align-items:flex-start;gap:10px;cursor:pointer}
 .agr-op.on{border-color:var(--em);background:var(--em-l)}
 .pac-erro{margin-right:auto;color:var(--neg);font-size:13px;font-weight:600;align-self:center}
+.rp-envio-res{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}.rp-envio-res span{font-size:13px}
 @media(min-width:1201px){.fin-hero{grid-template-columns:1.35fr 1fr 1fr 1fr 1fr}}
 `;
