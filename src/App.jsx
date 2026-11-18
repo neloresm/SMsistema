@@ -1,4 +1,4 @@
-/* SM-BUILD: banco-envio-2026-11-18 */
+/* SM-BUILD: banco-precadastro-2026-11-18 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -4062,7 +4062,9 @@ function BuscaAnimal({ rotulo, animais, nome, id, onTexto, onEscolher, onDesvinc
 
 function FolhaLote({ inicial, envio, ativos, embrioes, animalReg, localNames, onQuickLocal, leilaoNames, onQuickLeilao, vendedorNames, onQuickVendedor, socioNames, onQuickSocio, onConfirm, onExcluir, onAbrirAnimal, onClose }) {
   const editando = !!(inicial && inicial.id);
-  const asps = (ativos || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia" && (!a.arquivada || (inicial && a.id === inicial.aspiracaoId) || (envio && a.id === envio.aspId)));
+  const asps = [...((envio && envio.virtuais) || []), ...(ativos || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia" && (!a.arquivada || (inicial && a.id === inicial.aspiracaoId) || (envio && a.id === envio.aspId)))];
+  // embriões já enviados por um pré-cadastro contam para a "aspiração" provisória dele
+  const embV = envio && envio.virtuais ? (embrioes || []).map((u) => (u && u.prefRef ? { ...u, aspiracaoId: u.prefRef } : u)) : embrioes;
   const animais = (ativos || []).filter((a) => a && a.tipo === "animal" && a.nome);
   const ehF = (a) => (lc(a.sexo || "").startsWith("f") ? 1 : 0);
   // a mesma base de animais do sistema (plantel e cadastros de referência da genealogia)
@@ -4093,7 +4095,7 @@ function FolhaLote({ inicial, envio, ativos, embrioes, animalReg, localNames, on
     return a0 ? daAsp(vazioLote, a0, true) : vazioLote;
   });
   // envio parcial: sugere os embriões da aspiração que ainda não têm destino
-  const [qtd, setQtd] = useState(() => { const a0 = envio && envio.aspId ? asps.find((x) => x.id === envio.aspId) : null; const D0 = a0 ? dadosAsp(a0, ativos, embrioes) : null; return D0 && D0.E != null && D0.disp > 0 ? D0.disp : 1; });
+  const [qtd, setQtd] = useState(() => { const a0 = envio && envio.aspId ? asps.find((x) => x.id === envio.aspId) : null; const D0 = a0 ? dadosAsp(a0, ativos, embV) : null; return D0 && D0.E != null && D0.disp > 0 ? D0.disp : 1; });
   const enviado = useRef(false);   // trava contra duplo clique: um formulário aberto envia uma vez só
   const [confExc, setConfExc] = useState(false);
   const [todos, setTodos] = useState(false);
@@ -4110,13 +4112,13 @@ function FolhaLote({ inicial, envio, ativos, embrioes, animalReg, localNames, on
   }); };
   const escolheAnimal = (k, rk, idk) => (x) => { setConflitos([]); setD((p) => ({ ...p, [k]: x.nome, [rk]: x.registro || "", [idk]: x.id })); };
   const asp = d.origem === "aspiracao" ? asps.find((a) => a.id === d.aspiracaoId) : null;
-  const D = asp ? dadosAsp(asp, ativos, embrioes) : null;
+  const D = asp ? dadosAsp(asp, ativos, embV) : null;
   const escolheAsp = (id) => {
     const a = asps.find((x) => x.id === id);
     if (!a) { set("aspiracaoId", ""); return; }
     setConflitos([]); setDecisao({});
     setD((p) => daAsp(p, a, !!envio));
-    if (envio) { const Dn = dadosAsp(a, ativos, embrioes); setQtd(Dn.E != null && Dn.disp > 0 ? Dn.disp : 1); }
+    if (envio) { const Dn = dadosAsp(a, ativos, embV); setQtd(Dn.E != null && Dn.disp > 0 ? Dn.disp : 1); }
   };
   const nd = chaveNome(d.doadora);
   const aspsOrd = [...asps].sort((x, y) => (nd && chaveNome(y.doadora) === nd) - (nd && chaveNome(x.doadora) === nd) || (y.dataAspiracao || "").localeCompare(x.dataAspiracao || ""));
@@ -4214,7 +4216,7 @@ function FolhaLote({ inicial, envio, ativos, embrioes, animalReg, localNames, on
             <label className="field wide"><span>Origem dos embriões <em className="new-hint">· doadora × touro do pacote</em></span>
               <select value={d.aspiracaoId || ""} onChange={(e) => escolheAsp(e.target.value)} aria-label="Origem dos embriões">
                 <option value="">Escolha a doadora / cruzamento…</option>
-                {opts.map((a) => { const x = dadosAsp(a, ativos, embrioes); return <option key={a.id} value={a.id}>{rot(a)}{a.dataAspiracao ? ` · aspirada ${dataBR(a.dataAspiracao)}` : ""}{x.E != null ? ` · ${x.disp} sem destino` : ""}{x.congelados ? ` · ${x.congelados} já no banco` : ""}</option>; })}
+                {opts.map((a) => { const x = dadosAsp(a, ativos, embV); return <option key={a.id} value={a.id}>{rot(a)}{a.dataAspiracao ? ` · aspirada ${dataBR(a.dataAspiracao)}` : ""}{x.E != null ? ` · ${x.disp} sem destino` : ""}{x.congelados ? ` · ${x.congelados} já no banco` : ""}</option>; })}
               </select></label>
           ) : null}
           {asp && D ? <div className="aviso aviso-info rp-envio-res"><b>Aspiração de origem: {asp.nome || rot(asp)}</b>
@@ -4244,7 +4246,7 @@ function FolhaLote({ inicial, envio, ativos, embrioes, animalReg, localNames, on
       <div className="grid">
         {d.origem === "aspiracao" && !envio && <label className="field wide"><span>Aspiração cadastrada <em className="new-hint">· opcional</em></span>
           <select value={d.aspiracaoId || ""} onChange={(e) => escolheAsp(e.target.value)}><option value="">Nenhuma (aspiração não cadastrada no sistema)</option>
-            {aspsOrd.map((a) => { const x = dadosAsp(a, ativos, embrioes); return <option key={a.id} value={a.id}>{a.nome}{a.dataAspiracao ? ` · ${dataBR(a.dataAspiracao)}` : ""}{x.E != null ? ` · ${x.disp} a transferir` : ""}</option>; })}</select></label>}
+            {aspsOrd.map((a) => { const x = dadosAsp(a, ativos, embV); return <option key={a.id} value={a.id}>{a.nome}{a.dataAspiracao ? ` · ${dataBR(a.dataAspiracao)}` : ""}{x.E != null ? ` · ${x.disp} a transferir` : ""}</option>; })}</select></label>}
         <label className="field"><span>Criatório de origem <em className="new-hint">· onde foram produzidos ou de onde vieram</em></span>
           <AutoField value={d.criatorioOrigem || ""} onChange={(v) => set("criatorioOrigem", v)} suggestions={localNames} onCreate={onQuickLocal} placeholder="buscar ou cadastrar criatório" /></label>
         {d.origem === "parceiro" && <label className="field"><span>Recebido de <em className="new-hint">· sócio ou parceiro</em></span><AutoField value={d.parceiro || ""} onChange={(v) => set("parceiro", v)} suggestions={socioNames} onCreate={onQuickSocio} placeholder="buscar ou cadastrar" /></label>}
@@ -6928,6 +6930,33 @@ export default function App() {
     reader.readAsArrayBuffer(file);
   };
   const abrirPreficha = (pref) => setForm({ tipo: pref.dados.tipo, initial: { ...pref.dados, __pref: pref.id } });
+  /* Banco de Embriões a partir do pré-cadastro: a aspiração ainda não existe, então os embriões
+     guardam o pré-cadastro (prefichaId) e a linha da doadora (prefLinha); ao aprovar, ganham o vínculo com a ficha criada. */
+  const aspsVirtuaisPref = (pref) => {
+    const d = pref.dados || {};
+    if (d.tipo === "pacote") return (d.doadoras || []).filter((x) => x && (x.doadora || "").trim()).map((x) => ({
+      id: `pref:${pref.id}:${x.id}`, tipo: "aspiracao", nome: `Pré-cadastro: ${x.doadora}`, doadora: x.doadora, regDoadora: x.regDoadora || "", pai: x.pai || "",
+      dataAspiracao: x.dataAspiracao || "", socios: d.socios || [], porcentagemComprada: d.porcentagemComprada, ondeEsta: d.ondeEsta || "" }));
+    return [{ ...d, id: `pref:${pref.id}`, tipo: "aspiracao", nome: `Pré-cadastro: ${d.doadora || "doadora não informada"}` }];
+  };
+  const embPref = (prefId) => {
+    const es = (db.embrioes || []).filter((u) => u && u.prefichaId === prefId);
+    if (!es.length) return null;
+    const est = es.filter((u) => !u.arquivado && saldoLote(u) > 0).length;
+    const por = [...new Set(es.map((u) => u.doadora || "doadora"))].map((n) => `${n}: ${es.filter((u) => (u.doadora || "doadora") === n).length}`).join(" · ");
+    return <div className="imp-flag ok">🧊 {es.length} embrião(ões) já no Banco de Embriões ({est} em estoque){es.length > 1 && por.includes("·") ? ` — ${por}` : ""}. Ao aprovar, ficam ligados à aspiração.</div>;
+  };
+  const enviarBancoPref = (pref) => {
+    const v = aspsVirtuaisPref(pref);
+    setRepro({ tipo: "lote", envio: { aspId: v.length === 1 ? v[0].id : "", opcoes: v.map((x) => x.id), virtuais: v, chave: uid() } });
+  };
+  // ao aprovar: liga os embriões enviados no pré-cadastro às fichas criadas (linha da doadora, ou o nome se a linha mudou)
+  const religaEmbrioesPref = (lista, prefId, fichas, pacoteId) => (lista || []).map((u) => {
+    if (!u || u.prefichaId !== prefId) return u;
+    const f = fichas.find((x) => u.prefLinha && x.linha === u.prefLinha) || fichas.find((x) => chaveNome(x.doadora) === chaveNome(u.doadora)) || (fichas.length === 1 ? fichas[0] : null);
+    const { prefichaId, prefLinha, prefRef, ...resto } = u;
+    return { ...resto, deFichaPreCadastro: prefId, aspiracaoId: f ? f.id : u.aspiracaoId || "", pacoteId: pacoteId || u.pacoteId || "" };
+  });
   const setEstadoPreficha = (id, estado) => { flushNext.current = true; setDb((p) => ({ ...p, prefichas: (p.prefichas || []).map((x) => (x.id === id ? { ...x, estado } : x)) })); };
   const removerPreficha = (id) => { flushNext.current = true; setDb((p) => ({ ...p, prefichas: (p.prefichas || []).filter((x) => x.id !== id) })); };
   const limparImportados = () => { flushNext.current = true; setDb((p) => ({ ...p, prefichas: (p.prefichas || []).filter((x) => (x.origem !== "excel" && x.origem !== "pacote") || (x.estado !== "aprovado" && x.estado !== "rejeitado")) })); };
@@ -6940,7 +6969,8 @@ export default function App() {
     r = { ...r, id: uid(), parcelasList: ensureParcelas(r) };
     setDb((p) => {
       const np = aplicarNovoRegistro(p, r, profile && profile.nome, false, null);
-      return { ...np, prefichas: (np.prefichas || []).filter((x) => x.id !== prefId) };
+      const emb = prefId && r.tipo === "aspiracao" ? religaEmbrioesPref(np.embrioes, prefId, [{ id: r.id, doadora: r.doadora, linha: "" }], "") : np.embrioes;
+      return { ...np, embrioes: emb, prefichas: (np.prefichas || []).filter((x) => x.id !== prefId) };
     });
     setForm(null); setImpMsg(`Cadastrado: ${r.nome}`);
   };
@@ -6985,8 +7015,10 @@ export default function App() {
     flushNext.current = true;
     setDb((p0) => {
       let st = aplicarNovoRegistro(p0, pacote, quemReg(), false, null);
-      (d.doadoras || []).forEach((x, i) => { st = aplicarNovoRegistro(st, fichaDoadora(pacote, x, null, i + 1), quemReg(), false, null); });
-      return { ...st, prefichas: (st.prefichas || []).filter((x) => x.id !== prefId) };
+      const fichas = [];
+      (d.doadoras || []).forEach((x, i) => { const c = fichaDoadora(pacote, x, null, i + 1); fichas.push({ id: c.id, doadora: c.doadora, linha: x.id }); st = aplicarNovoRegistro(st, c, quemReg(), false, null); });
+      const emb = prefId && pacote.subtipo === "aspiracao" ? religaEmbrioesPref(st.embrioes, prefId, fichas, pacote.id) : st.embrioes;
+      return { ...st, embrioes: emb, prefichas: (st.prefichas || []).filter((x) => x.id !== prefId) };
     });
     setPacForm(null); setImpMsg(`Cadastrado: ${pacote.nome} (${(d.doadoras || []).length} doadora(s))`);
     setToast(`Pacote aprovado: ${(d.doadoras || []).length} doadora(s) com ficha própria.`);
@@ -7457,11 +7489,15 @@ export default function App() {
         const p = aplicaCadastros(p0, limpo, plano, quem);
         const cod = proxCodLote(p.embrioes);
         const A = limpo.origem === "aspiracao" ? (p.ativos || []).find((x) => x && x.id === limpo.aspiracaoId) : null;
-        const ref = A ? `Congelamento da aspiração (${A.nome})` : limpo.origem === "aspiracao" ? "Produção própria · aspiração" : limpo.origem === "compra" ? `Compra${limpo.compra && limpo.compra.leilao ? ` · ${limpo.compra.leilao}` : ""}`
+        // vindo do pré-cadastro (aspiração ainda não aprovada): guarda o pré-cadastro e a linha da doadora
+        const vRef = limpo.origem === "aspiracao" && String(limpo.aspiracaoId || "").startsWith("pref:") ? String(limpo.aspiracaoId) : "";
+        const [, vPref, vLinha] = vRef ? vRef.split(":") : [];
+        const vincPref = vRef ? { prefichaId: vPref, prefLinha: vLinha || "", prefRef: vRef } : {};
+        const ref = vRef ? `Congelamento da aspiração (pré-cadastro: ${limpo.doadora || "doadora"})` : A ? `Congelamento da aspiração (${A.nome})` : limpo.origem === "aspiracao" ? "Produção própria · aspiração" : limpo.origem === "compra" ? `Compra${limpo.compra && limpo.compra.leilao ? ` · ${limpo.compra.leilao}` : ""}`
           : limpo.origem === "parceiro" ? `Recebido de ${limpo.parceiro || "sócio ou parceiro"}` : limpo.origem === "outra" ? (limpo.origemDesc || "Outra origem") : "Estoque existente · inventário inicial";
         const campos = { ...limpo }; CAMPOS_PROPRIOS.forEach((k) => delete campos[k]);
         const novos = ids.map((id, i) => ({ ...campos, socios: campos.socios.map((s) => ({ ...s })), compra: campos.compra ? { ...campos.compra } : campos.compra,
-          aspiracaoId: A ? A.id : "", pacoteId: A && A.pacoteId ? A.pacoteId : "", ...(envioId ? { envioId } : {}),
+          aspiracaoId: A ? A.id : "", pacoteId: A && A.pacoteId ? A.pacoteId : "", ...vincPref, ...(envioId ? { envioId } : {}),
           id, loteId: gid, loteCod: cod, seq: i + 1, cod: codEmb(cod, i + 1, qtd), arquivado: false, criadoEm: agora, criadoPor: quem,
           movs: [{ id: uid(), grupo: gEnt, data: limpo.dataCongelamento || today(), tipo: "entrada", qtd: 1, ref, responsavel: quem, criadoEm: agora }] }));
         const socios = [...(p.socios || [])];
@@ -7470,7 +7506,8 @@ export default function App() {
         return { ...p, ativos: ativosN, socios, embrioes: [...(p.embrioes || []), ...novos] };
       });
       setLoteSel(ids[0]);
-      if (envioId) setToast(`${qtd} embrião(ões) enviado(s) ao Banco de Embriões e ligado(s) a esta aspiração.`);   // continua na ficha, que já mostra o saldo
+      if (envioId && String(limpo.aspiracaoId || "").startsWith("pref:")) setToast(`${qtd} embrião(ões) enviado(s) ao Banco de Embriões. Ao aprovar o pré-cadastro, eles ficam ligados à aspiração.`);
+      else if (envioId) setToast(`${qtd} embrião(ões) enviado(s) ao Banco de Embriões e ligado(s) a esta aspiração.`);   // continua na ficha, que já mostra o saldo
       else { setView("embrioes"); setToast(`${qtd} embrião(ões) cadastrado(s), cada um com registro próprio.`); }
     }
     setRepro(null);
@@ -8272,10 +8309,12 @@ export default function App() {
                           <span>Parcela SM: <b>{d.valorParcela ? fmt(num(d.valorParcela)) : "—"}</b> × {d.parcelas || "—"}</span>
                           <span>Comissão: <b>{fmt(fp.com.total)}</b></span>
                         </div>
+                        {embPref(pref.id)}
                         {conf ? <div className="imp-flag conf">⚠ Confira antes de aprovar — {pref.motivo}.</div>
                           : <div className="imp-flag ok">✓ Pacote completo. Ao aprovar, vira um único card com uma ficha por doadora.</div>}
                         <div className="imp-acts">
                           <button className="btn btn-ghost" onClick={() => setPacForm({ modo: "pref", initial: { ...d, __pref: pref.id } })}>Abrir / conferir</button>
+                          {!rej && d.subtipo !== "prenhez" && <button className="btn btn-ghost" onClick={() => enviarBancoPref(pref)} title="Registrar no Banco de Embriões os embriões congelados de uma doadora deste pacote">Enviar ao Banco de Embriões</button>}
                           {!rej && <button className="btn btn-gold" onClick={() => aprovarPacote({ ...d, __pref: pref.id })} disabled={conf} title={conf ? "Abra e ajuste antes de aprovar" : ""}>✓ Aprovar e cadastrar</button>}
                           {!rej
                             ? <button className="btn btn-ghost" onClick={() => setEstadoPreficha(pref.id, "rejeitado")}>Rejeitar</button>
@@ -8306,11 +8345,13 @@ export default function App() {
                       </div>
                       {pref.dupSistema && <div className="imp-flag dup">⚑ Já existe algo parecido no sistema (mesma doadora/leilão). Confira antes de aprovar.</div>}
                       {pref.dup && !pref.dupSistema && <div className="imp-flag dup">⚑ Aparece repetido na própria planilha.</div>}
+                      {embPref(pref.id)}
                       {conf ? <div className="imp-flag conf">⚠ Confira a participação da SM — {pref.motivo}. Abra e ajuste antes de aprovar.</div>
                             : <div className="imp-flag ok">✓ Sociedade reconhecida. Pronto para conferir e cadastrar.</div>}
                       {pref.genSug > 0 && <div className="imp-flag gen">🧬 {pref.genSug} avô(s)/avó(s) sugerido(s) pela genealogia — confira ao abrir.</div>}
                       <div className="imp-acts">
                         <button className="btn btn-ghost" onClick={() => abrirPreficha(pref)}>Abrir / conferir</button>
+                        {!rej && d.tipo === "aspiracao" && <button className="btn btn-ghost" onClick={() => enviarBancoPref(pref)} title="Registrar no Banco de Embriões os embriões congelados desta aspiração">Enviar ao Banco de Embriões</button>}
                         {!rej && (d.tipo === "prenhez" || d.tipo === "aspiracao") && <button className="btn btn-ghost" onClick={() => setPacForm({ modo: "pref", initial: { ...paraPacote(d, d.tipo), __pref: pref.id } })} title="Cadastrar várias mães doadoras neste mesmo card">Transformar em pacote</button>}
                         {!rej && <button className="btn btn-gold" onClick={() => aprovarFicha({ ...d, __pref: pref.id })} disabled={conf} title={conf ? "Abra e ajuste o % da SM antes de aprovar" : ""}>✓ Aprovar e cadastrar</button>}
                         {!rej
