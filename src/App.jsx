@@ -1,4 +1,4 @@
-/* SM-BUILD: banco-azul-2026-11-18 */
+/* SM-BUILD: clones-datas-2026-11-19 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -470,7 +470,8 @@ const SCHEMAS = {
     { g: "Acompanhamento reprodutivo", f: [
       ["responsavel", "Responsável pelo acompanhamento", "text"],
       ["receptora", "Receptora (identificação)", "text"],
-      ["dataTE", "Data da transferência do embrião", "date"], ["dataConfirmacao", "Data de confirmação", "date"],
+      ["dataTE", "Data da transferência do embrião", "date"], ["idadeEmbriao", "Idade do embrião na TE (dias)", "number"],
+      ["dataConfirmacao", "Data do diagnóstico positivo", "date"],
       ["previsaoParto", "Previsão de parto", "date"], ["dataParto", "Data real do parto", "date"],
       ["sexagem", "Sexagem", "select", ["Fêmea", "Macho"]],
     ]},
@@ -570,9 +571,56 @@ function aspAtiva(a) {
 /* ---- Reprodução: Aspiração → Embriões → Prenhez → Animal, e Banco de Embriões ----
    Tudo é calculado a partir dos registros (fichas vinculadas e movimentações do banco):
    nenhum contador é digitado. Fichas antigas continuam valendo como estão. */
-const PARTO_DIAS = 285;   // previsão de parto sugerida: TE + 285 dias (editável na ficha)
-const DIAG_DIAS = 30;     // diagnóstico sugerido: TE + 30 dias
 function somaDias(iso, n) { if (!iso) return ""; const d = new Date(iso + "T12:00:00"); if (isNaN(d)) return ""; d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); }
+
+/* ---- Datas reprodutivas: diagnóstico positivo × previsão de parto ----
+   Parâmetros configuráveis (db.paramsRepro). A gestação conta da fecundação; na TE o embrião já tem
+   alguns dias de vida (D7 é o comum). Por isso: parto = TE + (gestação − idade do embrião)
+   e, sem TE, diagnóstico ≈ TE + intervalo → parto = diagnóstico + (gestação − idade − intervalo).
+   Estimativas saem SÓ de datas de origem (TE, diagnóstico registrado, previsão informada), nunca de outra estimativa. */
+const PARAMS_REPRO_PADRAO = { gestacaoDias: 292, idadeEmbriaoDias: 7, diagDiasAposTE: 30 };
+let PR = { ...PARAMS_REPRO_PADRAO };   // atualizado pelo App a cada render com os parâmetros salvos
+const paramsRepro = (db) => { const s = (db && db.paramsRepro) || {}; const v = (k, min, max) => { if (s[k] === "" || s[k] == null) return PARAMS_REPRO_PADRAO[k]; const n = Math.round(num(s[k])); return n >= min && n <= max ? n : PARAMS_REPRO_PADRAO[k]; };
+  return { gestacaoDias: v("gestacaoDias", 250, 330), idadeEmbriaoDias: v("idadeEmbriaoDias", 0, 15), diagDiasAposTE: v("diagDiasAposTE", 10, 120) }; };
+const idadeEmb = (p) => { const v = p && p.idadeEmbriao !== "" && p.idadeEmbriao != null ? Math.round(num(p.idadeEmbriao)) : NaN; return v >= 0 && v <= 15 ? v : PR.idadeEmbriaoDias; };
+const partoPorTE = (te, p) => somaDias(te, PR.gestacaoDias - idadeEmb(p));
+const partoPorDiag = (dg, p) => somaDias(dg, PR.gestacaoDias - idadeEmb(p) - PR.diagDiasAposTE);
+const diagPorTE = (te) => somaDias(te, PR.diagDiasAposTE);
+const diagPorParto = (pp, p) => somaDias(pp, -(PR.gestacaoDias - idadeEmb(p) - PR.diagDiasAposTE));
+// previsão calculada: a TE tem preferência; sem TE, usa o diagnóstico positivo registrado
+function previsaoEstimada(p) { if (!p) return ""; if (p.dataTE) return partoPorTE(p.dataTE, p); if (p.dataConfirmacao) return partoPorDiag(p.dataConfirmacao, p); return ""; }
+const baseEstimativa = (p) => (p && p.dataTE ? `da TE de ${dataBR(p.dataTE)}` : p && p.dataConfirmacao ? `do diagnóstico positivo de ${dataBR(p.dataConfirmacao)}` : "");
+// diagnóstico estimado (só exibido, nunca gravado como diagnóstico): TE + intervalo; sem TE, a partir da previsão informada
+function diagEstimado(p) { if (!p || p.dataConfirmacao) return ""; if (p.dataTE) return diagPorTE(p.dataTE); if (p.previsaoParto && p.previsaoPartoOrigem !== "estimada") return diagPorParto(p.previsaoParto, p); return ""; }
+// origem de uma data: informada (digitada / do criatório), estimada (calculada) ou confirmada (diagnóstico lançado / parto real)
+const ORIGEM_DATA = { informada: ["informada", "gold"], estimada: ["estimada", "info"], confirmada: ["confirmada", "green"] };
+function TagOrigem({ o }) { const x = ORIGEM_DATA[o]; return x ? <em className={`dt-orig ${o}`} title={o === "estimada" ? "Calculada pelo sistema — não é informação do criatório" : o === "informada" ? "Data informada (digitada ou recebida do criatório)" : "Data confirmada por lançamento"}>{x[0]}</em> : null; }
+/* recalcula a previsão ESTIMADA quando muda a base (TE, diagnóstico ou idade do embrião); previsão informada nunca é sobrescrita */
+function sincronizaDatas(np, k) {
+  if (k === "previsaoParto") return { ...np, previsaoPartoOrigem: np.previsaoParto ? "informada" : "" };
+  if (!["dataTE", "dataConfirmacao", "idadeEmbriao"].includes(k)) return np;
+  let r = { ...np };
+  if (k === "dataConfirmacao") r.dataConfirmacaoOrigem = r.dataConfirmacao ? "informada" : "";
+  if (!r.previsaoParto || r.previsaoPartoOrigem === "estimada") { const e = previsaoEstimada(r); r.previsaoParto = e; r.previsaoPartoOrigem = e ? "estimada" : ""; }
+  return r;
+}
+function ParamsReproEditor({ onSalvar, onFechar }) {
+  const [v, setV] = useState({ ...PR });
+  const campo = (k, rot, dica) => <label className="field"><span>{rot} <em className="new-hint">· {dica}</em></span><input type="number" value={v[k]} onChange={(e) => setV((x) => ({ ...x, [k]: e.target.value }))} /></label>;
+  return (
+    <div className="field wide dt-params">
+      <span>Parâmetros do cálculo reprodutivo <em className="new-hint">· valem para todas as fichas e só afetam datas estimadas (as já salvas são recalculadas quando a ficha é editada); datas informadas nunca mudam</em></span>
+      <div className="grid">
+        {campo("gestacaoDias", "Duração da gestação (dias)", "da fecundação ao parto · Nelore ≈ 290–295")}
+        {campo("idadeEmbriaoDias", "Idade do embrião na TE (dias)", "padrão quando a ficha não informa · D7 é o comum")}
+        {campo("diagDiasAposTE", "Diagnóstico positivo após a TE (dias)", "intervalo usual do ultrassom")}
+      </div>
+      <div className="dt-params-acts"><button type="button" className="btn btn-ghost btn-mini" onClick={() => setV({ ...PARAMS_REPRO_PADRAO })}>Restaurar padrão</button>
+        <button type="button" className="btn btn-mini" onClick={onFechar}>Cancelar</button>
+        <button type="button" className="btn btn-gold btn-mini" onClick={() => onSalvar(paramsRepro({ paramsRepro: v }))}>Salvar parâmetros</button></div>
+    </div>
+  );
+}
 const origemDe = (p) => (p && (p.origemId || p.aspiracaoOrigemId)) || "";
 // fase de uma prenhez, derivada dos fatos registrados (status antigos continuam reconhecidos)
 function faseReprod(p) {
@@ -587,7 +635,7 @@ function faseReprod(p) {
   if (s.includes("não confirmada") || s.includes("nao confirmada") || p.diagnostico === "negativo") return { k: "enc", txt: "Não confirmada", tone: "red" };
   if (s.includes("nascimento informado")) return { k: "parto", txt: "Nascimento a cadastrar", tone: "amber" };
   const conf = p.diagnostico === "positivo" || !!p.dataConfirmacao || ["confirmada", "gesta", "próxima", "proxima", "ultrapassado"].some((x) => s.includes(x));
-  if (!conf) return { k: "diag", txt: p.dataTE && somaDias(p.dataTE, DIAG_DIAS) >= today() ? "Aguardando diagnóstico" : "Diagnóstico não informado", tone: "info" };
+  if (!conf) return { k: "diag", txt: p.dataTE && diagPorTE(p.dataTE) >= today() ? "Aguardando diagnóstico" : "Diagnóstico não informado", tone: "info" };
   const d = diasAteParto(p);
   if (d == null) return { k: "conf", txt: "Confirmada", tone: "green" };
   if (d < 0) return { k: "parto", txt: `Parto atrasado ${-d} dia(s)`, tone: "red", d };
@@ -1323,7 +1371,7 @@ function VideoBlock({ v }) {
 
 /* --------------------------- formulário de ficha ----------------------- */
 function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoNames, localNames, vendedorNames, socioNames,
-  onQuickAnimal, onQuickLeilao, onQuickLocal, onQuickVendedor, onQuickSocio, onSave, onApprove, onClose, onPacote, pacoteNome }) {
+  onQuickAnimal, onQuickLeilao, onQuickLocal, onQuickVendedor, onQuickSocio, onSave, onApprove, onClose, onPacote, pacoteNome, ativos, onVincularClone, onParamsRepro }) {
   const ehPref = !!(initial && initial.__pref);
   const doPac = !!(initial && initial.pacoteId);   // doadora de um pacote: compra, parcelas, comissão e sociedade ficam no pacote
   const [d, setD] = useState(() => initial || { id: uid(), tipo, raca: tipo === "animal" ? "Nelore" : undefined, socios: [], videos: [], historico: [], comissaoPct: 8 });
@@ -1333,7 +1381,40 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
   // editar um campo tira a marca de "sugerido" dele
-  const set = (k, v) => setD((p) => { const np = { ...p, [k]: v }; if (k === "dataCompra") np.primeiroVenc = primeiroVencDaCompra(v); if (np.__genSug && np.__genSug.includes(k)) np.__genSug = np.__genSug.filter((x) => x !== k); return np; });
+  const set = (k, v) => setD((p) => { let np = { ...p, [k]: v }; if (k === "dataCompra") np.primeiroVenc = primeiroVencDaCompra(v); if (tipo === "prenhez") np = sincronizaDatas(np, k); if (np.__genSug && np.__genSug.includes(k)) np.__genSug = np.__genSug.filter((x) => x !== k); return np; });
+  // parâmetros mudaram: a previsão ESTIMADA acompanha (a informada fica como está)
+  const prKey = `${PR.gestacaoDias}|${PR.idadeEmbriaoDias}|${PR.diagDiasAposTE}`;
+  const prAnt = useRef(prKey);
+  useEffect(() => { if (prAnt.current === prKey) return; prAnt.current = prKey; if (tipo === "prenhez") setD((p) => sincronizaDatas(p, "idadeEmbriao")); }, [prKey]);
+  const [verParams, setVerParams] = useState(false);
+  // clone: original confirmado (a genealogia vem dele) e sugestão pelo nome (TN, TN1, TN2…)
+  const origClone = tipo === "animal" && d.cloneDeId ? originalDoClone({ ...d, tipo: "animal" }, (ativos || []).filter((x) => x && x.id !== d.id)) : null;
+  // confirmou que o pai/mãe/doadora é clone: grava o vínculo e, com a base atualizada, refaz os avós daquele lado
+  const [refazGen, setRefazGen] = useState(null);
+  const vincularNoForm = (id, origId, campo) => { onVincularClone(id, origId); setRefazGen(campo); };
+  useEffect(() => { if (!refazGen) return; const c = refazGen; setRefazGen(null); setComGen(c, d[c] || ""); }, [genIndex]);
+  const [cloneManual, setCloneManual] = useState(false);
+  const [cloneBusca, setCloneBusca] = useState("");
+  const ligaClone = (o) => setD((p) => ({ ...p, cloneDeId: o.id, cloneDe: o.nome, cloneRecusado: "" }));
+  const BlocoClone = () => {
+    if (tipo !== "animal") return null;
+    if (origClone) return (
+      <div className="field wide clone-box"><span>🧬 Animal clonado de <b>{origClone.nome}</b>{origClone.registro ? ` (${origClone.registro})` : ""} · RGD, dono, sociedade, local e histórico continuam próprios deste animal; a genealogia é a do original.</span>
+        <button type="button" className="rp-infolink" onClick={() => setD((p) => ({ ...p, cloneDeId: "", cloneDe: "" }))}>desfazer vínculo</button></div>);
+    const sug = sugerirOriginal(d.nome, d.sexo, ativos, d.id);
+    const recusou = d.cloneRecusado && gnorm(d.cloneRecusado) === gnorm(d.nome);
+    if (sug.length && !recusou) return (
+      <div className="field wide clone-box sug"><span>🧬 Possível clone de {sug.map((o, i) => <React.Fragment key={o.id}>{i ? " ou " : ""}<b>{o.nome}</b>{o.registro ? ` (${o.registro})` : ""}</React.Fragment>)}. Deseja vincular a genealogia?</span>
+        <div className="clone-acts">{sug.map((o) => <button type="button" key={o.id} className="btn btn-gold btn-mini" onClick={() => ligaClone(o)}>{sug.length > 1 ? `Clone de ${o.nome}` : "Vincular genealogia"}</button>)}
+          <button type="button" className="btn btn-ghost btn-mini" onClick={() => setD((p) => ({ ...p, cloneRecusado: p.nome }))}>Não é clone</button></div></div>);
+    if (!cloneManual) return <div className="field wide"><button type="button" className="rp-infolink clone-link" onClick={() => setCloneManual(true)}>Este animal é um clone?</button></div>;
+    const achado = animalPorNome(cloneBusca, (ativos || []).filter((x) => x && x.id !== d.id));
+    return (
+      <div className="field wide clone-box"><span>Animal clonado de <em className="new-hint">· escolha o original já cadastrado</em></span>
+        <AutoField value={cloneBusca} onChange={setCloneBusca} suggestions={animalNames} regMap={animalReg} placeholder="buscar o animal original" />
+        <div className="clone-acts"><button type="button" className="btn btn-gold btn-mini" disabled={!achado || achado.id === d.id} onClick={() => { ligaClone(achado); setCloneManual(false); }}>{achado ? `Vincular a ${achado.nome}` : "Escolha um animal cadastrado"}</button>
+          <button type="button" className="btn btn-ghost btn-mini" onClick={() => setCloneManual(false)}>Cancelar</button></div></div>);
+  };
   // qual campo é a "mãe" neste tipo (animal: mae; prenhez/aspiração: doadora)
   const maeKey = tipo === "animal" ? "mae" : "doadora";
   const sugerido = (k) => (d.__genSug || []).includes(k);
@@ -1393,7 +1474,8 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
         <label className="field" key={k}><span>{label}<em className="new-hint"> · busca em todo o sistema</em></span>
           <AutoField value={d.doadora || ""} suggestions={animalNames} regMap={animalReg} onCreate={onQuickAnimal}
             onChange={(v) => setComGen("doadora", v)}
-            placeholder="mãe doadora (busca em Animais, Prenhez, Aspiração, Genealogia)" /></label>
+            placeholder="mãe doadora (busca em Animais, Prenhez, Aspiração, Genealogia)" />
+          <DicaClone nome={d.doadora} ativos={ativos} onVincular={onVincularClone && ((id, o) => vincularNoForm(id, o, "doadora"))} /></label>
       );
     }
     if (k === "pai" || (k === "mae" && tipo === "animal") || (AVO_BIS[k] && tipo === "animal")) {
@@ -1401,7 +1483,8 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
       return (
         <label className="field" key={k}><span>{label}<em className="new-hint">{dica}</em>{sugerido(k) && <em className="new-hint gen-sug"> · sugerido</em>}</span>
           <AutoField value={d[k] || ""} suggestions={animalNames} regMap={animalReg} onCreate={onQuickAnimal}
-            onChange={(v) => setComGen(k, v)} placeholder="buscar ou cadastrar animal" /></label>
+            onChange={(v) => setComGen(k, v)} placeholder="buscar ou cadastrar animal" />
+          {(k === "pai" || k === "mae") && <DicaClone nome={d[k]} ativos={ativos} onVincular={onVincularClone && ((id, o) => vincularNoForm(id, o, k))} />}</label>
       );
     }
     if (k === "regDoadora") {
@@ -1410,6 +1493,28 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
         <label className="field" key={k}><span>{label}{auto ? <em className="new-hint"> · preenchido automaticamente</em> : ""}</span>
           <input value={d.regDoadora || ""} onChange={(e) => setD((p) => ({ ...p, regDoadora: e.target.value, __regAuto: false }))} placeholder="registro da mãe (auto se já cadastrada)" /></label>
       );
+    }
+    if (tipo === "prenhez" && k === "dataConfirmacao") {
+      const est = diagEstimado(d);
+      return (
+        <label className="field" key={k}><span>{label} {d.dataConfirmacao && <TagOrigem o={d.dataConfirmacaoOrigem || (d.diagnostico === "positivo" ? "confirmada" : "")} />}</span>
+          <input type="date" value={d.dataConfirmacao || ""} onChange={(e) => set(k, e.target.value)} />
+          {!d.dataConfirmacao && est && <small className="dt-hint"><TagOrigem o="estimada" /> {dataBR(est)} — calculada a partir {d.dataTE ? `da TE (+${PR.diagDiasAposTE} dias)` : "da previsão de parto informada"}. Só vira diagnóstico quando for informado.</small>}
+        </label>);
+    }
+    if (tipo === "prenhez" && k === "previsaoParto") {
+      const est = previsaoEstimada(d), orig = d.previsaoParto ? d.previsaoPartoOrigem || "" : "";
+      return (<React.Fragment key={k}>
+        <label className="field"><span>{label} {orig && <TagOrigem o={orig} />}</span>
+          <input type="date" value={d.previsaoParto || ""} onChange={(e) => set(k, e.target.value)} />
+          {orig === "estimada" && <small className="dt-hint">Calculada a partir {baseEstimativa(d)}. Se o criatório informar outra data, digite-a: ela passa a valer e não é recalculada.</small>}
+          {orig === "informada" && est && est !== d.previsaoParto && <small className="dt-hint">Informada — preservada. Pelo cálculo seria {dataBR(est)}. <button type="button" className="rp-infolink" onClick={() => setD((p) => ({ ...p, previsaoParto: est, previsaoPartoOrigem: "estimada" }))}>usar a estimativa</button></small>}
+          {!d.previsaoParto && !est && <small className="dt-hint">Informe a TE ou o diagnóstico positivo para calcular, ou digite a data recebida do criatório.</small>}
+          {d.previsaoParto && !orig && <small className="dt-hint">Registro anterior (origem não identificada).</small>}
+          <button type="button" className="rp-infolink dt-par" onClick={() => setVerParams((v) => !v)}>Parâmetros do cálculo: gestação {PR.gestacaoDias} d · embrião D{PR.idadeEmbriaoDias} · diagnóstico TE+{PR.diagDiasAposTE} d</button>
+        </label>
+        {verParams && <ParamsReproEditor onSalvar={(v) => { onParamsRepro && onParamsRepro(v); setVerParams(false); }} onFechar={() => setVerParams(false)} />}
+      </React.Fragment>);
     }
     if (type === "simnao") return (
       <label className="field wide" key={k}><span>{label}</span>
@@ -1450,12 +1555,17 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
           )}
           {doPac && <div className="aviso aviso-info" style={{ margin: "0 0 14px" }}>Esta doadora faz parte do <b>{pacoteNome || "pacote"}</b>. Compra, parcelas, comissão e sociedade ficam no pacote — aqui você edita só os dados desta doadora.</div>}
           {tipo === "prenhez" && !initial && <div className="aviso aviso-info" style={{ margin: "0 0 14px" }}>Prenhez de aspiração da SM? Use “Gerar prenhez” na ficha da aspiração. Embrião congelado? Use “Usar em transferência” no Banco de Embriões. Este formulário é para prenhez adquirida ou cadastro direto.</div>}
-          {SCHEMAS[tipo].filter((sec) => !(doPac && (sec.g === "Compra" || sec.g === "Pagamento"))).map((sec) => RECOLHE[sec.g] && !secAberta[sec.g] && !secTemDados(sec) ? (
+          {SCHEMAS[tipo].filter((sec) => !(doPac && (sec.g === "Compra" || sec.g === "Pagamento"))).filter((sec) => !(tipo === "animal" && origClone && sec.g.startsWith("Bisavós"))).map((sec) => tipo === "animal" && origClone && sec.gen ? (
+            <div className="fsec" key={sec.g}><div className="fsec-h">Genealogia <span className="muted small hint">— compartilhada com o original</span></div>
+              <GenHerdada o={origClone} ativos={ativos} />
+              <div className="grid">{renderField(["obsGen", "Observações sobre a genética", "textarea"])}</div>
+            </div>
+          ) : RECOLHE[sec.g] && !secAberta[sec.g] && !secTemDados(sec) ? (
             <div className="fsec" key={sec.g}><button type="button" className="fsec-abrir" onClick={() => setSecAberta((x) => ({ ...x, [sec.g]: true }))}>+ {sec.g} <span>· opcional, {RECOLHE[sec.g]}</span></button></div>
           ) : (
             <div className="fsec" key={sec.g}>
               <div className="fsec-h">{sec.g}{sec.gen && <span className="muted small hint">— digite para buscar animais já cadastrados</span>}</div>
-              <div className="grid">{sec.f.map(renderField)}</div>
+              <div className="grid">{sec.f.map(renderField)}{tipo === "animal" && sec.g === "Identificação" && BlocoClone()}</div>
               {sec.pay && (
                 <div className="fin-live">
                   <span>Valor pago pela cota <b>{fmt(f.cota)}</b></span>
@@ -1533,6 +1643,7 @@ function PacoteForm({ initial, modo, animalNames, animalReg, leilaoNames, vended
     const n = { ...x, [k]: v };
     if (k === "doadora") { const reg = (animalReg || {})[lc(v)]; if (reg && (!x.regDoadora || x.__regAuto)) { n.regDoadora = reg; n.__regAuto = true; } }
     if (k === "regDoadora") n.__regAuto = false;
+    if (k === "previsaoParto") n.previsaoPartoOrigem = v ? "informada" : "";
     return n;
   }) }));
   const addLinha = () => setD((p) => ({ ...p, doadoras: [...p.doadoras, novaLinhaDoadora()] }));
@@ -3137,10 +3248,10 @@ function CadeiaRepro({ itens }) {
   );
 }
 function BarraGestacao({ p }) {
-  const prev = p.previsaoParto || (p.dataTE ? somaDias(p.dataTE, PARTO_DIAS) : "");
+  const prev = p.previsaoParto || previsaoEstimada(p);
   const g = diasEntre(p.dataTE, today());
   if (!p.dataTE || g == null || !prev) return null;
-  const tot = Math.max(1, diasEntre(p.dataTE, prev) || PARTO_DIAS);
+  const tot = Math.max(1, diasEntre(p.dataTE, prev) || (PR.gestacaoDias - idadeEmb(p)));
   const atras = diasEntre(prev, today()) > 0;
   return (
     <div className="rp-gest">
@@ -3316,10 +3427,10 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote, onAcao }) {
     itens.push({ rot: "Esta prenhez", nome: a.receptora ? `Receptora ${a.receptora}` : "Receptora não informada", atual: true });
     if (filhos.length) filhos.forEach((x) => itens.push({ rot: "Animal", nome: x.nome || "animal", onClick: () => onAbrir(x) }));
     else itens.push({ rot: "Animal", nome: f.k === "enc" ? "não houve" : "após o nascimento", vazio: true });
-    const prevSug = !a.previsaoParto && a.dataTE ? somaDias(a.dataTE, PARTO_DIAS) : "";
-    const diagTxt = a.diagnostico === "positivo" || a.dataConfirmacao ? `positivo${a.dataConfirmacao ? " · " + dataBR(a.dataConfirmacao) : ""}`
+    const prevSug = !a.previsaoParto ? previsaoEstimada(a) : "";
+    const diagTxt = a.diagnostico === "positivo" || a.dataConfirmacao ? <>positivo{a.dataConfirmacao ? " · " + dataBR(a.dataConfirmacao) : ""} <TagOrigem o={a.dataConfirmacaoOrigem || (a.diagnostico === "positivo" ? "confirmada" : "")} /></>
       : a.diagnostico === "negativo" ? `negativo${a.dataDiagnostico ? " · " + dataBR(a.dataDiagnostico) : ""}`
-      : a.dataTE ? `não informado (opcional) · sugerido ${dataBR(somaDias(a.dataTE, DIAG_DIAS))}` : "não informado (opcional)";
+      : diagEstimado(a) ? `não informado · estimado ${dataBR(diagEstimado(a))}` : "não informado (opcional)";
     return (
       <div className="fsec rp-sec" id="fx-repro"><div className="fsec-h">Reprodução</div>
         <div className="rp-linha">{(() => { const sp = statusPrenhez(a); return <Badge tone={sp.tone}>{sp.destaque === "ok" ? "✓ " : ""}{sp.txt}</Badge>; })()}{qtdTotal(a) > 1 && <Badge tone="gold">Ficha com {qtdTotal(a)} prenhezes · restam {qtdRest(a)}</Badge>}</div>
@@ -3330,7 +3441,7 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote, onAcao }) {
           <InfoR l="Embrião" v={lote ? `Congelado · ${a.embriaoId ? lote.cod : "cadastro " + codLote(lote)}` : asp ? "Fresco" : ""} />
           <InfoR l="Diagnóstico" v={diagTxt} />
           <InfoR l="Sexagem" v={a.sexagem} />
-          <InfoR l="Previsão de parto" v={a.previsaoParto ? dataBR(a.previsaoParto) : prevSug ? `${dataBR(prevSug)} (sugerida)` : ""} />
+          <InfoR l="Previsão de parto" v={a.previsaoParto ? <>{dataBR(a.previsaoParto)} <TagOrigem o={a.previsaoPartoOrigem} /></> : prevSug ? <>{dataBR(prevSug)} <TagOrigem o="estimada" /></> : ""} />
           <InfoR l="Data do parto" v={a.dataParto ? dataBR(a.dataParto) : ""} />
           <InfoR l="Perda gestacional" v={a.perda ? `${dataBR(a.perda.data)} · ${a.perda.motivo}` : ""} />
         </div>
@@ -3367,7 +3478,9 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote, onAcao }) {
       <div className="rp-sub">Prenhezes geradas ({D.ps.length})</div>
       {D.ps.length ? D.ps.map((p) => { const f = statusPrenhez(p); return (
         <button type="button" className="rp-prow" key={p.id} onClick={() => onAbrir(p)}>
-          <span><b>{p.receptora ? `Receptora ${p.receptora}` : p.nome}</b><small>{p.dataTE ? `TE ${dataBR(p.dataTE)}` : ""}{p.loteOrigemId ? " · embrião congelado" : ""}</small></span>
+          <span><b>{p.receptora ? `Receptora ${p.receptora}` : p.nome}</b><small>{p.dataTE ? `TE ${dataBR(p.dataTE)}` : ""}{p.loteOrigemId ? " · embrião congelado" : ""}
+            {p.dataConfirmacao ? <> · diag. positivo {dataBR(p.dataConfirmacao)} <TagOrigem o={p.dataConfirmacaoOrigem || (p.diagnostico === "positivo" ? "confirmada" : "")} /></> : diagEstimado(p) && !p.dataParto && faseReprod(p).k === "diag" ? <> · diag. {dataBR(diagEstimado(p))} <TagOrigem o="estimada" /></> : null}
+            {p.dataParto ? <> · nasceu {dataBR(p.dataParto)}</> : (p.previsaoParto || previsaoEstimada(p)) && faseReprod(p).k !== "enc" ? <> · parto prev. {dataBR(p.previsaoParto || previsaoEstimada(p))} <TagOrigem o={p.previsaoParto ? p.previsaoPartoOrigem : "estimada"} /></> : null}</small></span>
           <Badge tone={f.tone}>{f.txt}</Badge>
         </button>); }) : <p className="muted small">Nenhuma prenhez vinculada ainda. Use “Gerar prenhez” ou vincule uma já cadastrada.</p>}
       {onAcao && <button type="button" className="rp-link" onClick={() => onAcao("vincPren", a)}>Vincular prenhez existente</button>}
@@ -3483,7 +3596,7 @@ function linhaTempoPrenhez(p, ativos, embrioes) {
   if (p.dataTE) ev.push({ data: p.dataTE, titulo: "Transferência de embrião", desc: p.receptora ? `Receptora ${p.receptora}` : "" });
   ev.push(...eventosDiagENasc([p], ativos, null).map((e) => ({ ...e, links: e.titulo === "Nascimento" ? e.links : [] })));
   if (qtdConvertidos(p) === 0 && !p.perda && p.diagnostico !== "negativo") {
-    const prev = p.previsaoParto || (p.dataTE ? somaDias(p.dataTE, PARTO_DIAS) : "");
+    const prev = p.previsaoParto || previsaoEstimada(p);
     if (prev && prev >= hoje) ev.push({ data: prev, titulo: p.previsaoParto ? "Parto previsto" : "Parto previsto (sugerido)", futuro: true, desc: "" });
   }
   if (lc(p.status).includes("cancel")) ev.push({ data: "", semData: true, titulo: "Cancelada", desc: "registro marcado como cancelado" });
@@ -3582,7 +3695,7 @@ function PaginaPrenhezes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
   const base = (lista || []).filter((p) => p && p.tipo === "prenhez" && p.origem !== "genealogia").map((p) => { const s = statusPrenhez(p); return { p, f: faseReprod(p), s, grupo: s.grupo, sub: s.grupo === "concluido" ? (qtdConvertidos(p) > 0 ? "nasc" : "sem") : "" }; });
   const criatorios = [...new Set(base.map(({ p }) => p.ondeEsta).filter(Boolean))].sort();
   const filt = base.filter(({ p }) => (!origem || origemPrenhez(p) === origem) && (!cri || p.ondeEsta === cri));
-  const prevDe = (p) => p.previsaoParto || (p.dataTE ? somaDias(p.dataTE, PARTO_DIAS) : "9999");
+  const prevDe = (p) => p.previsaoParto || previsaoEstimada(p) || "9999";
   const ord = escopo === "inativos" ? (a, b) => (b.p.dataParto || b.p.dataTE || "").localeCompare(a.p.dataParto || a.p.dataTE || "")
     : ordem === "te" ? (a, b) => (b.p.dataTE || "").localeCompare(a.p.dataTE || "") : (a, b) => (a.grupo === "concluido" || a.grupo === "cancelado") - (b.grupo === "concluido" || b.grupo === "cancelado") || prevDe(a.p).localeCompare(prevDe(b.p));
   const lst = filtraSituacao(filt, escopo, sit).sort(ord);
@@ -3615,7 +3728,7 @@ function PaginaPrenhezes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
               {qtdTotal(p) > 1 && <span className="rp-chip">ficha com {qtdTotal(p)} · restam {qtdRest(p)}</span>}
             </div>
             {(f.k === "conf" || f.k === "parto") ? <BarraGestacao p={p} />
-              : f.k === "diag" ? <span className="rp-prox">{p.dataTE ? `Próxima ação: lançar diagnóstico (sugerido ${dataBR(somaDias(p.dataTE, DIAG_DIAS))})` : "Próxima ação: lançar diagnóstico"}</span>
+              : f.k === "diag" ? <span className="rp-prox">{p.dataTE ? `Próxima ação: lançar diagnóstico (estimado ${dataBR(diagPorTE(p.dataTE))})` : "Próxima ação: lançar diagnóstico"}</span>
               : <span className="rp-meta">{p.dataParto ? `Nascimento em ${dataBR(p.dataParto)}` : p.perda ? `Perda em ${dataBR(p.perda.data)} · ${p.perda.motivo}` : s.motivo ? `Motivo: ${s.motivo}` : p.dataTE ? `TE em ${dataBR(p.dataTE)}` : ""}</span>}
           </button>
         ))}
@@ -3874,7 +3987,7 @@ function FolhaTransferencia({ asp, lote, ativos, embrioes, localNames, onQuickLo
       <div className="rp-herda">
         <b>Preenchido automaticamente em cada prenhez</b>
         <span>Mãe doadora, pai, genealogia e sociedade {lote ? "do embrião" : "da aspiração"}. Nenhum valor financeiro é copiado: o custo continua na origem.</span>
-        <span>Status inicial <b>{conf ? "Confirmada" : "Aguardando diagnóstico"}</b> · diagnóstico sugerido em <b>{dataBR(somaDias(dataTE, DIAG_DIAS))}</b> · previsão de parto <b>{dataBR(somaDias(dataTE, PARTO_DIAS))}</b> (TE + {PARTO_DIAS} dias, editável).</span>
+        <span>Status inicial <b>{conf ? "Confirmada" : "Aguardando diagnóstico"}</b> · diagnóstico estimado em <b>{dataBR(diagPorTE(dataTE))}</b> · previsão de parto <b>{dataBR(partoPorTE(dataTE, {}))}</b> <em className="dt-orig estimada">estimada</em> (TE + {PR.gestacaoDias - PR.idadeEmbriaoDias} dias: gestação {PR.gestacaoDias} − embrião D{PR.idadeEmbriaoDias}; editável na ficha).</span>
         {usaLote && <span>O embrião sai do saldo na transferência, mesmo que o diagnóstico dê negativo.</span>}
       </div>
     </Folha>
@@ -3885,19 +3998,25 @@ function FolhaDiagnostico({ p, onConfirm, onClose }) {
   const [res, setRes] = useState("positivo");
   const [data, setData] = useState(today());
   const [sexagem, setSexagem] = useState(p.sexagem || "");
-  const [prev, setPrev] = useState(p.previsaoParto || (p.dataTE ? somaDias(p.dataTE, PARTO_DIAS) : ""));
+  // previsão informada (criatório) é preservada; a estimada acompanha a data do diagnóstico quando não há TE
+  const informada = !!p.previsaoParto && p.previsaoPartoOrigem !== "estimada";
+  const [prev, setPrev] = useState(informada ? p.previsaoParto : previsaoEstimada({ ...p, dataConfirmacao: today() }));
+  const [prevOrig, setPrevOrig] = useState(informada ? "informada" : "estimada");
+  const mudaData = (v) => { setData(v); if (prevOrig === "estimada") setPrev(previsaoEstimada({ ...p, dataConfirmacao: v || "" })); };
   return (
     <Folha eyebrow={p.receptora ? `Receptora ${p.receptora}` : p.nome} titulo="Lançar diagnóstico" onClose={onClose}
-      rodape={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-gold" disabled={!data && res !== "nao"} onClick={() => onConfirm({ res, data, sexagem, prev })}>Salvar diagnóstico</button></>}>
+      rodape={<><button className="btn btn-ghost" onClick={onClose}>Cancelar</button><button className="btn btn-gold" disabled={!data && res !== "nao"} onClick={() => onConfirm({ res, data, sexagem, prev, prevOrig: prev ? prevOrig : "" })}>Salvar diagnóstico</button></>}>
       <div className="field wide"><span>Resultado</span><div className="segmented">
         <button type="button" className={`seg ${res === "positivo" ? "on" : ""}`} onClick={() => setRes("positivo")}>Positivo · prenhe</button>
         <button type="button" className={`seg ${res === "negativo" ? "on" : ""}`} onClick={() => setRes("negativo")}>Negativo · vazia</button>
         {temDiag && <button type="button" className={`seg ${res === "nao" ? "on" : ""}`} onClick={() => setRes("nao")}>Não informado</button>}</div></div>
       <p className="muted small">O diagnóstico é opcional: se o nascimento já é conhecido, use “Nasceu” direto na ficha.</p>
       <div className="grid">
-        {res !== "nao" && <label className="field"><span>Data do diagnóstico</span><input type="date" value={data} onChange={(e) => setData(e.target.value)} /></label>}
+        {res !== "nao" && <label className="field"><span>{res === "positivo" ? "Data do diagnóstico positivo" : "Data do diagnóstico"}</span><input type="date" value={data} onChange={(e) => mudaData(e.target.value)} /></label>}
         {res === "positivo" && <label className="field"><span>Sexagem <em className="new-hint">· opcional</em></span><select value={sexagem} onChange={(e) => setSexagem(e.target.value)}><option value="">Não informada</option><option>Fêmea</option><option>Macho</option></select></label>}
-        {res === "positivo" && <label className="field"><span>Previsão de parto</span><input type="date" value={prev} onChange={(e) => setPrev(e.target.value)} /></label>}
+        {res === "positivo" && <label className="field"><span>Previsão de parto {prev && <TagOrigem o={prevOrig} />}</span><input type="date" value={prev} onChange={(e) => { setPrev(e.target.value); setPrevOrig("informada"); }} />
+          {prev && prevOrig === "estimada" && <small className="dt-hint">Calculada a partir {p.dataTE ? `da TE (${dataBR(p.dataTE)})` : "da data do diagnóstico"}. Se o criatório informou outra data, digite-a aqui.</small>}
+          {prevOrig === "informada" && previsaoEstimada({ ...p, dataConfirmacao: data }) && previsaoEstimada({ ...p, dataConfirmacao: data }) !== prev && <small className="dt-hint">Informada — não será recalculada. Pelo cálculo seria {dataBR(previsaoEstimada({ ...p, dataConfirmacao: data }))}. <button type="button" className="rp-infolink" onClick={() => { setPrev(previsaoEstimada({ ...p, dataConfirmacao: data })); setPrevOrig("estimada"); }}>usar a estimativa</button></small>}</label>}
       </div>
       <p className="muted small">{res === "nao" ? "Remove o diagnóstico registrado; a prenhez continua ativa, sem diagnóstico informado." : res === "positivo" ? "A prenhez passa para Confirmadas e entra no acompanhamento de parto." : "A ficha fica como “Encerrada sem nascimento” (diagnóstico negativo) e entra na taxa de prenhez da origem. Os valores financeiros não são alterados."}</p>
     </Folha>
@@ -4063,7 +4182,7 @@ function BuscaAnimal({ rotulo, animais, nome, id, onTexto, onEscolher, onDesvinc
   );
 }
 
-function FolhaLote({ inicial, envio, ativos, embrioes, animalReg, localNames, onQuickLocal, leilaoNames, onQuickLeilao, vendedorNames, onQuickVendedor, socioNames, onQuickSocio, onConfirm, onExcluir, onAbrirAnimal, onClose }) {
+function FolhaLote({ inicial, envio, onVincularClone, ativos, embrioes, animalReg, localNames, onQuickLocal, leilaoNames, onQuickLeilao, vendedorNames, onQuickVendedor, socioNames, onQuickSocio, onConfirm, onExcluir, onAbrirAnimal, onClose }) {
   const editando = !!(inicial && inicial.id);
   const asps = [...((envio && envio.virtuais) || []), ...(ativos || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia" && (!a.arquivada || (inicial && a.id === inicial.aspiracaoId) || (envio && a.id === envio.aspId)))];
   // embriões já enviados por um pré-cadastro contam para a "aspiração" provisória dele
@@ -4241,9 +4360,11 @@ function FolhaLote({ inicial, envio, ativos, embrioes, animalReg, localNames, on
         <BuscaAnimal rotulo="Doadora" animais={doadoras} nome={d.doadora} id={d.doadoraId} placeholder="buscar por nome ou RGD"
           onTexto={textoAnimal("doadora", "regDoadora", "doadoraId", doadoras)} onEscolher={escolheAnimal("doadora", "regDoadora", "doadoraId")} onDesvincular={() => setD((p) => ({ ...p, doadoraId: "", regDoadora: "" }))} />
         {campoReg("regDoadora", "doadoraId", "RGD da doadora")}
+        {d.doadora && <div className="field wide clone-l"><DicaClone nome={d.doadora} ativos={ativos} onVincular={onVincularClone} /></div>}
         <BuscaAnimal rotulo="Touro" animais={touros} nome={d.pai} id={d.touroId} placeholder="buscar por nome ou RGD"
           onTexto={textoAnimal("pai", "regPai", "touroId", touros)} onEscolher={escolheAnimal("pai", "regPai", "touroId")} onDesvincular={() => setD((p) => ({ ...p, touroId: "", regPai: "" }))} />
         {campoReg("regPai", "touroId", "RGD do touro")}
+        {d.pai && <div className="field wide clone-l"><DicaClone nome={d.pai} ativos={ativos} onVincular={onVincularClone} /></div>}
       </div>
       <div className="rp-bloco">Origem</div>
       <div className="grid">
@@ -4587,11 +4708,15 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAtualizarOutro, onV
             );
           })()}
 
-          {!ehPacote(a) && <div className="fsec" id="fx-gen"><div className="fsec-h">Genealogia</div><Genealogia a={a} />{a.obsGen && <p className="obs">{a.obsGen}</p>}</div>}
+          {!ehPacote(a) && (() => { const ag = comGenClone(a, ativos); return <div className="fsec" id="fx-gen"><div className="fsec-h">Genealogia</div>
+            {ag.__genDeClone && <p className="clone-dica clone-gen">🧬 Genealogia compartilhada com o original, <button type="button" className="rp-infolink" onClick={() => { const o = (ativos || []).find((x) => x.id === ag.__genDeCloneId); o && onAbrir && onAbrir(o); }}>{ag.__genDeClone} ↗</button>. Correções são feitas na ficha dele e valem para todos os clones.</p>}
+            <Genealogia a={ag} />{a.obsGen && <p className="obs">{a.obsGen}</p>}</div>; })()}
 
           <div className="fsec" id="fx-dados"><div className="fsec-h">Dados</div>
             <div className="info-grid">
-              {a.tipo === "animal" && <><Info l="Criatório responsável" v={a.ondeEsta} /><Info l="Sexo" v={a.sexo} /><Info l="Nascimento" v={dataBR(a.nascimento)} />{a.maeRegistro && <Info l="Registro da mãe" v={a.maeRegistro} />}</>}
+              {a.tipo === "animal" && <><Info l="Criatório responsável" v={a.ondeEsta} /><Info l="Sexo" v={a.sexo} /><Info l="Nascimento" v={dataBR(a.nascimento)} />{a.maeRegistro && <Info l="Registro da mãe" v={a.maeRegistro} />}
+                {(() => { const o = originalDoClone(a, ativos); return o ? <div className="info"><span>Animal clonado de</span><b><button type="button" className="rp-infolink" onClick={() => onAbrir && onAbrir(o)}>{o.nome}{o.registro ? ` (${o.registro})` : ""} ↗</button></b></div> : null; })()}
+                {clonesDe(a, ativos).length > 0 && <div className="info"><span>Clones</span><b>{clonesDe(a, ativos).map((c, i) => <React.Fragment key={c.id}>{i ? ", " : ""}<button type="button" className="rp-infolink" onClick={() => onAbrir && onAbrir(c)}>{c.nome}</button></React.Fragment>)}</b></div>}</>}
               {a.tipo === "prenhez" && <><Info l="Mãe doadora" v={a.doadora} /><Info l="Registro da mãe" v={a.regDoadora} /><Info l="Pai" v={a.pai} />
                 <Info l="Quantidade" v={qtdRestante(a)} /><Info l="Criatório responsável" v={a.ondeEsta} /></>}
               {a.tipo === "aspiracao" && <><Info l="Mãe doadora" v={a.doadora} /><Info l="Registro da mãe" v={a.regDoadora} /><Info l="Pai" v={a.pai} />
@@ -6304,7 +6429,73 @@ const impUpper = (s) => impNorm(s).replace(/\s+/g, " ").trim().toUpperCase();
 const gnorm = (s) => (s == null ? "" : s.toString()).trim().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 const GEN_CAMPOS = ["pai", "mae", "avoPaterno", "avoPaterna", "avoMaterno", "avoMaterna"];
 const genScore = (a) => GEN_CAMPOS.reduce((n, k) => n + (a && a[k] && a[k].toString().trim() ? 1 : 0), 0);
-function buildGenIndex(ativos) {
+
+/* ===== CLONES (TN, TN1, TN2…) =====
+   O clone é um animal próprio (nome, RGD, dono, sociedade, local, histórico), ligado ao original por cloneDeId.
+   A genealogia genética NÃO é copiada: é lida do original na hora, então qualquer correção nele vale para os clones. */
+const GEN_TODOS = [...GEN_CAMPOS, "bis_pp_p", "bis_pp_m", "bis_pm_p", "bis_pm_m", "bis_mp_p", "bis_mp_m", "bis_mm_p", "bis_mm_m"];
+const TN_RE = /(^|\s)TN[\s-]*(\d{0,2})(?=\s|$)/i;
+// "LANDAU TN3" → { n: 3, base: "LANDAU" }; "PARLA TN1 HVP" → { base: "PARLA HVP", antes: "PARLA" }
+function cloneInfoNome(nome) {
+  const s = String(nome || "").replace(/\s+/g, " ").trim(); const m = TN_RE.exec(s);
+  if (!m) return null;
+  const antes = s.slice(0, m.index).trim(), depois = s.slice(m.index + m[0].length).trim();
+  return antes ? { n: m[2] ? +m[2] : 0, base: [antes, depois].filter(Boolean).join(" "), antes } : null;
+}
+// original confirmado (segue a cadeia clone→original, sem laço)
+function originalDoClone(a, ativos) {
+  let x = a; const vistos = new Set();
+  while (x && x.cloneDeId && !vistos.has(x.id)) { vistos.add(x.id); const o = (ativos || []).find((y) => y && y.id === x.cloneDeId && y.tipo === "animal"); if (!o) break; x = o; }
+  return x && x !== a ? x : null;
+}
+// registro com a genealogia que vale (a do original, se for clone confirmado) — só em memória, não grava
+function comGenClone(a, ativos) {
+  if (!a || !a.cloneDeId) return a;
+  const o = originalDoClone(a, ativos); if (!o) return a;
+  const g = {}; GEN_TODOS.forEach((k) => { g[k] = o[k] || ""; });
+  return { ...a, ...g, __genDeClone: o.nome, __genDeCloneId: o.id };
+}
+const clonesDe = (a, ativos) => (a ? (ativos || []).filter((x) => x && x.tipo === "animal" && x.cloneDeId === a.id) : []);
+const sexoLetra = (s) => (lc(s || "").startsWith("f") ? "F" : lc(s || "").startsWith("m") ? "M" : "");
+// possíveis originais pelo nome (só SUGESTÃO; o vínculo é sempre confirmado pelo usuário)
+function sugerirOriginal(nome, sexo, ativos, idProprio) {
+  const ci = cloneInfoNome(nome); if (!ci) return [];
+  const anim = (ativos || []).filter((x) => x && x.tipo === "animal" && x.nome && x.id !== idProprio && !cloneInfoNome(x.nome));
+  const okSexo = (x) => !sexoLetra(sexo) || !sexoLetra(x.sexo) || sexoLetra(sexo) === sexoLetra(x.sexo);
+  let c = anim.filter((x) => okSexo(x) && (gnorm(x.nome) === gnorm(ci.base) || gnorm(x.nome) === gnorm(ci.antes)));
+  if (!c.length) c = anim.filter((x) => okSexo(x) && gnorm(x.nome).startsWith(gnorm(ci.antes) + " "));
+  // um por nome: a ficha própria (não de referência) e com mais genealogia
+  const por = {};
+  c.sort((x, y) => (x.origem === "genealogia") - (y.origem === "genealogia") || genScore(y) - genScore(x)).forEach((x) => { const k = gnorm(x.nome); if (!por[k]) por[k] = x; });
+  return Object.values(por).slice(0, 5);
+}
+// animal cadastrado com este nome (ficha própria primeiro)
+const animalPorNome = (nome, ativos) => { const n = gnorm(nome); if (!n) return null; const l = (ativos || []).filter((x) => x && x.tipo === "animal" && gnorm(x.nome) === n); return l.find((x) => x.origem !== "genealogia") || l[0] || null; };
+/* dica ao lado de um campo de animal (pai, mãe, doadora, touro): mostra o vínculo de clone ou sugere confirmar */
+function DicaClone({ nome, ativos, onVincular }) {
+  const rec = animalPorNome(nome, ativos);
+  if (rec && rec.cloneDeId) { const o = originalDoClone(rec, ativos); return o ? <small className="clone-dica">🧬 clone de <b>{o.nome}</b> · genealogia do original</small> : null; }
+  if (!cloneInfoNome(nome)) return null;
+  const sug = sugerirOriginal(nome, rec && rec.sexo, ativos, rec && rec.id);
+  if (!sug.length) return null;
+  if (!rec || !onVincular) return <small className="clone-dica">🧬 Possível clone de <b>{sug[0].nome}</b>. Confirme na ficha do animal para usar a genealogia do original.</small>;
+  return <small className="clone-dica">🧬 Possível clone de {sug.map((o, i) => <React.Fragment key={o.id}>{i ? " ou " : ""}<b>{o.nome}</b></React.Fragment>)}. Deseja vincular a genealogia?
+    {sug.map((o) => <button type="button" key={o.id} className="rp-infolink" onClick={() => onVincular(rec.id, o.id)}>{sug.length > 1 ? `É clone de ${o.nome}` : "Vincular"}</button>)}</small>;
+}
+// genealogia do original, só leitura, dentro do formulário do clone
+function GenHerdada({ o, ativos }) {
+  const g = comGenClone(o, ativos) || o;
+  const L = [["Pai", g.pai], ["Mãe", g.mae], ["Avô paterno", g.avoPaterno], ["Avó paterna", g.avoPaterna], ["Avô materno", g.avoMaterno], ["Avó materna", g.avoMaterna]];
+  const nBis = GEN_TODOS.slice(6).filter((k) => g[k]).length;
+  return (
+    <div className="clone-gen-l">
+      {L.map(([r, v]) => <div key={r}><span>{r}</span><b>{v || "—"}</b></div>)}
+      <p className="muted small">Vem da ficha de {o.nome}{nBis ? ` (inclui ${nBis} bisavô(ó)s)` : ""}. Para corrigir, edite o original — os clones acompanham. Nada é copiado para este cadastro.</p>
+    </div>
+  );
+}
+function buildGenIndex(ativos0) {
+  const ativos = (ativos0 || []).map((a) => comGenClone(a, ativos0));   // clones contam com a genealogia do original
   const byName = {}, byRg = {}, cnt = {}, parents = {};
   // registra um candidato de pai/mãe para um nome (soma evidências)
   const add = (nameRaw, side, valRaw) => {
@@ -6863,7 +7054,37 @@ export default function App() {
     return m;
   }, [ativos]);
   // base genealógica centralizada (derivada dos próprios animais; sem tabela nova)
+  PR = paramsRepro(db);   // parâmetros do cálculo de datas reprodutivas (salvos no banco)
   const genIndex = useMemo(() => buildGenIndex(ativos), [ativos]);
+  const salvarParamsRepro = (v) => {
+    flushNext.current = true;
+    const antes = paramsRepro(db);
+    setDb((p) => ({ ...p, paramsRepro: v, paramsReproLog: [...(p.paramsReproLog || []), { data: new Date().toISOString(), por: quemReg(), antes, depois: v }] }));
+    setToast("Parâmetros do cálculo salvos. Só as datas estimadas usam estes valores; datas informadas não mudam.");
+  };
+  // confirma que um animal é clone de outro: a genealogia passa a vir do original (nada é copiado)
+  const vincularClone = (animalId, origId) => {
+    flushNext.current = true;
+    setDb((p) => {
+      const o = (p.ativos || []).find((x) => x && x.id === origId);
+      if (!o) return p;
+      return { ...p, ativos: p.ativos.map((x) => (x && x.id === animalId ? { ...x, cloneDeId: o.id, cloneDe: o.nome,
+        historico: [...(x.historico || []), { id: uid(), data: today(), tipo: "Clone", desc: `Vinculado como clone de ${o.nome}: a genealogia passa a ser a do original`, responsavel: quemReg() }] } : x)) };
+    });
+    setToast("Clone vinculado. A genealogia vem do animal original.");
+  };
+  // histórico das mudanças de datas reprodutivas e do vínculo de clone (com a origem de cada data)
+  const histMudancas = (antes, d) => {
+    if (!antes) return d.cloneDeId ? [{ id: uid(), data: today(), tipo: "Clone", desc: `Cadastrado como clone de ${d.cloneDe || "animal original"}: a genealogia é a do original`, responsavel: quemReg() }] : [];
+    const h = [], quem = quemReg();
+    const dt = (v, o) => (v ? `${dataBR(v)}${o ? ` (${o})` : ""}` : "vazia");
+    [["dataTE", "Data da TE", ""], ["dataConfirmacao", "Diagnóstico positivo", "dataConfirmacaoOrigem"], ["previsaoParto", "Previsão de parto", "previsaoPartoOrigem"], ["dataParto", "Data do parto", ""]].forEach(([k, rot, ok]) => {
+      if ((antes[k] || "") !== (d[k] || "") || (ok && (antes[ok] || "") !== (d[ok] || "") && d[k])) h.push({ id: uid(), data: today(), tipo: "Datas reprodutivas", desc: `${rot}: ${dt(antes[k], ok && antes[ok])} → ${dt(d[k], ok && d[k] && d[ok])}`, responsavel: quem });
+    });
+    if ((antes.idadeEmbriao ?? "") !== (d.idadeEmbriao ?? "")) h.push({ id: uid(), data: today(), tipo: "Datas reprodutivas", desc: `Idade do embrião na TE: ${antes.idadeEmbriao || "—"} → ${d.idadeEmbriao || "—"} dia(s)`, responsavel: quem });
+    if ((antes.cloneDeId || "") !== (d.cloneDeId || "")) h.push({ id: uid(), data: today(), tipo: "Clone", desc: d.cloneDeId ? `Vinculado como clone de ${d.cloneDe || "animal original"}: a genealogia passa a ser a do original` : `Vínculo de clone com ${antes.cloneDe || "o original"} desfeito`, responsavel: quem });
+    return h;
+  };
   const leilaoNames = useMemo(() => { const s = new Set((db.leiloes || []).filter((l) => l && !l.arquivado).map((l) => l.nome).filter(Boolean)); (ativos || []).forEach((a) => a && a.leilao && s.add(a.leilao)); return [...s]; }, [db.leiloes, ativos]);
   const localNames = useMemo(() => { const s = new Set((db.locais || []).filter(Boolean)); (ativos || []).forEach((a) => { if (a && a.ondeEsta) s.add(a.ondeEsta); if (a && a.criatorio) s.add(a.criatorio); }); (db.criatorios || []).forEach((c) => c && c.nome && s.add(c.nome)); return [...s]; }, [db.locais, db.criatorios, ativos]);
   const vendedorNames = useMemo(() => { const s = new Set((db.vendedores || []).map((v) => v && v.nome).filter(Boolean)); (ativos || []).forEach((a) => a && a.vendedor && s.add(a.vendedor)); return [...s]; }, [db.vendedores, ativos]);
@@ -6899,6 +7120,9 @@ export default function App() {
     const origemId = d.origemId; const veioDeOrigem = d.__fromOrigem;
     d = { ...d }; delete d.__fromOrigem; delete d.__genSug;
     d = { ...d, parcelasList: ensureParcelas(d) };
+    const antes = (db.ativos || []).find((x) => x && x.id === d.id);
+    const hm = histMudancas(antes, d);
+    if (hm.length) d = { ...d, historico: [...(d.historico || []), ...hm] };
     setDb((p) => aplicarNovoRegistro(p, d, profile && profile.nome, veioDeOrigem, origemId));
     setForm(null); setAberto(d);
   };
@@ -6985,7 +7209,7 @@ export default function App() {
     const base = antiga || { id: uid(), videos: [], historico: [], comissaoPct: 0 };
     let c = { ...base, tipo: pacote.subtipo, pacoteId: pacote.id, pacoteOrdem: ordem || base.pacoteOrdem || 0,
       doadora: x.doadora, regDoadora: x.regDoadora || "", pai: x.pai || "", qtd: x.qtd === 0 || x.qtd === "0" ? 0 : Math.max(1, Math.round(num(x.qtd)) || 1), status: x.status || "", obs: x.obs || "",
-      ...(pacote.subtipo === "prenhez" ? { receptora: x.receptora || "", previsaoParto: x.previsaoParto || "" } : { dataAspiracao: x.dataAspiracao || "" }),
+      ...(pacote.subtipo === "prenhez" ? { receptora: x.receptora || "", previsaoParto: x.previsaoParto || "", previsaoPartoOrigem: x.previsaoParto ? x.previsaoPartoOrigem || "informada" : "" } : { dataAspiracao: x.dataAspiracao || "" }),
       porcentagemComprada: pacote.porcentagemComprada ?? "",   // só o percentual (herdado por nascimentos); valores ficam no pacote
       socios: (pacote.socios || []).filter((s) => s && s.nome).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct, obs: s.obs || "" })) };
     CAMPOS_COMPRA_PACOTE.filter((k) => k !== "porcentagemComprada").forEach((k) => { delete c[k]; });
@@ -7079,7 +7303,7 @@ export default function App() {
     if (x.comissaoNaCompra === false) pc.comissaoNaCompra = false;
     pc.socios = (x.socios || []).filter((s) => s && s.nome).map((s) => ({ id: uid(), nome: s.nome, pct: s.pct, obs: s.obs || "" }));
     const nomes = separarDoadoras(x.doadora);
-    const base = { qtd: x.qtd || 1, pai: x.pai || "", status: x.status || "", receptora: x.receptora || "", previsaoParto: x.previsaoParto || "", dataAspiracao: x.dataAspiracao || "" };
+    const base = { qtd: x.qtd || 1, pai: x.pai || "", status: x.status || "", receptora: x.receptora || "", previsaoParto: x.previsaoParto || "", previsaoPartoOrigem: x.previsaoPartoOrigem || "", dataAspiracao: x.dataAspiracao || "" };
     pc.doadoras = (nomes.length ? nomes : [""]).map((n) => ({ ...novaLinhaDoadora(), ...base, doadora: n, regDoadora: nomes.length <= 1 ? (x.regDoadora || "") : "" }));
     if (pc.doadoras.length === 1) pc.doadoras.push(novaLinhaDoadora());
     pc.obs = x.obs || "";
@@ -7093,12 +7317,12 @@ export default function App() {
     if (ini.__pref) { setPacForm({ modo: "pref", initial: { ...pc, __pref: ini.__pref } }); return; }
     // cadastro existente: a própria ficha é a doadora 1 (mantém id, histórico e vínculos)
     const x = atual || ini;
-    pc.doadoras = [{ ...novaLinhaDoadora(), id: ini.id, __existe: true, doadora: x.doadora || "", regDoadora: x.regDoadora || "", qtd: x.qtd || 1, pai: x.pai || "", status: x.status || "", receptora: x.receptora || "", previsaoParto: x.previsaoParto || "", dataAspiracao: x.dataAspiracao || "", obs: x.obs || "" }, novaLinhaDoadora()];
+    pc.doadoras = [{ ...novaLinhaDoadora(), id: ini.id, __existe: true, doadora: x.doadora || "", regDoadora: x.regDoadora || "", qtd: x.qtd || 1, pai: x.pai || "", status: x.status || "", receptora: x.receptora || "", previsaoParto: x.previsaoParto || "", previsaoPartoOrigem: x.previsaoPartoOrigem || "", dataAspiracao: x.dataAspiracao || "", obs: x.obs || "" }, novaLinhaDoadora()];
     pc.obs = "";
     setPacForm({ modo: "converter", initial: { ...pc, __converteDe: ini.id } });
   };
   const abrirPacoteEdicao = (pac) => {
-    const doadoras = doPacote(ativos, pac.id).map((x) => ({ id: x.id, __existe: true, doadora: x.doadora || "", regDoadora: x.regDoadora || "", qtd: x.qtd || 1, pai: x.pai || "", status: x.status || "", receptora: x.receptora || "", previsaoParto: x.previsaoParto || "", dataAspiracao: x.dataAspiracao || "", obs: x.obs || "" }));
+    const doadoras = doPacote(ativos, pac.id).map((x) => ({ id: x.id, __existe: true, doadora: x.doadora || "", regDoadora: x.regDoadora || "", qtd: x.qtd || 1, pai: x.pai || "", status: x.status || "", receptora: x.receptora || "", previsaoParto: x.previsaoParto || "", previsaoPartoOrigem: x.previsaoPartoOrigem || "", dataAspiracao: x.dataAspiracao || "", obs: x.obs || "" }));
     const initial = { ...pac, doadoras: doadoras.length ? doadoras : [novaLinhaDoadora()] }; delete initial.parcelasList; delete initial.comissaoPagamentos; delete initial.historico;
     setAberto(null); setPacForm({ modo: "editar", initial });
   };
@@ -7165,7 +7389,7 @@ export default function App() {
       let st = aplicarNovoRegistro(p, pac, quem, false, null);
       st = { ...st, ativos: st.ativos.map((a) => {
         const i = a ? regs.findIndex((r) => r.id === a.id) : -1; if (i < 0) return a;
-        const linha = { doadora: a.doadora, regDoadora: a.regDoadora, qtd: a.qtd, pai: a.pai, status: a.status, receptora: a.receptora, previsaoParto: a.previsaoParto, dataAspiracao: a.dataAspiracao, obs: a.obs };
+        const linha = { doadora: a.doadora, regDoadora: a.regDoadora, qtd: a.qtd, pai: a.pai, status: a.status, receptora: a.receptora, previsaoParto: a.previsaoParto, previsaoPartoOrigem: a.previsaoPartoOrigem, dataAspiracao: a.dataAspiracao, obs: a.obs };
         const c = fichaDoadora(pac, linha, a, i + 1);
         const fa = finance(a);
         if (a.id !== base.id && fa.total > 0.004) c.compraDescartada = { leilao: a.leilao || "", dataCompra: a.dataCompra || "", porcentagemComprada: a.porcentagemComprada ?? "", valorParcela: a.valorParcela ?? "", parcelas: a.parcelas ?? "", primeiroVenc: a.primeiroVenc || "", comissaoPct: a.comissaoPct ?? "", total: fa.total, em: today() };
@@ -7290,8 +7514,8 @@ export default function App() {
           origemId: A ? A.id : "", aspiracaoOrigemId: A ? A.id : "", loteOrigemId: L ? grupoDe(L) : "", embriaoId: L ? us[i].id : "",
           origemLabel: A ? rotuloReprod(A) : `Embrião ${us[i].cod} (Banco de Embriões)`,
           doadora: src.doadora || "", regDoadora: src.regDoadora || "", pai: src.pai || src.touro || "", regPai: src.regPai || "",
-          qtd: 1, status: confirmada ? "Confirmada" : "Aguardando confirmação", ...(confirmada ? { diagnostico: "positivo", dataDiagnostico: dataConf || dataTE, dataConfirmacao: dataConf || dataTE } : {}), ondeEsta: criatorioTE || (A && A.ondeEsta) || (L && L.propriedade) || "", criatorio: (A && A.criatorio) || "",
-          receptora: rec, dataTE, previsaoParto: somaDias(dataTE, PARTO_DIAS), responsavel: (A && A.responsavel) || "",
+          qtd: 1, status: confirmada ? "Confirmada" : "Aguardando confirmação", ...(confirmada ? { diagnostico: "positivo", dataDiagnostico: dataConf || dataTE, dataConfirmacao: dataConf || dataTE, dataConfirmacaoOrigem: "informada" } : {}), ondeEsta: criatorioTE || (A && A.ondeEsta) || (L && L.propriedade) || "", criatorio: (A && A.criatorio) || "",
+          receptora: rec, dataTE, previsaoParto: partoPorTE(dataTE, {}), previsaoPartoOrigem: "estimada", responsavel: (A && A.responsavel) || "",
           avoPaterno: (A && A.avoPaterno) || "", avoPaterna: (A && A.avoPaterna) || "", avoMaterno: (A && A.avoMaterno) || "", avoMaterna: (A && A.avoMaterna) || "", obsGen: (A && A.obsGen) || "",
           socios: (src.socios || []).filter((x) => x && x.nome).map((x) => ({ id: uid(), nome: x.nome, pct: x.pct, obs: x.obs || "" })),
           videos: [], comissaoPct: 8, obs: "",
@@ -7315,17 +7539,23 @@ export default function App() {
     setRepro(null);
     setToast(`${n} prenhez(es) criada(s)${lote ? " com embriões do banco" : ""}. Status: ${confirmada ? "prenhez confirmada" : "aguardando diagnóstico"}.`);
   };
-  const registrarDiagnostico = (p, { res, data, sexagem, prev }) => {
+  const registrarDiagnostico = (p, { res, data, sexagem, prev, prevOrig }) => {
     if (res === "nao") {
-      const np = { ...p, diagnostico: "", dataDiagnostico: "", dataConfirmacao: "", status: "Aguardando confirmação",
+      const semDiag = { ...p, dataConfirmacao: "" };
+      const prevEst = p.previsaoPartoOrigem === "estimada" ? previsaoEstimada(semDiag) : p.previsaoParto || "";   // estimativa que vinha do diagnóstico some junto
+      const np = { ...p, diagnostico: "", dataDiagnostico: "", dataConfirmacao: "", dataConfirmacaoOrigem: "", status: "Aguardando confirmação",
+        previsaoParto: prevEst, previsaoPartoOrigem: prevEst ? p.previsaoPartoOrigem || "" : "",
         historico: [...(p.historico || []), { id: uid(), data: today(), tipo: "Diagnóstico", desc: "Diagnóstico removido: passa a constar como não informado", responsavel: quemReg() }] };
       setRepro(null); updateAtivo(np); setToast("Diagnóstico marcado como não informado."); return;
     }
     const pos = res === "positivo";
+    const novaPrev = pos ? (prev || p.previsaoParto || "") : (p.previsaoParto || "");
+    const novaOrig = pos ? (prev ? prevOrig || "informada" : p.previsaoPartoOrigem || "") : (p.previsaoPartoOrigem || "");
+    const mudouPrev = pos && novaPrev && (novaPrev !== (p.previsaoParto || "") || novaOrig !== (p.previsaoPartoOrigem || ""));
     const np = { ...p, diagnostico: res, dataDiagnostico: data, status: pos ? "Confirmada" : "Não confirmada",
-      dataConfirmacao: pos ? data : (p.dataConfirmacao || ""), sexagem: pos ? sexagem : (p.sexagem || ""),
-      previsaoParto: pos ? (prev || p.previsaoParto || "") : (p.previsaoParto || ""),
-      historico: [...(p.historico || []), { id: uid(), data, tipo: "Diagnóstico", desc: pos ? `Positivo${sexagem ? ` · sexagem: ${lc(sexagem)}` : ""}` : "Negativo (não confirmada)", responsavel: quemReg() }] };
+      dataConfirmacao: pos ? data : (p.dataConfirmacao || ""), dataConfirmacaoOrigem: pos ? "confirmada" : (p.dataConfirmacaoOrigem || ""), sexagem: pos ? sexagem : (p.sexagem || ""),
+      previsaoParto: novaPrev, previsaoPartoOrigem: novaPrev ? novaOrig : "",
+      historico: [...(p.historico || []), { id: uid(), data, tipo: "Diagnóstico", desc: (pos ? `Positivo${sexagem ? ` · sexagem: ${lc(sexagem)}` : ""}` : "Negativo (não confirmada)") + (mudouPrev ? ` · previsão de parto ${dataBR(novaPrev)} (${novaOrig})` : ""), responsavel: quemReg() }] };
     setRepro(null); updateAtivo(np);
     setToast(pos ? "Diagnóstico positivo registrado." : "Diagnóstico negativo registrado. Prenhez encerrada sem nascimento.");
   };
@@ -8399,6 +8629,7 @@ export default function App() {
         onVerLista={(nome) => { fecharAnalise(); setBusca(nome); setView("animal"); }} />}
       {form && <FichaForm tipo={form.tipo} initial={form.initial}
         animalNames={animalNames} animalReg={animalReg} genIndex={genIndex} leilaoNames={leilaoNames} localNames={localNames} vendedorNames={vendedorNames} socioNames={socioNames}
+        ativos={ativos} onVincularClone={vincularClone} onParamsRepro={salvarParamsRepro}
         onQuickAnimal={quickAnimal} onQuickLeilao={quickLeilao} onQuickLocal={quickLocal} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
         onSave={salvar} onApprove={aprovarFicha} onClose={() => setForm(null)}
         onPacote={virarPacote}
@@ -8426,7 +8657,7 @@ export default function App() {
         onFull={() => { const a = repro.alvo; setRepro(null); nascer(a); }} onClose={() => setRepro(null)} />}
       {repro && repro.tipo === "mov" && <FolhaMovLote lote={embrioes.find((l) => l.id === repro.lote.id) || repro.lote} embrioes={embrioes} tipoInicial={repro.mov} onConfirm={(v) => movimentarLote(repro.lote, v)} onClose={() => setRepro(null)} />}
       {repro && repro.tipo === "lote" && <FolhaLote inicial={repro.lote ? (embrioes.find((l) => l.id === repro.lote.id) || repro.lote) : null} ativos={ativos} embrioes={embrioes} animalNames={animalNames} animalReg={animalReg} localNames={localNames} onQuickLocal={quickLocal} leilaoNames={leilaoNames} onQuickLeilao={quickLeilao} vendedorNames={vendedorNames} onQuickVendedor={quickVendedor} onAbrirAnimal={(an) => { setRepro(null); setAberto(an); }} socioNames={socioNames} onQuickSocio={quickSocio}
-        envio={repro.envio || null} onConfirm={salvarLote} onExcluir={isAdmin ? excluirLote : null} onClose={() => setRepro(null)} />}
+        envio={repro.envio || null} onVincularClone={vincularClone} onConfirm={salvarLote} onExcluir={isAdmin ? excluirLote : null} onClose={() => setRepro(null)} />}
       {novaVersao && <div className="rp-versao" role="status"><span>Há uma versão nova do sistema publicada.</span>
         <button type="button" onClick={() => { if (temPendencia()) { flushNext.current = true; doSave().finally(() => window.location.reload()); } else window.location.reload(); }}>Atualizar agora</button></div>}
       {toast && <div className="rp-toast" role="status"><span>{toast}</span><button type="button" onClick={() => setToast("")}>Fechar</button></div>}
@@ -9243,6 +9474,26 @@ a{color:var(--em)}
 @media(hover:hover){.rp-card.banco-faixa:hover{box-shadow:inset 4px 0 0 var(--info),var(--sh2)}}
 .rp-banco-selo{align-self:flex-start;display:inline-flex;align-items:center;gap:4px;background:var(--info-l);color:var(--info);border-radius:999px;padding:2px 9px;font-size:12px;font-weight:600}
 .rp-banco-selo.mini{margin-left:6px;padding:0 7px;font-size:11px;vertical-align:middle}
+.dt-orig{display:inline-block;margin-left:6px;padding:0 7px;border-radius:999px;font-size:10.5px;font-style:normal;font-weight:600;letter-spacing:.02em;vertical-align:middle;line-height:17px}
+.dt-orig.estimada{background:var(--info-l);color:var(--info);border:1px dashed rgba(63,110,140,.45)}
+.dt-orig.informada{background:var(--warn-l);color:#8A5A12}
+.dt-orig.confirmada{background:var(--pos-l);color:var(--pos)}
+.dt-hint{display:block;margin-top:5px;font-size:12px;color:var(--muted);line-height:1.45}
+.dt-hint .rp-infolink{margin-left:4px}
+.dt-par{display:block;margin-top:6px;font-size:11.5px;text-align:left}
+.dt-params{border:1px solid var(--line);border-radius:var(--r2,10px);padding:12px 14px;background:var(--surf)}
+.dt-params-acts{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:8px}
+.clone-box{border:1px solid rgba(201,174,116,.55);background:rgba(201,174,116,.10);border-radius:10px;padding:10px 12px;gap:8px}
+.clone-box.sug{border-style:dashed}
+.clone-acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px}
+.clone-dica{display:block;margin-top:5px;font-size:12px;color:#7A6232;line-height:1.45}
+.clone-dica .rp-infolink{margin-left:6px}
+.clone-gen{margin:0 0 10px}
+.clone-gen-l{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px 16px}
+.clone-gen-l div{display:flex;flex-direction:column;gap:2px}.clone-gen-l span{font-size:11.5px;color:var(--muted)}
+.clone-gen-l p{grid-column:1/-1;margin:4px 0 0}
+.clone-link{font-size:12.5px;text-align:left}
+.clone-l{margin-top:-6px}
 .rp-sitbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;margin:16px 0 8px}
 .rp-sitbar .rp-tabs{margin:0}
 .rp-ocultar{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);cursor:pointer}
