@@ -1,4 +1,4 @@
-/* SM-BUILD: datas-previsao-base-2026-11-19 */
+/* SM-BUILD: datas-aspiracao-2026-11-19 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -494,6 +494,7 @@ const SCHEMAS = {
     { g: "Acompanhamento reprodutivo", f: [
       ["responsavel", "Responsável pelo acompanhamento", "text"],
       ["dataAspiracao", "Data realizada da aspiração", "date"],
+      ["dataTE", "Data da transferência do embrião", "date"],
       ["dataConfirmacao", "Data do diagnóstico positivo", "date"], ["previsaoParto", "Previsão de parto", "date"],
       ["oocitos", "Oócitos coletados", "number"], ["embrioes", "Embriões produzidos", "number"],
       ["embrioesTransf", "Embriões transferidos", "number"], ["embrioesArmaz", "Embriões armazenados", "number"],
@@ -588,18 +589,22 @@ const partoPorTE = (te, p) => somaDias(te, PR.gestacaoDias - idadeEmb(p));
 const partoPorDiag = (dg, p) => somaDias(dg, PR.gestacaoDias - idadeEmb(p) - PR.diagDiasAposTE);
 const diagPorTE = (te) => somaDias(te, PR.diagDiasAposTE);
 const diagPorParto = (pp, p) => somaDias(pp, -(PR.gestacaoDias - idadeEmb(p) - PR.diagDiasAposTE));
-// aspiração: a fecundação (FIV) é no dia da aspiração → parto = aspiração + gestação; a TE seria aspiração + idade do embrião
-const dataAspDe = (p) => (p && p.tipo === "aspiracao" ? p.dataAspiracao || p.dataAsp || "" : "");
+// aspiração: a fecundação (FIV) é no dia da aspiração → parto = aspiração + gestação; a TE é aspiração + idade do embrião.
+// Só conta como base a data da aspiração informada (uma estimada nunca serve de base).
+const dataAspDe = (p) => (p && p.tipo === "aspiracao" && p.dataAspiracaoOrigem !== "estimada" ? p.dataAspiracao || p.dataAsp || "" : "");
 // previsão calculada: a TE tem preferência (na aspiração, a data da aspiração); sem ela, usa o diagnóstico positivo registrado
 // datas que servem de BASE (informadas, confirmadas ou antigas): nunca uma estimada
-const teFonte = (p) => !!(p && p.tipo !== "aspiracao" && p.dataTE && p.dataTEOrigem !== "estimada");
+const teFonte = (p) => !!(p && p.dataTE && p.dataTEOrigem !== "estimada");
 const diagFonte = (p) => !!(p && p.dataConfirmacao && p.dataConfirmacaoOrigem !== "estimada");
 function previsaoEstimada(p) {
   if (!p) return "";
-  if (p.tipo === "aspiracao") { if (!diagFonte(p)) return ""; return dataAspDe(p) ? somaDias(dataAspDe(p), PR.gestacaoDias) : partoPorDiag(p.dataConfirmacao, p); }   // só há gestação depois do diagnóstico
+  if (p.tipo === "aspiracao") {   // só há gestação depois de TE ou diagnóstico
+    if (!diagFonte(p) && !teFonte(p)) return "";
+    return dataAspDe(p) ? somaDias(dataAspDe(p), PR.gestacaoDias) : teFonte(p) ? partoPorTE(p.dataTE, p) : partoPorDiag(p.dataConfirmacao, p);
+  }
   if (teFonte(p)) return partoPorTE(p.dataTE, p); if (diagFonte(p)) return partoPorDiag(p.dataConfirmacao, p); return "";
 }
-const baseEstimativa = (p) => (teFonte(p) ? `da TE de ${dataBR(p.dataTE)}` : dataAspDe(p) && diagFonte(p) ? `da aspiração de ${dataBR(dataAspDe(p))}` : diagFonte(p) ? `do diagnóstico positivo de ${dataBR(p.dataConfirmacao)}` : "");
+const baseEstimativa = (p) => (dataAspDe(p) && (diagFonte(p) || teFonte(p)) ? `da aspiração de ${dataBR(dataAspDe(p))}` : teFonte(p) ? `da TE de ${dataBR(p.dataTE)}` : diagFonte(p) ? `do diagnóstico positivo de ${dataBR(p.dataConfirmacao)}` : "");
 /* origem da previsão: a gravada; registros antigos sem origem cuja data é exatamente a regra automática
    antiga (TE + 285) foram calculados pelo sistema → contam como estimadas. Outras antigas ficam como estão. */
 const origemPrev = (p) => (!p || !p.previsaoParto ? "" : p.previsaoPartoOrigem ? p.previsaoPartoOrigem : p.dataTE && p.previsaoParto === somaDias(p.dataTE, 285) ? "estimada" : "");
@@ -607,7 +612,7 @@ const prevEhEstimada = (p) => origemPrev(p) === "estimada";
 // diagnóstico estimado (só exibido, nunca gravado como diagnóstico): TE + intervalo; sem TE, a partir da previsão informada
 function diagEstimado(p) {
   if (!p || p.dataConfirmacao) return "";
-  if (p.tipo === "aspiracao") { if (!p.previsaoParto || prevEhEstimada(p)) return ""; return dataAspDe(p) ? somaDias(dataAspDe(p), idadeEmb(p) + PR.diagDiasAposTE) : diagPorParto(p.previsaoParto, p); }
+  if (p.tipo === "aspiracao") { if (teFonte(p)) return diagPorTE(p.dataTE); if (!p.previsaoParto || prevEhEstimada(p)) return ""; return dataAspDe(p) ? somaDias(dataAspDe(p), idadeEmb(p) + PR.diagDiasAposTE) : diagPorParto(p.previsaoParto, p); }
   if (teFonte(p)) return diagPorTE(p.dataTE); if (p.previsaoParto && !prevEhEstimada(p)) return diagPorParto(p.previsaoParto, p); return "";
 }
 /* Recalcula TODAS as datas estimadas a partir das datas-base (informadas/confirmadas), sem laço:
@@ -618,15 +623,19 @@ function diagEstimado(p) {
    Datas-base nunca são alteradas. */
 function recalcDatas(r0) {
   const r = { ...r0 }, asp = r.tipo === "aspiracao";
+  const aspD = dataAspDe(r);   // data da aspiração informada (fecundação)
   const src = { te: teFonte(r), dg: diagFonte(r), pp: !!r.previsaoParto && !prevEhEstimada(r) };
+  const gest = src.pp || src.dg;   // há gestação conhecida
   const id = idadeEmb(r), G = PR.gestacaoDias, DD = PR.diagDiasAposTE;
   let fec = "";
-  if (asp) { if (src.dg || src.pp) fec = dataAspDe(r) || (src.pp ? somaDias(r.previsaoParto, -G) : somaDias(r.dataConfirmacao, -(DD + id))); }
+  if (asp && aspD) fec = aspD;
   else if (src.te) fec = somaDias(r.dataTE, -id);
   else if (src.pp) fec = somaDias(r.previsaoParto, -G);
   else if (src.dg) fec = somaDias(r.dataConfirmacao, -(DD + id));
   const put = (k, ok, v) => { r[k] = v || ""; r[ok] = v ? "estimada" : ""; };
-  if (!asp && !src.te) put("dataTE", "dataTEOrigem", fec && (src.pp || src.dg) ? somaDias(fec, id) : "");
+  // aspiração sem data: estimada a partir da TE, do diagnóstico ou da previsão (nunca apaga uma data informada)
+  if (asp && !aspD && (r.dataAspiracaoOrigem === "estimada" || !r.dataAspiracao)) put("dataAspiracao", "dataAspiracaoOrigem", fec && (gest || src.te) ? fec : "");
+  if (!src.te) put("dataTE", "dataTEOrigem", fec && gest ? somaDias(fec, id) : "");
   if (!src.dg) put("dataConfirmacao", "dataConfirmacaoOrigem", fec && src.pp ? somaDias(fec, id + DD) : "");
   if (!src.pp) put("previsaoParto", "previsaoPartoOrigem", fec && (src.te || src.dg) ? somaDias(fec, G) : "");
   return r;
@@ -635,7 +644,7 @@ function recalcDatas(r0) {
 const ORIGEM_DATA = { informada: ["informada", "gold"], estimada: ["estimada", "info"], confirmada: ["confirmada", "green"] };
 function TagOrigem({ o }) { const x = ORIGEM_DATA[o]; return x ? <em className={`dt-orig ${o}`} title={o === "estimada" ? "Calculada pelo sistema — não é informação do criatório" : o === "informada" ? "Data informada (digitada ou recebida do criatório)" : "Data confirmada por lançamento"}>{x[0]}</em> : null; }
 /* o usuário mexeu numa data: ela passa a ser "informada" (base) e as estimadas são recalculadas */
-const MARCA_ORIGEM = { previsaoParto: "previsaoPartoOrigem", dataTE: "dataTEOrigem", dataConfirmacao: "dataConfirmacaoOrigem" };
+const MARCA_ORIGEM = { previsaoParto: "previsaoPartoOrigem", dataTE: "dataTEOrigem", dataConfirmacao: "dataConfirmacaoOrigem", dataAspiracao: "dataAspiracaoOrigem" };
 function sincronizaDatas(np, k) {
   if (!["previsaoParto", "dataTE", "dataConfirmacao", "idadeEmbriao", "dataAspiracao"].includes(k)) return np;
   const r = { ...np };
@@ -1534,8 +1543,8 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
           <input value={d.regDoadora || ""} onChange={(e) => setD((p) => ({ ...p, regDoadora: e.target.value, __regAuto: false }))} placeholder="registro da mãe (auto se já cadastrada)" /></label>
       );
     }
-    if ((tipo === "prenhez" || tipo === "aspiracao") && (k === "dataConfirmacao" || k === "previsaoParto") && prenhezesDaAsp.length) {
-      if (k === "previsaoParto") return null;
+    if ((tipo === "prenhez" || tipo === "aspiracao") && (k === "dataConfirmacao" || k === "previsaoParto" || k === "dataTE") && prenhezesDaAsp.length) {
+      if (k !== "dataConfirmacao") return null;
       return (
         <div className="field wide" key={k}><span>Diagnóstico e previsão de parto <em className="new-hint">· cada prenhez desta aspiração tem as suas datas</em></span>
           <div className="dt-lista">{prenhezesDaAsp.map((p) => { const pv = p.previsaoParto || previsaoEstimada(p); return <div key={p.id}><b>{p.receptora ? `Receptora ${p.receptora}` : p.nome}</b><span>{p.dataConfirmacao ? <>diag. positivo {dataBR(p.dataConfirmacao)} <TagOrigem o={p.dataConfirmacaoOrigem || (p.diagnostico === "positivo" ? "confirmada" : "")} /></> : "sem diagnóstico"}{p.dataParto ? ` · nasceu ${dataBR(p.dataParto)}` : pv ? <> · parto prev. {dataBR(pv)} <TagOrigem o={p.previsaoParto ? origemPrev(p) : "estimada"} /></> : ""}</span></div>; })}</div>
@@ -1550,12 +1559,19 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
           {d.dataConfirmacaoOrigem === "estimada" && <small className="dt-hint">Calculada a partir da previsão de parto informada (TE + {PR.diagDiasAposTE} dias). Digite a data real quando souber: ela passa a valer.</small>}
         </label>);
     }
-    if (tipo === "prenhez" && k === "dataTE") {
+    if ((tipo === "prenhez" || tipo === "aspiracao") && k === "dataTE") {
       return (
         <label className="field" key={k}><span>{label} {d.dataTE && <TagOrigem o={d.dataTEOrigem || ""} />}</span>
           <input type="date" value={d.dataTE || ""} onChange={(e) => set(k, e.target.value)} />
-          {d.dataTEOrigem === "estimada" && <small className="dt-hint">Calculada {d.previsaoParto && !prevEhEstimada(d) ? `pela previsão de parto informada (parto − ${PR.gestacaoDias - idadeEmb(d)} dias)` : `pelo diagnóstico positivo (diagnóstico − ${PR.diagDiasAposTE} dias)`}. Digite a data real da transferência quando souber.</small>}
+          {d.dataTEOrigem === "estimada" && <small className="dt-hint">Calculada {dataAspDe(d) ? `pela data da aspiração (+ ${idadeEmb(d)} dias de embrião)` : d.previsaoParto && !prevEhEstimada(d) ? `pela previsão de parto informada (parto − ${PR.gestacaoDias - idadeEmb(d)} dias)` : `pelo diagnóstico positivo (diagnóstico − ${PR.diagDiasAposTE} dias)`}. Digite a data real da transferência quando souber.</small>}
           {!d.dataTE && <small className="dt-hint">Informe a TE, o diagnóstico positivo ou a previsão de parto — o sistema calcula as outras datas.</small>}
+        </label>);
+    }
+    if (tipo === "aspiracao" && k === "dataAspiracao") {
+      return (
+        <label className="field" key={k}><span>{label} {d.dataAspiracao && d.dataAspiracaoOrigem === "estimada" && <TagOrigem o="estimada" />}</span>
+          <input type="date" value={d.dataAspiracao || ""} onChange={(e) => set(k, e.target.value)} />
+          {d.dataAspiracaoOrigem === "estimada" && <small className="dt-hint">Calculada pelas outras datas (a fecundação in vitro é no dia da aspiração). Digite a data real quando souber.</small>}
         </label>);
     }
     if ((tipo === "prenhez" || tipo === "aspiracao") && k === "previsaoParto") {
@@ -3518,7 +3534,9 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote, onAcao }) {
   return (
     <div className="fsec rp-sec" id="fx-repro"><div className="fsec-h">Reprodução</div>
       <div className="rp-linha"><Badge tone={D.st[1]}>{D.st[0]}</Badge>{D.prox && <span className="muted small">{D.prox}</span>}</div>
-      {D.ps.length === 0 && (a.dataConfirmacao || a.previsaoParto) && <div className="info-grid">
+      {D.ps.length === 0 && (a.dataConfirmacao || a.previsaoParto || a.dataTE) && <div className="info-grid">
+        {a.dataAspiracaoOrigem === "estimada" && <InfoR l="Data da aspiração" v={<>{dataBR(a.dataAspiracao)} <TagOrigem o="estimada" /></>} />}
+        <InfoR l="Transferência do embrião" v={a.dataTE ? <>{dataBR(a.dataTE)} <TagOrigem o={a.dataTEOrigem || "informada"} /></> : ""} />
         <InfoR l="Diagnóstico positivo" v={a.dataConfirmacao ? <>{dataBR(a.dataConfirmacao)} <TagOrigem o={a.dataConfirmacaoOrigem || "informada"} /></> : diagEstimado(a) ? <>não informado · estimado {dataBR(diagEstimado(a))}</> : ""} />
         <InfoR l="Previsão de parto" v={a.previsaoParto ? <>{dataBR(a.previsaoParto)} <TagOrigem o={origemPrev(a)} /></> : previsaoEstimada(a) ? <>{dataBR(previsaoEstimada(a))} <TagOrigem o="estimada" /></> : ""} />
       </div>}
@@ -7192,7 +7210,7 @@ export default function App() {
     if (!antes) return d.cloneDeId ? [{ id: uid(), data: today(), tipo: "Clone", desc: `Cadastrado como clone de ${d.cloneDe || "animal original"}: a genealogia é a do original`, responsavel: quemReg() }] : [];
     const h = [], quem = quemReg();
     const dt = (v, o) => (v ? `${dataBR(v)}${o ? ` (${o})` : ""}` : "vazia");
-    [["dataTE", "Data da TE", "dataTEOrigem"], ["dataConfirmacao", "Diagnóstico positivo", "dataConfirmacaoOrigem"], ["previsaoParto", "Previsão de parto", "previsaoPartoOrigem"], ["dataParto", "Data do parto", ""]].forEach(([k, rot, ok]) => {
+    [["dataAspiracao", "Data da aspiração", "dataAspiracaoOrigem"], ["dataTE", "Data da TE", "dataTEOrigem"], ["dataConfirmacao", "Diagnóstico positivo", "dataConfirmacaoOrigem"], ["previsaoParto", "Previsão de parto", "previsaoPartoOrigem"], ["dataParto", "Data do parto", ""]].forEach(([k, rot, ok]) => {
       if ((antes[k] || "") !== (d[k] || "") || (ok && (antes[ok] || "") !== (d[ok] || "") && d[k])) h.push({ id: uid(), data: today(), tipo: "Datas reprodutivas", desc: `${rot}: ${dt(antes[k], ok && antes[ok])} → ${dt(d[k], ok && d[k] && d[ok])}`, responsavel: quem });
     });
     if ((antes.idadeEmbriao ?? "") !== (d.idadeEmbriao ?? "")) h.push({ id: uid(), data: today(), tipo: "Datas reprodutivas", desc: `Idade do embrião na TE: ${antes.idadeEmbriao || "—"} → ${d.idadeEmbriao || "—"} dia(s)`, responsavel: quem });
