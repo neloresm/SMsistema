@@ -1,4 +1,4 @@
-/* SM-BUILD: datas-aspiracao-2026-11-19 */
+/* SM-BUILD: gerar-prenhez-datas-2026-11-19 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -4019,15 +4019,21 @@ function DetalheEmbriao({ l, embrioes, ativos, onAcao, onAbrir, onSel }) {
 
 /* ---------------- folhas de ação ---------------- */
 function FolhaTransferencia({ asp, lote, ativos, embrioes, localNames, onQuickLocal, onConfirm, onClose, onFormCompleto }) {
-  const [conf, setConf] = useState(false);
-  const [dataConf, setDataConf] = useState(today());
   const D = asp ? dadosAsp(asp, ativos, embrioes) : null;
   const loteAsp = D ? D.lotes.find((l) => saldoLote(l) > 0 && !l.arquivado) : null;
   const [fonte, setFonte] = useState(lote ? "l" : D && D.disp > 0 ? "f" : loteAsp ? "c" : "f");
   const semLab = D && D.E == null;
   const max = lote ? (noEstoque(lote) ? estoqueDoLote(embrioes, lote) : 0) : fonte === "c" ? estoqueDoLote(embrioes, loteAsp) : semLab ? 30 : D.disp;
   const [n, setN] = useState(Math.max(1, Math.min(lote ? 1 : 3, max || 1)));
-  const [dataTE, setDataTE] = useState(today());
+  // datas ligadas: informe a TE, o diagnóstico positivo OU a previsão de parto; as outras são estimadas
+  const [dt, setDt] = useState({ tipo: "prenhez", dataTE: "", dataTEOrigem: "", dataConfirmacao: "", dataConfirmacaoOrigem: "", previsaoParto: "", previsaoPartoOrigem: "" });
+  const mudaDt = (k, v) => setDt((p) => sincronizaDatas({ ...p, [k]: v }, k));
+  const semDatas = !dt.dataTE && !dt.dataConfirmacao && !dt.previsaoParto;
+  const conf = !!dt.dataConfirmacao;
+  const campoDt = (k, rot, ok) => (
+    <label className="field"><span>{rot} {dt[k] && <TagOrigem o={dt[ok]} />}</span>
+      <input type="date" value={dt[k] || ""} onChange={(e) => mudaDt(k, e.target.value)} />
+      {k === "dataTE" && !dt.dataTE && <button type="button" className="rp-infolink dt-par" onClick={() => mudaDt("dataTE", today())}>usar hoje</button>}</label>);
   const [recs, setRecs] = useState(() => Array.from({ length: 30 }, () => ""));
   const [cri, setCri] = useState((asp && asp.ondeEsta) || (lote && lote.propriedade) || "");
   const q = Math.max(1, Math.min(n, Math.max(1, max)));
@@ -4039,7 +4045,7 @@ function FolhaTransferencia({ asp, lote, ativos, embrioes, localNames, onQuickLo
       sub={`${src.doadora || src.nome || ""}${src.pai || src.touro ? ` × ${src.pai || src.touro}` : ""}. Cria uma prenhez para cada receptora${usaLote ? ` e baixa 1 embrião por receptora${lote ? `, começando pelo ${lote.cod} e seguindo pelos cadastrados junto com ele` : ` (cadastro ${codLote(usaLote)})`}` : ", já ligada a esta aspiração"}.`}
       onClose={onClose}
       rodape={<>{onFormCompleto && <button className="btn btn-ghost rp-esq" onClick={onFormCompleto}>Formulário completo</button>}<button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
-        <button className="btn btn-gold" disabled={!pode} onClick={() => onConfirm({ asp, lote: usaLote, n: q, dataTE, receptoras: recs.slice(0, q).map((r) => r.trim()), criatorio: cri.trim(), confirmada: conf, dataConf })}>Criar {q} prenhez{q > 1 ? "es" : ""}</button></>}>
+        <button className="btn btn-gold" disabled={!pode} onClick={() => onConfirm({ asp, lote: usaLote, n: q, datas: semDatas ? sincronizaDatas({ ...dt, dataTE: today() }, "dataTE") : dt, receptoras: recs.slice(0, q).map((r) => r.trim()), criatorio: cri.trim() })}>Criar {q} prenhez{q > 1 ? "es" : ""}</button></>}>
       {!lote && (
         <div className="field wide"><span>Embriões usados</span>
           <div className="segmented">
@@ -4051,13 +4057,17 @@ function FolhaTransferencia({ asp, lote, ativos, embrioes, localNames, onQuickLo
       {max < 1 && <div className="aviso">{usaLote || lote || fonte === "c" ? "Não há embrião em estoque: nenhum embrião pode ser usado duas vezes." : "Não há embriões frescos a transferir nesta aspiração."}</div>}
       <div className="grid">
         <label className="field"><span>Quantidade de receptoras {lote && <em className="new-hint">· até {max} (embriões em estoque cadastrados junto)</em>}</span><Passo v={q} set={setN} max={Math.max(1, max)} rotulo="Quantidade de receptoras" /></label>
-        <label className="field"><span>Data da transferência (TE)</span><input type="date" value={dataTE} onChange={(e) => setDataTE(e.target.value)} /></label>
         <label className="field wide"><span>Criatório onde estão as receptoras</span><AutoField value={cri} onChange={setCri} suggestions={localNames} onCreate={onQuickLocal} placeholder="buscar ou cadastrar criatório" /></label>
       </div>
-      <div className="field wide"><span>Diagnóstico</span>
-        <div className="segmented"><button type="button" className={`seg ${!conf ? "on" : ""}`} onClick={() => setConf(false)}>Aguardando diagnóstico</button><button type="button" className={`seg ${conf ? "on" : ""}`} onClick={() => setConf(true)}>Prenhez já confirmada</button></div>
-        <em className="new-hint">Transferência não é prenhez confirmada. Marque “já confirmada” só se o diagnóstico positivo já foi feito.</em></div>
-      {conf && <div className="grid"><label className="field"><span>Data do diagnóstico positivo</span><input type="date" value={dataConf} onChange={(e) => setDataConf(e.target.value)} /></label></div>}
+      <div className="field wide"><span>Datas <em className="new-hint">· preencha a que você tem (TE, diagnóstico positivo ou previsão de parto): as outras são calculadas e ficam marcadas como estimadas</em></span>
+        <div className="grid">
+          {campoDt("dataTE", "Data da transferência (TE)", "dataTEOrigem")}
+          {campoDt("dataConfirmacao", "Data do diagnóstico positivo", "dataConfirmacaoOrigem")}
+          {campoDt("previsaoParto", "Previsão de parto", "previsaoPartoOrigem")}
+        </div>
+        {!dt.dataConfirmacao && dt.dataTE && <em className="new-hint">Diagnóstico estimado em {dataBR(diagPorTE(dt.dataTE))} — a prenhez fica “aguardando diagnóstico” até ele ser lançado.</em>}
+        {semDatas && <em className="new-hint">Sem nenhuma data, a TE fica como hoje.</em>}
+        <em className="new-hint">Cálculo: gestação {PR.gestacaoDias} dias · embrião D{PR.idadeEmbriaoDias} na TE · diagnóstico TE + {PR.diagDiasAposTE} dias (ajustável em “Parâmetros do cálculo”, na ficha da prenhez).</em></div>
       <div className="field wide"><span>Identificação das receptoras <em className="new-hint">· opcional, pode completar depois</em></span>
         <div className="rp-recs">{Array.from({ length: q }, (_, i) => (
           <input key={i} value={recs[i]} onChange={(e) => { const v = e.target.value; setRecs((r) => r.map((x, j) => (j === i ? v : x))); }} placeholder={`Receptora ${i + 1}`} aria-label={`Receptora ${i + 1}`} />
@@ -4065,7 +4075,7 @@ function FolhaTransferencia({ asp, lote, ativos, embrioes, localNames, onQuickLo
       <div className="rp-herda">
         <b>Preenchido automaticamente em cada prenhez</b>
         <span>Mãe doadora, pai, genealogia e sociedade {lote ? "do embrião" : "da aspiração"}. Nenhum valor financeiro é copiado: o custo continua na origem.</span>
-        <span>Status inicial <b>{conf ? "Confirmada" : "Aguardando diagnóstico"}</b> · diagnóstico estimado em <b>{dataBR(diagPorTE(dataTE))}</b> · previsão de parto <b>{dataBR(partoPorTE(dataTE, {}))}</b> <em className="dt-orig estimada">estimada</em> (TE + {PR.gestacaoDias - PR.idadeEmbriaoDias} dias: gestação {PR.gestacaoDias} − embrião D{PR.idadeEmbriaoDias}; editável na ficha).</span>
+        <span>Status inicial <b>{conf ? "Confirmada" : "Aguardando diagnóstico"}</b>{dt.previsaoParto ? <> · previsão de parto <b>{dataBR(dt.previsaoParto)}</b> <TagOrigem o={dt.previsaoPartoOrigem} /></> : ""}. As datas podem ser corrigidas depois em cada prenhez.</span>
         {usaLote && <span>O embrião sai do saldo na transferência, mesmo que o diagnóstico dê negativo.</span>}
       </div>
     </Folha>
@@ -7626,7 +7636,12 @@ export default function App() {
   const genCompleta = (np) => { const sug = new Set(); fillArvore(np, "pat", np.pai, "", genIndex, sug, false); fillArvore(np, "mat", np.doadora, np.regDoadora, genIndex, sug, false); return np; };
   const proxCodLote = (lista) => "EMB-" + String((lista || []).reduce((m, l) => Math.max(m, parseInt(String((l && (l.loteCod || l.cod)) || "").replace(/\D/g, ""), 10) || 0), 0) + 1).padStart(4, "0");
 
-  const registrarTransferencia = ({ asp, lote, n, dataTE, receptoras, criatorio, confirmada, dataConf }) => {
+  const registrarTransferencia = ({ asp, lote, n, datas, dataTE: te0, receptoras, criatorio, confirmada: conf0, dataConf }) => {
+    // datas ligadas da tela (TE / diagnóstico / previsão, cada uma informada ou estimada); chamadas antigas continuam valendo
+    const dts = datas || recalcDatas({ tipo: "prenhez", dataTE: te0 || today(), dataTEOrigem: "informada", ...(conf0 ? { dataConfirmacao: dataConf || te0, dataConfirmacaoOrigem: "informada" } : {}) });
+    const dataTE = dts.dataTE || "";
+    const confirmada = !!dts.dataConfirmacao;
+    const diagInformado = confirmada && dts.dataConfirmacaoOrigem !== "estimada";
     flushNext.current = true;
     const quem = quemReg();
     const criatorioTE = nomeCanonico(localNames, criatorio);
@@ -7646,12 +7661,12 @@ export default function App() {
           origemId: A ? A.id : "", aspiracaoOrigemId: A ? A.id : "", loteOrigemId: L ? grupoDe(L) : "", embriaoId: L ? us[i].id : "",
           origemLabel: A ? rotuloReprod(A) : `Embrião ${us[i].cod} (Banco de Embriões)`,
           doadora: src.doadora || "", regDoadora: src.regDoadora || "", pai: src.pai || src.touro || "", regPai: src.regPai || "",
-          qtd: 1, status: confirmada ? "Confirmada" : "Aguardando confirmação", ...(confirmada ? { diagnostico: "positivo", dataDiagnostico: dataConf || dataTE, dataConfirmacao: dataConf || dataTE, dataConfirmacaoOrigem: "informada" } : {}), ondeEsta: criatorioTE || (A && A.ondeEsta) || (L && L.propriedade) || "", criatorio: (A && A.criatorio) || "",
-          receptora: rec, dataTE, previsaoParto: partoPorTE(dataTE, {}), previsaoPartoOrigem: "estimada", responsavel: (A && A.responsavel) || "",
+          qtd: 1, status: confirmada ? "Confirmada" : "Aguardando confirmação", ...(confirmada ? { ...(diagInformado ? { diagnostico: "positivo", dataDiagnostico: dts.dataConfirmacao } : {}), dataConfirmacao: dts.dataConfirmacao, dataConfirmacaoOrigem: dts.dataConfirmacaoOrigem || "informada" } : {}), ondeEsta: criatorioTE || (A && A.ondeEsta) || (L && L.propriedade) || "", criatorio: (A && A.criatorio) || "",
+          receptora: rec, dataTE, dataTEOrigem: dataTE ? dts.dataTEOrigem || "informada" : "", previsaoParto: dts.previsaoParto || "", previsaoPartoOrigem: dts.previsaoParto ? dts.previsaoPartoOrigem || "estimada" : "", responsavel: (A && A.responsavel) || "",
           avoPaterno: (A && A.avoPaterno) || "", avoPaterna: (A && A.avoPaterna) || "", avoMaterno: (A && A.avoMaterno) || "", avoMaterna: (A && A.avoMaterna) || "", obsGen: (A && A.obsGen) || "",
           socios: (src.socios || []).filter((x) => x && x.nome).map((x) => ({ id: uid(), nome: x.nome, pct: x.pct, obs: x.obs || "" })),
           videos: [], comissaoPct: 8, obs: "",
-          historico: [{ id: uid(), data: dataTE || today(), tipo: "Transferência de embrião", desc: `TE${rec ? ` na receptora ${rec}` : ""}${L ? ` · embrião congelado ${us[i].cod}` : " · embrião fresco da aspiração"}`, responsavel: quem }],
+          historico: [{ id: uid(), data: dataTE || today(), tipo: "Transferência de embrião", desc: `TE${rec ? ` na receptora ${rec}` : ""}${L ? ` · embrião congelado ${us[i].cod}` : " · embrião fresco da aspiração"}${dts.dataTEOrigem === "estimada" ? " · data da TE estimada" : ""}${dts.previsaoParto ? ` · previsão de parto ${dataBR(dts.previsaoParto)} (${dts.previsaoPartoOrigem || "estimada"})` : ""}`, responsavel: quem }],
         };
         d = genCompleta(d);
         d = { ...d, nome: rotuloReprod(d) };
