@@ -1,4 +1,4 @@
-/* SM-BUILD: clones-datas-2026-11-19 */
+/* SM-BUILD: clones-datas-v2-2026-11-19 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -494,6 +494,7 @@ const SCHEMAS = {
     { g: "Acompanhamento reprodutivo", f: [
       ["responsavel", "Responsável pelo acompanhamento", "text"],
       ["dataAspiracao", "Data realizada da aspiração", "date"],
+      ["dataConfirmacao", "Data do diagnóstico positivo", "date"], ["previsaoParto", "Previsão de parto", "date"],
       ["oocitos", "Oócitos coletados", "number"], ["embrioes", "Embriões produzidos", "number"],
       ["embrioesTransf", "Embriões transferidos", "number"], ["embrioesArmaz", "Embriões armazenados", "number"],
       ["prenhezesConf", "Prenhezes confirmadas", "number"],
@@ -587,21 +588,35 @@ const partoPorTE = (te, p) => somaDias(te, PR.gestacaoDias - idadeEmb(p));
 const partoPorDiag = (dg, p) => somaDias(dg, PR.gestacaoDias - idadeEmb(p) - PR.diagDiasAposTE);
 const diagPorTE = (te) => somaDias(te, PR.diagDiasAposTE);
 const diagPorParto = (pp, p) => somaDias(pp, -(PR.gestacaoDias - idadeEmb(p) - PR.diagDiasAposTE));
-// previsão calculada: a TE tem preferência; sem TE, usa o diagnóstico positivo registrado
-function previsaoEstimada(p) { if (!p) return ""; if (p.dataTE) return partoPorTE(p.dataTE, p); if (p.dataConfirmacao) return partoPorDiag(p.dataConfirmacao, p); return ""; }
-const baseEstimativa = (p) => (p && p.dataTE ? `da TE de ${dataBR(p.dataTE)}` : p && p.dataConfirmacao ? `do diagnóstico positivo de ${dataBR(p.dataConfirmacao)}` : "");
+// aspiração: a fecundação (FIV) é no dia da aspiração → parto = aspiração + gestação; a TE seria aspiração + idade do embrião
+const dataAspDe = (p) => (p && p.tipo === "aspiracao" ? p.dataAspiracao || p.dataAsp || "" : "");
+// previsão calculada: a TE tem preferência (na aspiração, a data da aspiração); sem ela, usa o diagnóstico positivo registrado
+function previsaoEstimada(p) {
+  if (!p) return "";
+  if (p.tipo === "aspiracao") { if (!p.dataConfirmacao) return ""; return dataAspDe(p) ? somaDias(dataAspDe(p), PR.gestacaoDias) : partoPorDiag(p.dataConfirmacao, p); }   // só há gestação depois do diagnóstico
+  if (p.dataTE) return partoPorTE(p.dataTE, p); if (p.dataConfirmacao) return partoPorDiag(p.dataConfirmacao, p); return "";
+}
+const baseEstimativa = (p) => (p && p.dataTE ? `da TE de ${dataBR(p.dataTE)}` : dataAspDe(p) ? `da aspiração de ${dataBR(dataAspDe(p))}` : p && p.dataConfirmacao ? `do diagnóstico positivo de ${dataBR(p.dataConfirmacao)}` : "");
+/* origem da previsão: a gravada; registros antigos sem origem cuja data é exatamente a regra automática
+   antiga (TE + 285) foram calculados pelo sistema → contam como estimadas. Outras antigas ficam como estão. */
+const origemPrev = (p) => (!p || !p.previsaoParto ? "" : p.previsaoPartoOrigem ? p.previsaoPartoOrigem : p.dataTE && p.previsaoParto === somaDias(p.dataTE, 285) ? "estimada" : "");
+const prevEhEstimada = (p) => origemPrev(p) === "estimada";
 // diagnóstico estimado (só exibido, nunca gravado como diagnóstico): TE + intervalo; sem TE, a partir da previsão informada
-function diagEstimado(p) { if (!p || p.dataConfirmacao) return ""; if (p.dataTE) return diagPorTE(p.dataTE); if (p.previsaoParto && p.previsaoPartoOrigem !== "estimada") return diagPorParto(p.previsaoParto, p); return ""; }
+function diagEstimado(p) {
+  if (!p || p.dataConfirmacao) return "";
+  if (p.tipo === "aspiracao") { if (!p.previsaoParto || prevEhEstimada(p)) return ""; return dataAspDe(p) ? somaDias(dataAspDe(p), idadeEmb(p) + PR.diagDiasAposTE) : diagPorParto(p.previsaoParto, p); }
+  if (p.dataTE) return diagPorTE(p.dataTE); if (p.previsaoParto && !prevEhEstimada(p)) return diagPorParto(p.previsaoParto, p); return "";
+}
 // origem de uma data: informada (digitada / do criatório), estimada (calculada) ou confirmada (diagnóstico lançado / parto real)
 const ORIGEM_DATA = { informada: ["informada", "gold"], estimada: ["estimada", "info"], confirmada: ["confirmada", "green"] };
 function TagOrigem({ o }) { const x = ORIGEM_DATA[o]; return x ? <em className={`dt-orig ${o}`} title={o === "estimada" ? "Calculada pelo sistema — não é informação do criatório" : o === "informada" ? "Data informada (digitada ou recebida do criatório)" : "Data confirmada por lançamento"}>{x[0]}</em> : null; }
 /* recalcula a previsão ESTIMADA quando muda a base (TE, diagnóstico ou idade do embrião); previsão informada nunca é sobrescrita */
 function sincronizaDatas(np, k) {
   if (k === "previsaoParto") return { ...np, previsaoPartoOrigem: np.previsaoParto ? "informada" : "" };
-  if (!["dataTE", "dataConfirmacao", "idadeEmbriao"].includes(k)) return np;
+  if (!["dataTE", "dataConfirmacao", "idadeEmbriao", "dataAspiracao"].includes(k)) return np;
   let r = { ...np };
   if (k === "dataConfirmacao") r.dataConfirmacaoOrigem = r.dataConfirmacao ? "informada" : "";
-  if (!r.previsaoParto || r.previsaoPartoOrigem === "estimada") { const e = previsaoEstimada(r); r.previsaoParto = e; r.previsaoPartoOrigem = e ? "estimada" : ""; }
+  if (!r.previsaoParto || prevEhEstimada(r)) { const e = previsaoEstimada(r); r.previsaoParto = e; r.previsaoPartoOrigem = e ? "estimada" : ""; }
   return r;
 }
 function ParamsReproEditor({ onSalvar, onFechar }) {
@@ -1381,12 +1396,14 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
     return () => window.removeEventListener("keydown", h);
   }, [onClose]);
   // editar um campo tira a marca de "sugerido" dele
-  const set = (k, v) => setD((p) => { let np = { ...p, [k]: v }; if (k === "dataCompra") np.primeiroVenc = primeiroVencDaCompra(v); if (tipo === "prenhez") np = sincronizaDatas(np, k); if (np.__genSug && np.__genSug.includes(k)) np.__genSug = np.__genSug.filter((x) => x !== k); return np; });
+  const set = (k, v) => setD((p) => { let np = { ...p, [k]: v }; if (k === "dataCompra") np.primeiroVenc = primeiroVencDaCompra(v); if (tipo === "prenhez" || tipo === "aspiracao") { if (!np.previsaoPartoOrigem && origemPrev(p)) np.previsaoPartoOrigem = origemPrev(p); np = sincronizaDatas(np, k); } /* origem avaliada ANTES da mudança */ if (np.__genSug && np.__genSug.includes(k)) np.__genSug = np.__genSug.filter((x) => x !== k); return np; });
   // parâmetros mudaram: a previsão ESTIMADA acompanha (a informada fica como está)
   const prKey = `${PR.gestacaoDias}|${PR.idadeEmbriaoDias}|${PR.diagDiasAposTE}`;
   const prAnt = useRef(prKey);
-  useEffect(() => { if (prAnt.current === prKey) return; prAnt.current = prKey; if (tipo === "prenhez") setD((p) => sincronizaDatas(p, "idadeEmbriao")); }, [prKey]);
+  useEffect(() => { if (prAnt.current === prKey) return; prAnt.current = prKey; if (tipo === "prenhez" || tipo === "aspiracao") setD((p) => sincronizaDatas(p, "idadeEmbriao")); }, [prKey]);
   const [verParams, setVerParams] = useState(false);
+  // aspiração que já gerou prenhezes: as datas ficam em cada prenhez (nunca uma previsão única)
+  const prenhezesDaAsp = tipo === "aspiracao" ? (ativos || []).filter((x) => x && x.tipo === "prenhez" && x.origem !== "genealogia" && origemDe(x) === d.id) : [];
   // clone: original confirmado (a genealogia vem dele) e sugestão pelo nome (TN, TN1, TN2…)
   const origClone = tipo === "animal" && d.cloneDeId ? originalDoClone({ ...d, tipo: "animal" }, (ativos || []).filter((x) => x && x.id !== d.id)) : null;
   // confirmou que o pai/mãe/doadora é clone: grava o vínculo e, com a base atualizada, refaz os avós daquele lado
@@ -1494,7 +1511,14 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
           <input value={d.regDoadora || ""} onChange={(e) => setD((p) => ({ ...p, regDoadora: e.target.value, __regAuto: false }))} placeholder="registro da mãe (auto se já cadastrada)" /></label>
       );
     }
-    if (tipo === "prenhez" && k === "dataConfirmacao") {
+    if ((tipo === "prenhez" || tipo === "aspiracao") && (k === "dataConfirmacao" || k === "previsaoParto") && prenhezesDaAsp.length) {
+      if (k === "previsaoParto") return null;
+      return (
+        <div className="field wide" key={k}><span>Diagnóstico e previsão de parto <em className="new-hint">· cada prenhez desta aspiração tem as suas datas</em></span>
+          <div className="dt-lista">{prenhezesDaAsp.map((p) => { const pv = p.previsaoParto || previsaoEstimada(p); return <div key={p.id}><b>{p.receptora ? `Receptora ${p.receptora}` : p.nome}</b><span>{p.dataConfirmacao ? <>diag. positivo {dataBR(p.dataConfirmacao)} <TagOrigem o={p.dataConfirmacaoOrigem || (p.diagnostico === "positivo" ? "confirmada" : "")} /></> : "sem diagnóstico"}{p.dataParto ? ` · nasceu ${dataBR(p.dataParto)}` : pv ? <> · parto prev. {dataBR(pv)} <TagOrigem o={p.previsaoParto ? origemPrev(p) : "estimada"} /></> : ""}</span></div>; })}</div>
+          <small className="dt-hint">Para mudar, abra a prenhez. A aspiração não tem uma previsão única quando gera prenhezes.</small></div>);
+    }
+    if ((tipo === "prenhez" || tipo === "aspiracao") && k === "dataConfirmacao") {
       const est = diagEstimado(d);
       return (
         <label className="field" key={k}><span>{label} {d.dataConfirmacao && <TagOrigem o={d.dataConfirmacaoOrigem || (d.diagnostico === "positivo" ? "confirmada" : "")} />}</span>
@@ -1502,8 +1526,8 @@ function FichaForm({ tipo, initial, animalNames, animalReg, genIndex, leilaoName
           {!d.dataConfirmacao && est && <small className="dt-hint"><TagOrigem o="estimada" /> {dataBR(est)} — calculada a partir {d.dataTE ? `da TE (+${PR.diagDiasAposTE} dias)` : "da previsão de parto informada"}. Só vira diagnóstico quando for informado.</small>}
         </label>);
     }
-    if (tipo === "prenhez" && k === "previsaoParto") {
-      const est = previsaoEstimada(d), orig = d.previsaoParto ? d.previsaoPartoOrigem || "" : "";
+    if ((tipo === "prenhez" || tipo === "aspiracao") && k === "previsaoParto") {
+      const est = previsaoEstimada(d), orig = origemPrev(d);
       return (<React.Fragment key={k}>
         <label className="field"><span>{label} {orig && <TagOrigem o={orig} />}</span>
           <input type="date" value={d.previsaoParto || ""} onChange={(e) => set(k, e.target.value)} />
@@ -3441,7 +3465,7 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote, onAcao }) {
           <InfoR l="Embrião" v={lote ? `Congelado · ${a.embriaoId ? lote.cod : "cadastro " + codLote(lote)}` : asp ? "Fresco" : ""} />
           <InfoR l="Diagnóstico" v={diagTxt} />
           <InfoR l="Sexagem" v={a.sexagem} />
-          <InfoR l="Previsão de parto" v={a.previsaoParto ? <>{dataBR(a.previsaoParto)} <TagOrigem o={a.previsaoPartoOrigem} /></> : prevSug ? <>{dataBR(prevSug)} <TagOrigem o="estimada" /></> : ""} />
+          <InfoR l="Previsão de parto" v={a.previsaoParto ? <>{dataBR(a.previsaoParto)} <TagOrigem o={origemPrev(a)} /></> : prevSug ? <>{dataBR(prevSug)} <TagOrigem o="estimada" /></> : ""} />
           <InfoR l="Data do parto" v={a.dataParto ? dataBR(a.dataParto) : ""} />
           <InfoR l="Perda gestacional" v={a.perda ? `${dataBR(a.perda.data)} · ${a.perda.motivo}` : ""} />
         </div>
@@ -3462,6 +3486,10 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote, onAcao }) {
   return (
     <div className="fsec rp-sec" id="fx-repro"><div className="fsec-h">Reprodução</div>
       <div className="rp-linha"><Badge tone={D.st[1]}>{D.st[0]}</Badge>{D.prox && <span className="muted small">{D.prox}</span>}</div>
+      {D.ps.length === 0 && (a.dataConfirmacao || a.previsaoParto) && <div className="info-grid">
+        <InfoR l="Diagnóstico positivo" v={a.dataConfirmacao ? <>{dataBR(a.dataConfirmacao)} <TagOrigem o={a.dataConfirmacaoOrigem || "informada"} /></> : diagEstimado(a) ? <>não informado · estimado {dataBR(diagEstimado(a))}</> : ""} />
+        <InfoR l="Previsão de parto" v={a.previsaoParto ? <>{dataBR(a.previsaoParto)} <TagOrigem o={origemPrev(a)} /></> : previsaoEstimada(a) ? <>{dataBR(previsaoEstimada(a))} <TagOrigem o="estimada" /></> : ""} />
+      </div>}
       {D.E == null ? <div className="aviso">Resultado do laboratório ainda não lançado. Use “Editar” e informe oócitos coletados e embriões produzidos.</div> : (
         <>
           <div className="rp-funil">{fun.map(([l, v]) => (
@@ -3480,7 +3508,7 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote, onAcao }) {
         <button type="button" className="rp-prow" key={p.id} onClick={() => onAbrir(p)}>
           <span><b>{p.receptora ? `Receptora ${p.receptora}` : p.nome}</b><small>{p.dataTE ? `TE ${dataBR(p.dataTE)}` : ""}{p.loteOrigemId ? " · embrião congelado" : ""}
             {p.dataConfirmacao ? <> · diag. positivo {dataBR(p.dataConfirmacao)} <TagOrigem o={p.dataConfirmacaoOrigem || (p.diagnostico === "positivo" ? "confirmada" : "")} /></> : diagEstimado(p) && !p.dataParto && faseReprod(p).k === "diag" ? <> · diag. {dataBR(diagEstimado(p))} <TagOrigem o="estimada" /></> : null}
-            {p.dataParto ? <> · nasceu {dataBR(p.dataParto)}</> : (p.previsaoParto || previsaoEstimada(p)) && faseReprod(p).k !== "enc" ? <> · parto prev. {dataBR(p.previsaoParto || previsaoEstimada(p))} <TagOrigem o={p.previsaoParto ? p.previsaoPartoOrigem : "estimada"} /></> : null}</small></span>
+            {p.dataParto ? <> · nasceu {dataBR(p.dataParto)}</> : (p.previsaoParto || previsaoEstimada(p)) && faseReprod(p).k !== "enc" ? <> · parto prev. {dataBR(p.previsaoParto || previsaoEstimada(p))} <TagOrigem o={p.previsaoParto ? origemPrev(p) : "estimada"} /></> : null}</small></span>
           <Badge tone={f.tone}>{f.txt}</Badge>
         </button>); }) : <p className="muted small">Nenhuma prenhez vinculada ainda. Use “Gerar prenhez” ou vincule uma já cadastrada.</p>}
       {onAcao && <button type="button" className="rp-link" onClick={() => onAcao("vincPren", a)}>Vincular prenhez existente</button>}
@@ -3999,7 +4027,7 @@ function FolhaDiagnostico({ p, onConfirm, onClose }) {
   const [data, setData] = useState(today());
   const [sexagem, setSexagem] = useState(p.sexagem || "");
   // previsão informada (criatório) é preservada; a estimada acompanha a data do diagnóstico quando não há TE
-  const informada = !!p.previsaoParto && p.previsaoPartoOrigem !== "estimada";
+  const informada = !!p.previsaoParto && !prevEhEstimada(p);
   const [prev, setPrev] = useState(informada ? p.previsaoParto : previsaoEstimada({ ...p, dataConfirmacao: today() }));
   const [prevOrig, setPrevOrig] = useState(informada ? "informada" : "estimada");
   const mudaData = (v) => { setData(v); if (prevOrig === "estimada") setPrev(previsaoEstimada({ ...p, dataConfirmacao: v || "" })); };
@@ -4505,7 +4533,7 @@ function SecaoEmbrioesDoadora({ a, embrioes, ativos, onIrLote }) {
   );
 }
 
-function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAtualizarOutro, onVirarPacote, onDesfazerPacote, onExcluirDoadora, onAbrir, ativos, embrioes, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onGerarPrenhez, onConfirm, onRepro, onIrLote }) {
+function Detalhe({ a, onVincularClone, onEdit, onClose, onDelete, onUpdate, onAtualizarOutro, onVirarPacote, onDesfazerPacote, onExcluirDoadora, onAbrir, ativos, embrioes, canDelete, socioNamesGlobais, onQuickSocio, onNascer, onGerarPrenhez, onConfirm, onRepro, onIrLote }) {
   useTravaFundo();
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
@@ -4708,7 +4736,14 @@ function Detalhe({ a, onEdit, onClose, onDelete, onUpdate, onAtualizarOutro, onV
             );
           })()}
 
-          {!ehPacote(a) && (() => { const ag = comGenClone(a, ativos); return <div className="fsec" id="fx-gen"><div className="fsec-h">Genealogia</div>
+          {!ehPacote(a) && (() => { let ag = comGenClone(a, ativos);
+            // pai / mãe / doadora clone confirmado: avós vazios vêm do original (só na exibição; nada é gravado)
+            const maeK = a.tipo === "animal" ? "mae" : "doadora";
+            const ladoClone = (nome) => { const r = animalPorNome(nome, ativos); return r && r.cloneDeId && originalDoClone(r, ativos); };
+            if (ladoClone(ag.pai) || ladoClone(ag[maeK])) { const gi = buildGenIndex(ativos); ag = { ...ag }; const s = new Set(); if (ladoClone(ag.pai)) fillArvore(ag, "pat", ag.pai, "", gi, s, false); if (ladoClone(ag[maeK])) fillArvore(ag, "mat", ag[maeK], a.regDoadora || "", gi, s, false); }
+            const dicas = [["pai", a.pai], [maeK, a[maeK]]].filter(([, n]) => n && (cloneInfoNome(n) || ladoClone(n)));
+            return <div className="fsec" id="fx-gen"><div className="fsec-h">Genealogia</div>
+            {dicas.length > 0 && <div className="clone-dicas">{dicas.map(([k, n]) => <div key={k}><span className="muted small">{k === "pai" ? "Pai" : k === "mae" ? "Mãe" : "Doadora"} {n}:</span> <DicaClone nome={n} ativos={ativos} onVincular={onVincularClone} /></div>)}</div>}
             {ag.__genDeClone && <p className="clone-dica clone-gen">🧬 Genealogia compartilhada com o original, <button type="button" className="rp-infolink" onClick={() => { const o = (ativos || []).find((x) => x.id === ag.__genDeCloneId); o && onAbrir && onAbrir(o); }}>{ag.__genDeClone} ↗</button>. Correções são feitas na ficha dele e valem para todos os clones.</p>}
             <Genealogia a={ag} />{a.obsGen && <p className="obs">{a.obsGen}</p>}</div>; })()}
 
@@ -6482,6 +6517,40 @@ function DicaClone({ nome, ativos, onVincular }) {
   return <small className="clone-dica">🧬 Possível clone de {sug.map((o, i) => <React.Fragment key={o.id}>{i ? " ou " : ""}<b>{o.nome}</b></React.Fragment>)}. Deseja vincular a genealogia?
     {sug.map((o) => <button type="button" key={o.id} className="rp-infolink" onClick={() => onVincular(rec.id, o.id)}>{sug.length > 1 ? `É clone de ${o.nome}` : "Vincular"}</button>)}</small>;
 }
+/* Animais → "Possíveis clones": todo nome com TN no sistema (fichas próprias, referências de genealogia
+   e nomes usados como pai/mãe/doadora), com o original sugerido. Nada é vinculado sem confirmação. */
+function PainelClones({ ativos, animalNames, onVincular, onRecusar, onAbrir }) {
+  const [aberto, setAberto] = useState(false);
+  const [outro, setOutro] = useState({});   // nome do clone → texto do original digitado
+  const anim = (ativos || []).filter((x) => x && x.tipo === "animal" && x.nome);
+  const nomes = new Map();
+  anim.forEach((x) => { if (cloneInfoNome(x.nome)) { const k = gnorm(x.nome); const ant = nomes.get(k); if (!ant || (ant.origem === "genealogia" && x.origem !== "genealogia")) nomes.set(k, x); } });
+  (ativos || []).forEach((a) => { if (!a) return; [a.pai, a.mae, a.doadora, a.touro].forEach((n) => { if (n && cloneInfoNome(n) && !nomes.has(gnorm(n))) nomes.set(gnorm(n), { nome: String(n).trim(), semFicha: true }); }); });
+  const itens = [...nomes.values()].sort((x, y) => x.nome.localeCompare(y.nome));
+  const vinc = itens.filter((x) => x.cloneDeId && originalDoClone(x, ativos));
+  const pend = itens.filter((x) => !x.cloneDeId && !(x.cloneRecusado && gnorm(x.cloneRecusado) === gnorm(x.nome)));
+  if (!itens.length) return null;
+  return (
+    <div className="card clone-painel">
+      <button type="button" className="clone-painel-h" onClick={() => setAberto((v) => !v)} aria-expanded={aberto}>
+        <span>🧬 <b>Clones (TN)</b> · {pend.length ? `${pend.length} possível(is) clone(s) para confirmar` : "nenhum pendente"}{vinc.length ? ` · ${vinc.length} vinculado(s)` : ""}</span><span className="muted small">{aberto ? "fechar" : "revisar"}</span></button>
+      {aberto && <div className="clone-painel-b">
+        <p className="muted small">O nome com TN é só uma pista: confirme o original de cada clone. A genealogia do clone passa a ser lida do original (nada é copiado); RGD, dono e histórico continuam próprios.</p>
+        {pend.map((x) => { const sug = sugerirOriginal(x.nome, x.sexo, ativos, x.id); const t = outro[x.nome] || ""; const achado = t ? animalPorNome(t, anim.filter((y) => !cloneInfoNome(y.nome))) : null; return (
+          <div className="clone-item" key={x.nome}>
+            <div><b>{x.nome}</b>{x.registro ? <span className="muted small"> · {x.registro}</span> : null}<span className="muted small">{x.semFicha ? " · só citado em fichas" : x.origem === "genealogia" ? " · referência de genealogia" : ""}</span></div>
+            <div className="clone-acts">
+              {sug.length ? sug.map((o) => <button type="button" key={o.id} className="btn btn-gold btn-mini" onClick={() => onVincular(x, o)}>É clone de {o.nome}</button>) : <span className="muted small">Nenhum original com nome parecido.</span>}
+              <span className="clone-outro"><AutoField value={t} onChange={(v) => setOutro((s) => ({ ...s, [x.nome]: v }))} suggestions={animalNames} placeholder="outro original…" />
+                {achado && <button type="button" className="btn btn-mini" onClick={() => onVincular(x, achado)}>Vincular a {achado.nome}</button>}</span>
+              <button type="button" className="btn btn-ghost btn-mini" onClick={() => onRecusar(x)}>Não é clone</button>
+            </div>
+          </div>); })}
+        {vinc.length > 0 && <div className="clone-vinc"><span className="muted small">Vinculados:</span> {vinc.map((x, i) => { const o = originalDoClone(x, ativos); return <React.Fragment key={x.id}>{i ? " · " : ""}<button type="button" className="rp-infolink" onClick={() => onAbrir(x)}>{x.nome}</button> → <button type="button" className="rp-infolink" onClick={() => onAbrir(o)}>{o.nome}</button></React.Fragment>; })}</div>}
+      </div>}
+    </div>
+  );
+}
 // genealogia do original, só leitura, dentro do formulário do clone
 function GenHerdada({ o, ativos }) {
   const g = comGenClone(o, ativos) || o;
@@ -7073,6 +7142,19 @@ export default function App() {
     });
     setToast("Clone vinculado. A genealogia vem do animal original.");
   };
+  // painel de clones: o item pode ser uma ficha (própria ou de referência) ou um nome só citado (vira referência de genealogia)
+  const vincularCloneItem = (x, o) => {
+    if (x.id) return vincularClone(x.id, o.id);
+    flushNext.current = true;
+    setDb((p) => { const s = stubAnimal(x.nome, quemReg()); return { ...p, ativos: [...p.ativos, { ...s, cloneDeId: o.id, cloneDe: o.nome, historico: [...(s.historico || []), { id: uid(), data: today(), tipo: "Clone", desc: `Vinculado como clone de ${o.nome}: a genealogia passa a ser a do original`, responsavel: quemReg() }] }] }; });
+    setToast(`${x.nome} vinculado como clone de ${o.nome}.`);
+  };
+  const recusarClone = (x) => {
+    flushNext.current = true;
+    if (x.id) setDb((p) => ({ ...p, ativos: p.ativos.map((a) => (a && a.id === x.id ? { ...a, cloneRecusado: a.nome } : a)) }));
+    else setDb((p) => ({ ...p, ativos: [...p.ativos, { ...stubAnimal(x.nome, quemReg()), cloneRecusado: x.nome }] }));
+    setToast(`${x.nome}: marcado como não clone.`);
+  };
   // histórico das mudanças de datas reprodutivas e do vínculo de clone (com a origem de cada data)
   const histMudancas = (antes, d) => {
     if (!antes) return d.cloneDeId ? [{ id: uid(), data: today(), tipo: "Clone", desc: `Cadastrado como clone de ${d.cloneDe || "animal original"}: a genealogia é a do original`, responsavel: quemReg() }] : [];
@@ -7542,15 +7624,15 @@ export default function App() {
   const registrarDiagnostico = (p, { res, data, sexagem, prev, prevOrig }) => {
     if (res === "nao") {
       const semDiag = { ...p, dataConfirmacao: "" };
-      const prevEst = p.previsaoPartoOrigem === "estimada" ? previsaoEstimada(semDiag) : p.previsaoParto || "";   // estimativa que vinha do diagnóstico some junto
+      const prevEst = prevEhEstimada(p) ? previsaoEstimada(semDiag) : p.previsaoParto || "";   // estimativa que vinha do diagnóstico some junto
       const np = { ...p, diagnostico: "", dataDiagnostico: "", dataConfirmacao: "", dataConfirmacaoOrigem: "", status: "Aguardando confirmação",
-        previsaoParto: prevEst, previsaoPartoOrigem: prevEst ? p.previsaoPartoOrigem || "" : "",
+        previsaoParto: prevEst, previsaoPartoOrigem: prevEst ? origemPrev(p) : "",
         historico: [...(p.historico || []), { id: uid(), data: today(), tipo: "Diagnóstico", desc: "Diagnóstico removido: passa a constar como não informado", responsavel: quemReg() }] };
       setRepro(null); updateAtivo(np); setToast("Diagnóstico marcado como não informado."); return;
     }
     const pos = res === "positivo";
     const novaPrev = pos ? (prev || p.previsaoParto || "") : (p.previsaoParto || "");
-    const novaOrig = pos ? (prev ? prevOrig || "informada" : p.previsaoPartoOrigem || "") : (p.previsaoPartoOrigem || "");
+    const novaOrig = pos ? (prev ? prevOrig || "informada" : origemPrev(p)) : origemPrev(p);
     const mudouPrev = pos && novaPrev && (novaPrev !== (p.previsaoParto || "") || novaOrig !== (p.previsaoPartoOrigem || ""));
     const np = { ...p, diagnostico: res, dataDiagnostico: data, status: pos ? "Confirmada" : "Não confirmada",
       dataConfirmacao: pos ? data : (p.dataConfirmacao || ""), dataConfirmacaoOrigem: pos ? "confirmada" : (p.dataConfirmacaoOrigem || ""), sexagem: pos ? sexagem : (p.sexagem || ""),
@@ -8313,6 +8395,7 @@ export default function App() {
                 <label className="toggle"><input type="checkbox" checked={showAncestrais} onChange={(e) => setShowAncestrais(e.target.checked)} /> Mostrar ancestrais (genealogia)</label>
               </div>
             )}
+            {view === "animal" && <PainelClones ativos={ativos} animalNames={animalNames} onVincular={vincularCloneItem} onRecusar={recusarClone} onAbrir={setAberto} />}
             <div className="cards-grid">
               {visiveis.filter((a) => a.tipo === view && !a.arquivada && (view !== "animal" || showAncestrais || a.origem !== "genealogia") && passaSit(a)).map((a) => {
                 const f = finance(a);
@@ -8640,7 +8723,7 @@ export default function App() {
         onQuickLeilao={quickLeilao} onQuickVendedor={quickVendedor} onQuickSocio={quickSocio}
         onEnviar={enviarPacote} onApprove={aprovarPacote} onSalvar={salvarPacote}
         onIndividual={(t) => { setPacForm(null); setForm({ tipo: t }); }} onClose={() => setPacForm(null)} />}
-      {abertoAtual && <Detalhe a={abertoAtual} ativos={ativos} embrioes={embrioes} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onGerarPrenhez={gerarPrenhez} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo} onAtualizarOutro={atualizarSemAbrir} onVirarPacote={(x) => virarPacote(x.tipo, x, x)} onDesfazerPacote={pedirDesfazerPacote} onExcluirDoadora={pedirExcluirDoadora}
+      {abertoAtual && <Detalhe a={abertoAtual} onVincularClone={vincularClone} ativos={ativos} embrioes={embrioes} canDelete={isAdmin} socioNamesGlobais={socioNames} onQuickSocio={quickSocio} onNascer={nascer} onGerarPrenhez={gerarPrenhez} onConfirm={setConfirmar} onAbrir={setAberto} onClose={() => setAberto(null)} onUpdate={updateAtivo} onAtualizarOutro={atualizarSemAbrir} onVirarPacote={(x) => virarPacote(x.tipo, x, x)} onDesfazerPacote={pedirDesfazerPacote} onExcluirDoadora={pedirExcluirDoadora}
         onRepro={acaoRepro} onIrLote={irLote}
         onEdit={() => { if (ehPacote(abertoAtual)) { abrirPacoteEdicao(abertoAtual); return; } setForm({ tipo: abertoAtual.tipo, initial: abertoAtual }); setAberto(null); }} onDelete={() => pedirExcluirAtivo(abertoAtual)} />}
       {repro && repro.tipo === "transf" && (() => {
@@ -9494,6 +9577,15 @@ a{color:var(--em)}
 .clone-gen-l p{grid-column:1/-1;margin:4px 0 0}
 .clone-link{font-size:12.5px;text-align:left}
 .clone-l{margin-top:-6px}
+.clone-painel{margin:0 0 16px;padding:0;overflow:hidden;border-color:rgba(201,174,116,.55)}
+.clone-painel-h{width:100%;display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 16px;background:rgba(201,174,116,.10);border:0;cursor:pointer;font:inherit;color:var(--txt);text-align:left}
+.clone-painel-b{padding:10px 16px 14px;display:flex;flex-direction:column;gap:10px}
+.clone-item{border-top:1px solid var(--line);padding-top:10px;display:flex;flex-direction:column;gap:6px}
+.clone-outro{display:inline-flex;gap:6px;align-items:center;min-width:220px}
+.clone-vinc{border-top:1px solid var(--line);padding-top:10px;font-size:13px}
+.clone-dicas{display:flex;flex-direction:column;gap:4px;margin:0 0 12px}
+.dt-lista{display:flex;flex-direction:column;gap:6px;margin-top:4px}
+.dt-lista div{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:13px}
 .rp-sitbar{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;margin:16px 0 8px}
 .rp-sitbar .rp-tabs{margin:0}
 .rp-ocultar{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--muted);cursor:pointer}
