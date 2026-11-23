@@ -1,4 +1,4 @@
-/* SM-BUILD: gerar-prenhez-datas-2026-11-19 */
+/* SM-BUILD: relatorio-pacote-2026-11-23 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -243,6 +243,9 @@ function finance(a) {
     total: cota + custos + adicTotal, pago: jaPago + adicPago, aberto: emAberto + (adicTotal - adicPago), patrimonio: totalEstimado,
   };
 }
+// mesma estrutura do finance(), com os valores multiplicados por s (usado no rateio de pacote / custo de origem nos relatórios)
+const escalaFin = (f, s) => ({ ...f, valor: f.valor * s, cota: f.cota * s, totalEstimado: f.totalEstimado * s, custos: f.custos * s, finalEstimado: f.finalEstimado * s, jaPago: f.jaPago * s, emAberto: f.emAberto * s, comPaga: f.comPaga * s, comSaldo: f.comSaldo * s,
+  total: f.total * s, pago: f.pago * s, aberto: f.aberto * s, patrimonio: f.patrimonio * s, com: { ...f.com, total: f.com.total * s } });
 function cronograma(a) {
   a = a || {};
   const f = finance(a);
@@ -5576,16 +5579,21 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const AQUISICOES = ["Compra direta", "Nascimento de aspiração", "Nascimento de prenhez", "Outra origem"];
 
   // base: apenas registros com cadastro próprio (exclui ancestrais só-genealogia e arquivados)
-  const base = (lista || []).filter((a) => a && a.origem !== "genealogia" && !a.arquivada);
+  // pacote = UM item (a compra inteira); as doadoras dele não aparecem separadas na seleção
+  const pacIds = new Set((lista || []).filter((a) => a && ehPacote(a) && !a.arquivada).map((a) => a.id));
+  const base = (lista || []).filter((a) => a && a.origem !== "genealogia" && !a.arquivada && !(a.pacoteId && pacIds.has(a.pacoteId)));
+  const tipoEf = (a) => (ehPacote(a) ? (a.subtipo === "prenhez" ? "prenhez" : "aspiracao") : a.tipo);
+  const doadorasDe = (a) => (ehPacote(a) ? doPacote(lista, a.id) : []);
   const nq = norm(q).trim();
-  // pesquisa principal: por Nome OU Registro (RG) — campo vazio não restringe
+  // pesquisa principal: por Nome OU Registro (RG) — no pacote, também pelo nome das doadoras
   const matchTipo = (a) => {
     if (!nq) return true;
-    return norm(a.nome).includes(nq) || norm(a.registro).includes(nq);
+    return norm(a.nome).includes(nq) || norm(a.registro).includes(nq) || doadorasDe(a).some((x) => norm(x.doadora || x.nome).includes(nq));
   };
 
   // situação conforme o tipo de registro (usa os estados já existentes de cada módulo)
   const estaAtivo = (a) => {
+    if (ehPacote(a)) return doadorasDe(a).some((x) => (x.tipo === "prenhez" ? prenhezAtiva(x) : aspAtiva(x)));   // pacote ativo enquanto houver doadora ativa
     if (a.tipo === "prenhez") return prenhezAtiva(a);
     if (a.tipo === "aspiracao") return aspAtiva(a);
     return ehAtivo(a); // animal (e genealogia/arquivada já excluídos da base)
@@ -5594,7 +5602,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   // filtros: dentro do mesmo campo = OU; entre campos = E. Filtro vazio não restringe.
   const matchAvancado = (a) => {
     // tipo de registro (principal) — não mistura os tipos
-    if (adv.tipoReg !== "todos" && a.tipo !== adv.tipoReg) return false;
+    if (adv.tipoReg !== "todos" && tipoEf(a) !== adv.tipoReg) return false;
     // situação (principal) — vale para qualquer tipo, usando os estados de cada módulo
     if (adv.situacao === "ativos" && !estaAtivo(a)) return false;
     if (adv.situacao === "inativos" && estaAtivo(a)) return false;
@@ -5667,12 +5675,47 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const toggleCampo = (k) => setCampos((c) => ({ ...c, [k]: !c[k] }));
   const nCampos = Object.values(campos).filter(Boolean).length;
 
+  /* valores no relatório: a compra de um pacote fica UMA vez no pacote, e o custo de uma prenhez gerada
+     de aspiração fica na aspiração. Para o relatório mostrar o valor de cada ficha:
+     - doadora de pacote → parte igual do pacote (total ÷ nº de doadoras);
+     - prenhez gerada de aspiração sem valor próprio → parte igual do custo da aspiração (÷ nº de prenhezes geradas).
+     A coluna "Origem do valor" diz de onde veio. Nada é gravado; os totais não contam duas vezes. */
+  const finRel = (a, prof = 0) => {
+    const f = finance(a);
+    if (f.total > 0.004 || prof > 3) return { f, root: a, s: 1, origem: f.total > 0.004 ? "valor próprio" : "", aspOrig: "" };
+    if (a.pacoteId) {
+      const pac = (ativos || []).find((x) => x && x.id === a.pacoteId);
+      const nD = doPacote(ativos, a.pacoteId).length || 1;
+      if (pac && finance(pac).total > 0.004) { const fp = finance(pac); return { f: escalaFin(fp, 1 / nD), root: pac, s: 1 / nD, origem: `rateio do ${rotuloPacote(pac)}: ${fmt(fp.total)} ÷ ${nD} doadora(s)`, aspOrig: "" }; }
+    }
+    if (a.tipo === "prenhez" && origemDe(a)) {
+      const A = (ativos || []).find((x) => x && x.id === origemDe(a));
+      if (A) {
+        const nP = (ativos || []).filter((x) => x && x.tipo === "prenhez" && x.origem !== "genealogia" && origemDe(x) === A.id).reduce((s, x) => s + Math.max(1, qtdTotal(x)), 0) || 1;
+        const pq = Math.max(1, qtdTotal(a)) / nP, b = finRel(A, prof + 1);
+        if (b.f.total > 0.004) return { f: escalaFin(b.f, pq), root: b.root, s: b.s * pq, origem: `custo da ${A.nome} ÷ ${nP} prenhez(es)${b.origem && b.origem !== "valor próprio" ? ` (${b.origem})` : ""}`, aspOrig: A.id };
+      }
+    }
+    return { f, root: a, s: 1, origem: "", aspOrig: "" };
+  };
+  const finR = (a) => finRel(a).f;
+  // prenhez cujo custo vem de uma aspiração que também está no relatório: o valor já está na linha da aspiração
+  // (o mesmo vale para a doadora quando o próprio pacote também está no relatório)
+  const contaNoTotal = (a, ids) => { const r = finRel(a); return !((r.aspOrig && ids.has(r.aspOrig)) || (r.root && r.root.id !== a.id && ids.has(r.root.id))); };
+  const parcelasRel = (a) => { const r = finRel(a); if (r.root === a) return parcelasUnificadas(a); return parcelasUnificadas(r.root).map((p) => ({ ...p, valor: num(p.valor) * r.s, valorPago: num(p.valorPago) * r.s, valorBase: num(p.valorBase) * r.s, valorAdic: num(p.valorAdic) * r.s })); };
+
   // monta uma linha (objeto) para o animal conforme campos marcados
   const linhaDe = (a) => {
-    const f = finance(a); const row = {};
+    const fr = finRel(a); const f = fr.f; const row = {};
     if (campos.basico) { row["Tipo"] = a.tipo; row["Nome"] = a.nome; row["Registro"] = a.registro || ""; row["Sexo"] = a.sexo || ""; row["Categoria"] = a.categoria || a.raca || ""; if (a.tipo === "animal") row["Situação"] = ehAtivo(a) ? "Ativo" : "Inativo"; row["Criatório responsável"] = a.ondeEsta || ""; row["Nascimento"] = a.nascimento ? dataBR(a.nascimento) : ""; }
     else { row["Nome"] = a.nome; }
     if (campos.idade) row["Idade"] = idadeTexto(a.nascimento); // sempre logo após o Nascimento (ou após o Nome, se Básicos estiver off)
+    // pacote: uma linha só, com as doadoras (e a situação de cada uma)
+    if (ehPacote(a)) {
+      const ds = doadorasDe(a);
+      row["Doadoras"] = ds.map((x) => `${x.doadora || x.nome}${x.regDoadora ? ` (${x.regDoadora})` : ""}${x.pai ? ` × ${x.pai}` : ""}`).join("; ");
+      if (campos.reprodutivo) row["Situação das doadoras"] = ds.map((x) => `${x.doadora || x.nome}: ${x.tipo === "prenhez" ? statusPrenhez(x).txt : dadosAsp(x, lista, (db && db.embrioes) || []).st[0]}`).join("; ");
+    }
     if (campos.genealogia) { row["Pai"] = a.pai || a.touro || ""; row["Mãe"] = a.mae || a.doadora || ""; row["Registro da mãe"] = a.maeRegistro || a.regDoadora || ""; row["Avô paterno"] = a.avoPaterno || ""; row["Avó paterna"] = a.avoPaterna || ""; row["Avô materno"] = a.avoMaterno || ""; row["Avó materna"] = a.avoMaterna || ""; row["Obs. genealógicas"] = a.obsGen || ""; }
     if (campos.sociedade) row["Sociedade"] = socioStr(a);
     if (campos.participacao) row["Participação atual (%)"] = participacaoAtual(a);
@@ -5680,7 +5723,8 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
     if (campos.investido) row["Total investido"] = f.total;
     if (campos.pago) row["Valor pago"] = f.pago;
     if (campos.aberto) row["Valor em aberto"] = f.aberto;
-    if (campos.parcelas) { const uni = parcelasUnificadas(a); row["Parcelas (qtd)"] = uni.length; row["Valor parcela"] = f.valor; row["Parcelas (total)"] = uni.reduce((s, p) => s + num(p.valor), 0); }
+    if ((campos.estimado || campos.investido || campos.pago || campos.aberto) && a.tipo !== "animal") row["Origem do valor"] = fr.origem;
+    if (campos.parcelas) { const uni = parcelasRel(a); row["Parcelas (qtd)"] = uni.length; row["Valor parcela"] = f.valor; row["Parcelas (total)"] = uni.reduce((s, p) => s + num(p.valor), 0); }
     if (campos.comissao) { row["Comissão (%)"] = f.com.pct; row["Comissão (R$)"] = f.com.total; }
     if (campos.compras) row["Compras adicionais"] = (a.comprasAdic || []).map((c) => `+${num(c.pctAdicional)}% ${fmt(num(c.valor) || num(c.valorParcela) * num(c.parcelas))}`).join("; ");
     if (campos.vendas) row["Vendas"] = vendasDo(a).map((v) => `${v.tipo}${v.pctVendida ? " " + v.pctVendida + "%" : ""} ${fmt(v.valor)}`).join("; ");
@@ -5775,7 +5819,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const ordenarLista = (arr, modo) => {
     const c = [...arr];
     const mes = (a) => { const m = mesesDe(a.nascimento); return m == null ? null : m; };
-    const est = (a) => finance(a).totalEstimado;
+    const est = (a) => finR(a).totalEstimado;
     const cmpNome = (a, b) => lc(a.nome).localeCompare(lc(b.nome), "pt-BR");
     switch (modo) {
       case "nomeZA": c.sort((a, b) => cmpNome(b, a)); break;
@@ -5807,7 +5851,8 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const totaisGerais = () => {
     const temFin = campos.estimado || campos.investido || campos.pago || campos.aberto;
     let est = 0, inv = 0, pago = 0, aberto = 0;
-    selecionados.forEach((a) => { const f = finance(a); est += f.totalEstimado; inv += f.total; pago += f.pago; aberto += f.aberto; });
+    const idsSel = new Set(selecionados.map((x) => x.id));
+    selecionados.filter((a) => contaNoTotal(a, idsSel)).forEach((a) => { const f = finR(a); est += f.totalEstimado; inv += f.total; pago += f.pago; aberto += f.aberto; });
     return { unicos: selecionados.length, temFin, est, inv, pago, aberto };
   };
 
@@ -5862,7 +5907,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
         linhas: resumo.map((l) => ({ ...l, Valor: l.__m ? fmt(l.Valor) : l.Valor })) },
     ];
     if (campos.parcelas) {
-      const rows = []; selecionados.forEach((a) => parcelasUnificadas(a).forEach((p) => rows.push({ Animal: a.nome, "Nº": p.numero, Vencimento: dataBR(p.venc), Valor: p.valor, Origem: p.valorAdic > 0 && p.valorBase > 0 ? "original+adicional" : p.valorAdic > 0 ? "adicional" : "original" })));
+      const rows = [], idsP = new Set(selecionados.map((x) => x.id)); selecionados.filter((a) => contaNoTotal(a, idsP)).forEach((a) => parcelasRel(a).forEach((p) => rows.push({ Animal: a.nome, "Nº": p.numero, Vencimento: dataBR(p.venc), Valor: p.valor, Origem: p.valorAdic > 0 && p.valorBase > 0 ? "original+adicional" : p.valorAdic > 0 ? "adicional" : "original" })));
       if (rows.length) abas.push({ nome: "Parcelas", titulo: "Parcelas", colunas: ["Animal", "Nº", "Vencimento", "Valor", "Origem"], linhas: rows, totalizar: true, congelarColunas: 1 });
     }
     if (campos.sociedade) {
@@ -6069,7 +6114,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
         )}
         <div className="sel-grid">
           {listaF.map((a) => (
-            <label className="sel-item" key={a.id}><input type="checkbox" checked={sel.has(a.id)} onChange={() => toggleAnimal(a.id)} /> <span>{a.nome} <em className="muted">· {a.tipo}</em></span></label>
+            <label className="sel-item" key={a.id}><input type="checkbox" checked={sel.has(a.id)} onChange={() => toggleAnimal(a.id)} /> <span>{a.nome} <em className="muted">· {ehPacote(a) ? `pacote · ${doadorasDe(a).length} doadora(s): ${doadorasDe(a).map((x) => x.doadora || x.nome).join(", ")}` : a.tipo}</em></span></label>
           ))}
           {listaF.length === 0 && <p className="muted small">Nenhum registro encontrado{nq ? " para esta busca." : "."}</p>}
         </div>
