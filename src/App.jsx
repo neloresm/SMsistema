@@ -1,4 +1,4 @@
-/* SM-BUILD: inativos-visiveis-2026-11-24 */
+/* SM-BUILD: asp-verde-2026-11-24 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -823,7 +823,8 @@ function dadosAsp(a, ativos, embrioes) {
   else if (E === 0 && !ps.length && !lotes.length && !encaminhados) { st = ["Sem embriões viáveis", "red"]; grupo = "sem"; prox = `Laboratório informou 0 embrião${oocitos ? ` (${oocitos} oócito(s))` : ""}`; }
   else if (E != null && disp === 0) { st = ["Concluída", "green"]; grupo = "concluido"; prox = [transf ? `${transf} transferido(s)` : "", gest ? `${gest} em gestação (acompanhe em Prenhezes)` : "", aguardDiag ? `${aguardDiag} aguardando diagnóstico (em Prenhezes)` : "", nasc ? `${nasc} nascimento(s)` : "", saldoBanco ? `${saldoBanco} no Banco de Embriões` : ""].filter(Boolean).join(" · ") || "Todos os embriões encaminhados"; }
   else if (disp > 0) { st = ["Aguardando encaminhamento", "amber"]; grupo = "andamento"; prox = [`${disp} embrião(ões) sem destino: gerar prenhez ou enviar ao Banco`, transf ? `${transf} já transferido(s)` : "", saldoBanco ? `${saldoBanco} no Banco` : ""].filter(Boolean).join(" · "); }
-  else if (ps.length || lotes.length || encaminhados || (manual && conf > 0)) { st = ["Aguardando resultado", "amber"]; grupo = "andamento"; prox = [transf ? `${transf} transferido(s)` : "", saldoBanco ? `${saldoBanco} no Banco` : "", "informe os embriões produzidos para concluir (ou conclua manualmente)"].filter(Boolean).join(" · "); }
+  else if ((ps.length || lotes.length || encaminhados || (manual && conf > 0)) && !a.mantidaAtiva) { st = ["Concluída", "green"]; grupo = "concluido"; prox = [ps.length || transf ? `${ps.length || transf} prenhez(es) gerada(s)/vinculada(s)` : "", gest ? `${gest} em gestação (acompanhe em Prenhezes)` : "", nasc ? `${nasc} nascimento(s)` : "", saldoBanco ? `${saldoBanco} no Banco de Embriões` : ""].filter(Boolean).join(" · ") || "Embriões encaminhados"; }
+  else if (ps.length || lotes.length || encaminhados || (manual && conf > 0)) { st = ["Aguardando resultado", "amber"]; grupo = "andamento"; prox = [transf ? `${transf} transferido(s)` : "", saldoBanco ? `${saldoBanco} no Banco` : "", "reaberta manualmente: conclua quando quiser"].filter(Boolean).join(" · "); }
   else if (dA && dA <= hoje) { st = ["Realizada · aguardando resultado", "amber"]; grupo = "andamento"; prox = "Próxima ação: lançar o resultado do laboratório (editar a ficha)"; }
   else { st = ["A realizar", "gold"]; grupo = "pendente"; prox = dA ? `Aspiração prevista para ${dataBR(dA)}` : "Próxima ação: informar a data e o resultado da aspiração"; }
   const cor = COR_GRUPO[grupo] || "";
@@ -4362,7 +4363,7 @@ function FolhaLote({ inicial, envio, onVincularClone, ativos, embrioes, animalRe
   const escolheAnimal = (k, rk, idk) => (x) => { setConflitos([]); setD((p) => ({ ...p, [k]: x.nome, [rk]: x.registro || "", [idk]: x.id })); };
   const asp = d.origem === "aspiracao" ? asps.find((a) => a.id === d.aspiracaoId) : null;
   const D = asp ? dadosAsp(asp, ativos, embV) : null;
-  const fechaSozinha = !!(D && D.E != null && D.disp - (Number(qtd) || 0) <= 0);
+  const fechaSozinha = !!(D && !asp.mantidaAtiva && (D.E == null || D.disp - (Number(qtd) || 0) <= 0));
   const concluirEf = !!(D && grupoAtivo(D.grupo) && !fechaSozinha && (concluirAsp == null ? D.E == null : concluirAsp));
   const escolheAsp = (id) => {
     const a = asps.find((x) => x.id === id);
@@ -4772,7 +4773,7 @@ function Detalhe({ a, onVincularClone, onEdit, onClose, onDelete, onUpdate, onAt
               {((a.tipo === "aspiracao" && a.origem !== "genealogia") || (ehPacote(a) && a.subtipo !== "prenhez")) && onRepro &&
                 <button className="btn btn-ghost" onClick={() => onRepro("banco", a)} title="Registrar no Banco de Embriões os embriões congelados produzidos nesta aspiração">Enviar ao Banco de Embriões</button>}
               {a.tipo === "aspiracao" && a.origem !== "genealogia" && onRepro && (() => { const D = dadosAsp(a, ativos, embrioes);
-                return a.concluidaManual ? <button className="btn btn-ghost" onClick={() => onRepro("reabrirAsp", a)}>Reabrir aspiração</button>
+                return a.concluidaManual || D.grupo === "concluido" ? <button className="btn btn-ghost" onClick={() => onRepro("reabrirAsp", a)}>Reabrir aspiração</button>
                   : D.grupo === "pendente" || D.grupo === "andamento" ? <button className="btn btn-ghost" onClick={() => onRepro("concluirAsp", a)}>Concluir aspiração</button> : null; })()}
               {a.tipo === "prenhez" && a.origem !== "genealogia" && onRepro && (() => {
                 const fz = faseReprod(a);
@@ -7883,9 +7884,9 @@ export default function App() {
       D.ps.filter((x) => prenhezAtiva(x)).length ? `${D.ps.filter((x) => prenhezAtiva(x)).length} prenhez(es) ainda em andamento (continuam ativas)` : ""].filter(Boolean);
     setConfirmar({ titulo: "Concluir esta aspiração?",
       mensagem: pend.length ? `Ainda consta: ${pend.join("; ")}. Concluir não altera o Banco nem as prenhezes; a aspiração vai para as Concluídas (sai da contagem de ativas, com histórico preservado) e pode ser reaberta.` : "A aspiração vai para as Concluídas (sai da contagem de ativas, com histórico preservado) e pode ser reaberta depois.", usos: [],
-      botoes: [{ label: "Concluir aspiração", tone: "gold", onClick: () => { updateAtivo({ ...a, concluidaManual: { data: today(), por: quemReg() }, historico: [...(a.historico || []), histE("Conclusão", `Concluída manualmente${pend.length ? ` (constava: ${pend.join("; ")})` : ""}`)] }); setConfirmar(null); setToast("Aspiração concluída."); } }] });
+      botoes: [{ label: "Concluir aspiração", tone: "gold", onClick: () => { updateAtivo({ ...a, mantidaAtiva: false, concluidaManual: { data: today(), por: quemReg() }, historico: [...(a.historico || []), histE("Conclusão", `Concluída manualmente${pend.length ? ` (constava: ${pend.join("; ")})` : ""}`)] }); setConfirmar(null); setToast("Aspiração concluída."); } }] });
   };
-  const reabrirAsp = (a) => { const { concluidaManual, ...resto } = a; updateAtivo({ ...resto, historico: [...(a.historico || []), histE("Reabertura", "Aspiração reaberta")] }); setToast("Aspiração reaberta."); };
+  const reabrirAsp = (a) => { const { concluidaManual, ...resto } = a; updateAtivo({ ...resto, mantidaAtiva: true, historico: [...(a.historico || []), histE("Reabertura", "Aspiração reaberta")] }); setToast("Aspiração reaberta."); };
   const acaoRepro = (tipo, a) => {
     if (tipo === "desvOrigem") return desfazerOrigem(a);
     if (tipo === "desvAsp") return desfazerAsp(a);
@@ -7969,7 +7970,7 @@ export default function App() {
           movs: [{ id: uid(), grupo: gEnt, data: limpo.dataCongelamento || today(), tipo: "entrada", qtd: 1, ref, responsavel: quem, criadoEm: agora }] }));
         const socios = [...(p.socios || [])];
         campos.socios.forEach((x) => { if (!socios.some((y) => y && lc(y.nome) === lc(x.nome))) socios.push({ id: uid(), nome: x.nome, doc: "", tel: "", email: "", endereco: "", obs: "" }); });
-        const ativosN = A ? p.ativos.map((x) => (x.id === A.id ? { ...x, historico: [...(x.historico || []), { id: uid(), data: today(), tipo: "Banco de Embriões", desc: `${qtd} embrião(ões) congelado(s) · Banco de Embriões ${codEmb(cod, 1, qtd)}${qtd > 1 ? ` a ${codEmb(cod, qtd, qtd)}` : ""}${opc && opc.concluirAsp ? " · aspiração concluída no envio" : ""}`, responsavel: quem }], ...(opc && opc.concluirAsp && !x.concluidaManual ? { concluidaManual: { data: today(), por: quem, via: "Banco de Embriões" } } : {}) } : x)) : p.ativos;
+        const ativosN = A ? p.ativos.map((x) => (x.id === A.id ? { ...x, historico: [...(x.historico || []), { id: uid(), data: today(), tipo: "Banco de Embriões", desc: `${qtd} embrião(ões) congelado(s) · Banco de Embriões ${codEmb(cod, 1, qtd)}${qtd > 1 ? ` a ${codEmb(cod, qtd, qtd)}` : ""}${opc && opc.concluirAsp ? " · aspiração concluída no envio" : ""}`, responsavel: quem }], ...(opc && opc.concluirAsp && !x.concluidaManual ? { mantidaAtiva: false, concluidaManual: { data: today(), por: quem, via: "Banco de Embriões" } } : {}) } : x)) : p.ativos;
         return { ...p, ativos: ativosN, socios, embrioes: [...(p.embrioes || []), ...novos] };
       });
       // depois de cadastrar/enviar, abre o Banco de Embriões com os embriões novos selecionados
