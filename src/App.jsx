@@ -1,4 +1,4 @@
-/* SM-BUILD: status-cores-2026-11-24 */
+/* SM-BUILD: inativos-visiveis-2026-11-24 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -730,11 +730,19 @@ const estoqueDoLote = (lista, u) => (u ? doGrupo(lista, grupoDe(u)).filter(noEst
 const pegaEmbrioes = (lista, u, n) => { const g = doGrupo(lista, grupoDe(u)).filter(noEstoque); const prim = g.find((x) => x.id === u.id); return [...(prim ? [prim] : []), ...g.filter((x) => x.id !== u.id)].slice(0, n); };
 const codEmb = (loteCod, seq, total) => `${loteCod}-${String(seq).padStart(total > 99 ? 3 : 2, "0")}`;
 function statusEmb(u) {
-  if (saldoLote(u) > 0) return ["Em estoque", "green"];
+  if (saldoLote(u) > 0) return ["Em estoque", "info"];
   const ult = [...((u && u.movs) || [])].filter((m) => m && sinalMov(m) < 0).pop();
   if (!ult) return ["Sem saldo", "amber"];
   if (ult.tipo === "ajuste") return ["Baixa de inventário", "amber"];
   return [(MOV_TIPOS[ult.tipo] || [ult.tipo])[0], (MOV_TIPOS[ult.tipo] || ["", "gold"])[1]];
+}
+// cor do card do embrião: em estoque = ativo (neutro) · destino concluído (transferido, vendido, destinado a terceiros) = verde · descarte = vermelho · outras baixas = cinza
+function corEmb(u) {
+  if (!u || saldoLote(u) > 0) return "st-neutro";
+  const ult = [...(u.movs || [])].filter((m) => m && sinalMov(m) < 0).pop();
+  if (ult && ["uso", "venda", "terceiro"].includes(ult.tipo)) return "st-ok";
+  if (ult && ult.tipo === "descarte") return "st-falha";
+  return "st-outro";
 }
 
 /* Migração segura: lote antigo (um registro com quantidade) -> um registro por embrião.
@@ -3605,26 +3613,27 @@ function statusPrenhez(p) {
   if (nasc > 0) return R(`${f.txt} · ${nasc} nascido(s)`, f.tone, "andamento");
   return R(f.txt, f.tone, "andamento", { atraso: f.d != null && f.d < 0 });
 }
-// "Concluídos" em vez de "Inativos": a operação não deixou de existir, só avançou de etapa
-const ESCOPOS = [["ativos", "Ativos"], ["concluidos", "Concluídos"], ["sem", "Encerrados sem sucesso"], ["todos", "Todos"]];
+// inativar não é esconder: a visualização padrão mostra TODOS os registros (ativos e inativos, cada um com a sua cor);
+// "Inativos" reúne os concluídos (verde) e os encerrados sem sucesso (vermelho) — como nos Animais
+const ESCOPOS = [["todos", "Todos"], ["ativos", "Ativos"], ["inativos", "Inativos"]];
 const ABAS_SIT = {
   ativos: (tipo) => (tipo === "pren" ? [["todos", "Todas as ativas"], ["pendente", "Aguardando diagnóstico"], ["andamento", "Em gestação"]] : [["todos", "Todas as ativas"], ["pendente", "A realizar"], ["andamento", "Aguardando resultado"]]),
-  concluidos: (tipo) => (tipo === "pren" ? [["todos", "Todas as concluídas"], ["nasc", "Nascimento registrado"], ["vend", "Vendidas / outras"]] : []),
-  sem: (tipo) => (tipo === "pren" ? [["todos", "Todas"], ["perda", "Perda gestacional"], ["neg", "Diagnóstico negativo"], ["zero", "Sem prenhez"], ["cancel", "Canceladas"], ["enc", "Outros encerramentos"]] : []),
+  inativos: (tipo) => (tipo === "pren" ? [["todos", "Todos os inativos"], ["nasc", "Nascimento registrado"], ["vend", "Vendidas / outras"], ["perda", "Perda gestacional"], ["neg", "Diagnóstico negativo"], ["zero", "Sem prenhez"], ["cancel", "Canceladas"], ["enc", "Outros encerramentos"]]
+    : [["todos", "Todos os inativos"], ["concluido", "Concluídas"], ["semg", "Encerradas sem sucesso"]]),
   todos: () => [],
 };
 const grupoSem = (g) => g === "sem" || g === "cancelado";
 const grupoAtivoEsc = (e) => e === "ativos" || e === "todos";
-const ESC_TXT_F = { ativos: "ativa ", concluidos: "concluída ", sem: "encerrada sem sucesso " };
-const noEscopo = (x, e) => (e === "todos" ? true : e === "concluidos" ? x.grupo === "concluido" : e === "sem" ? grupoSem(x.grupo) : grupoAtivo(x.grupo));
-const naAba = (x, v) => (v === "todos" ? true : v === "pendente" || v === "andamento" ? x.grupo === v : v === "vend" ? x.grupo === "concluido" && x.sub !== "nasc" : x.sub === v);
+const ESC_TXT_F = { ativos: "ativa ", inativos: "inativa " };
+const noEscopo = (x, e) => (e === "todos" ? true : e === "inativos" ? !grupoAtivo(x.grupo) : grupoAtivo(x.grupo));
+const naAba = (x, v) => (v === "todos" ? true : v === "pendente" || v === "andamento" || v === "concluido" ? x.grupo === v : v === "semg" ? grupoSem(x.grupo) : v === "vend" ? x.grupo === "concluido" && x.sub !== "nasc" : x.sub === v);
 function FiltroSituacao({ itens, escopo, setEscopo, valor, setValor, tipo }) {
   const doEsc = (e) => itens.filter((x) => noEscopo(x, e));
   const base = doEsc(escopo);
   const abas = ABAS_SIT[escopo](tipo).filter(([k]) => k === "todos" || k === valor || base.some((x) => naAba(x, k)));
   return (
     <div className="rp-sitbar">
-      <div className="seg-group rp-escopo" role="tablist" aria-label="Situação: ativos, concluídos ou encerrados">{ESCOPOS.map(([k, l]) => (
+      <div className="seg-group rp-escopo" role="tablist" aria-label="Situação: todos, ativos ou inativos">{ESCOPOS.map(([k, l]) => (
         <button key={k} type="button" role="tab" aria-selected={escopo === k} className={`seg ${escopo === k ? "on" : ""}`} onClick={() => { setEscopo(k); setValor("todos"); }}><i className={`rp-dot e-${k}`} aria-hidden="true" />{l} <b>{doEsc(k).length}</b></button>))}</div>
       {abas.length > 1 && <div className="rp-tabs" role="tablist" aria-label="Detalhe da situação">{abas.map(([k, l]) => (
         <button key={k} type="button" role="tab" aria-selected={valor === k} className={valor === k ? "on" : ""} onClick={() => setValor(k)}>{l}<b>{base.filter((x) => naAba(x, k)).length}</b></button>))}</div>}
@@ -3788,7 +3797,7 @@ function AgruparPacote({ regs, onConfirm, onClose }) {
 function PaginaPrenhezes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
   const [agr, setAgr] = useState(null);   // fichas marcadas para agrupar em pacote (null = fora do modo de seleção)
   const [sit, setSit] = useState("todos");
-  const [escopo, setEscopo] = useState("ativos");
+  const [escopo, setEscopo] = useState("todos");
   const [origem, setOrigem] = useState("");
   const [cri, setCri] = useState("");
   const [ordem, setOrdem] = useState("parto");
@@ -3796,7 +3805,7 @@ function PaginaPrenhezes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
   const criatorios = [...new Set(base.map(({ p }) => p.ondeEsta).filter(Boolean))].sort();
   const filt = base.filter(({ p }) => (!origem || origemPrenhez(p) === origem) && (!cri || p.ondeEsta === cri));
   const prevDe = (p) => p.previsaoParto || previsaoEstimada(p) || "9999";
-  const ord = escopo === "concluidos" || escopo === "sem" ? (a, b) => (b.p.dataParto || b.p.dataTE || "").localeCompare(a.p.dataParto || a.p.dataTE || "")
+  const ord = escopo === "inativos" ? (a, b) => (b.p.dataParto || b.p.dataTE || "").localeCompare(a.p.dataParto || a.p.dataTE || "")
     : ordem === "te" ? (a, b) => (b.p.dataTE || "").localeCompare(a.p.dataTE || "") : (a, b) => !grupoAtivo(a.grupo) - !grupoAtivo(b.grupo) || prevDe(a.p).localeCompare(prevDe(b.p));
   const lst = filtraSituacao(filt, escopo, sit).sort(ord);
   const ativas = base.filter((x) => grupoAtivo(x.grupo));
@@ -3847,9 +3856,9 @@ function PaginaPrenhezes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
 function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
   const [agr, setAgr] = useState(null);
   const [sit, setSit] = useState("todos");
-  const [escopo, setEscopo] = useState("ativos");
+  const [escopo, setEscopo] = useState("todos");
   const base = (lista || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia").map((a) => { const D = dadosAsp(a, ativos, embrioes); return { a, D, grupo: D.grupo }; });
-  const lst = filtraSituacao(base, escopo, sit).sort((x, y) => !grupoAtivo(x.grupo) - !grupoAtivo(y.grupo) || (x.grupo === "pendente") - (y.grupo === "pendente") || (y.a.dataAspiracao || y.a.dataAsp || "").localeCompare(x.a.dataAspiracao || x.a.dataAsp || ""));
+  const lst = filtraSituacao(base, escopo, sit).sort((x, y) => (y.a.dataAspiracao || y.a.dataAsp || "").localeCompare(x.a.dataAspiracao || x.a.dataAsp || ""));
   const soma = (k) => base.reduce((s, x) => s + (x.D[k] || 0), 0);
   const ooComE = base.filter((x) => x.D.E != null).reduce((s, x) => s + x.D.oocitos, 0);
   return (
@@ -3889,12 +3898,13 @@ function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
 
 /* ---------------- página: Banco de Embriões ---------------- */
 function PaginaBanco({ embrioes, ativos, busca, sel, setSel, onAcao, onAbrir, filtroDoadora, onLimparDoadora, aviso, onFecharAviso, migracoes }) {
-  const [filtro, setFiltro] = useState("saldo");
+  const [filtro, setFiltro] = useState("todos");
   const q = norm(busca || "").trim();
   const todos = (embrioes || []).filter(Boolean);
   const casa = (l) => !q || norm([l.cod, l.loteCod, l.doadora, l.regDoadora, l.pai, l.regPai, l.local, l.propriedade, l.criatorioOrigem, ...(l.socios || []).map((s) => s && s.nome)].join(" ")).includes(q);
+  const vivosF = todos.filter(casa).filter((l) => !l.arquivado && (!filtroDoadora || l.doadoraId === filtroDoadora.id));
   const lst = todos.filter(casa).filter((l) => !filtroDoadora || l.doadoraId === filtroDoadora.id)
-    .filter((l) => (filtro === "arquivados" ? l.arquivado : !l.arquivado && (filtro === "todos" || saldoLote(l) > 0)));
+    .filter((l) => (filtro === "arquivados" ? l.arquivado : !l.arquivado && (filtro === "todos" || (filtro === "saldo") === saldoLote(l) > 0)));
   // agrupados só para leitura, pelo cruzamento (doadora × touro); cada embrião é um registro próprio
   const cx = (u) => `${u.doadoraId || norm(u.doadora || "")}|${u.touroId || norm(u.pai || "")}`;
   const grupos = {};
@@ -3922,7 +3932,7 @@ function PaginaBanco({ embrioes, ativos, busca, sel, setSel, onAcao, onAbrir, fi
         {aviso.inconsist.length ? <ul>{aviso.inconsist.map((t, i) => <li key={i}>{t}</li>)}</ul> : " Nenhuma inconsistência encontrada."}</div>
         <button type="button" className="btn btn-ghost btn-mini" onClick={onFecharAviso}>Entendi</button></div>}
       <div className="rp-kpis">
-        <KPI label="Embriões em estoque" value={saldoT} tone="pos" sub="congelados e disponíveis" />
+        <KPI label="Embriões disponíveis" value={saldoT} tone="pos" sub={`ativos: congelados e em estoque · ${vivos.length} registro(s) no total`} />
         <KPI label="Cruzamentos em estoque" value={cruzEst} sub={`${Object.keys(porDoadora).length} doadora(s)`} />
         <KPI label={`Entradas em ${ano}`} value={doAno("entrada")} sub="congelados, comprados ou recebidos" />
         <KPI label={`Saídas em ${ano}`} value={doAno("uso") + doAno("venda") + doAno("terceiro") + doAno("descarte")} sub={`${doAno("uso")} usados · ${doAno("venda") + doAno("terceiro")} vendidos/terceiros · ${doAno("descarte")} descartados`} />
@@ -3936,8 +3946,8 @@ function PaginaBanco({ embrioes, ativos, busca, sel, setSel, onAcao, onAbrir, fi
         </div>
       )}
       <div className="rp-filtros">
-        <div className="seg-group" role="group" aria-label="Mostrar">{[["saldo", "Em estoque"], ["todos", "Todos os embriões"], ["arquivados", "Arquivados"]].map(([k, l]) => (
-          <button key={k} type="button" className={`seg ${filtro === k ? "on" : ""}`} onClick={() => setFiltro(k)}>{l}</button>))}</div>
+        <div className="seg-group" role="group" aria-label="Mostrar">{[["todos", "Todos", vivosF.length], ["saldo", "Ativos (em estoque)", vivosF.filter((l) => saldoLote(l) > 0).length], ["fora", "Inativos (com destino)", vivosF.filter((l) => !(saldoLote(l) > 0)).length], ["arquivados", "Arquivados", todos.filter((l) => l.arquivado).length]].map(([k, l, n]) => (
+          <button key={k} type="button" className={`seg ${filtro === k ? "on" : ""}`} onClick={() => setFiltro(k)}>{l} <b>{n}</b></button>))}</div>
         {filtroDoadora && <span className="rp-chip o-aspiracao">Doadora: {filtroDoadora.nome}<button type="button" className="rp-chip-x" onClick={onLimparDoadora} aria-label="Mostrar todos os embriões">×</button></span>}
         {q && <span className="muted small">Filtrando pela busca: “{busca}”</span>}
       </div>
@@ -3954,12 +3964,12 @@ function PaginaBanco({ embrioes, ativos, busca, sel, setSel, onAcao, onAbrir, fi
                   <span className="rp-saldo"><b className={est ? "" : "zero"}>{est}</b><small>{est === 1 ? "em estoque" : "em estoque"}</small></span>
                 </div>
                 <div className="rp-ecards">{us.map((u) => { const st = statusEmb(u); return (
-                  <button type="button" key={u.id} className={`rp-ecard ${atual && atual.id === u.id ? "on" : ""} ${noEstoque(u) ? "" : "fora"}`} onClick={() => setSel(u.id)} aria-label={`Embrião ${u.cod}, ${st[0]}`}>
+                  <button type="button" key={u.id} className={`rp-ecard ${atual && atual.id === u.id ? "on" : ""} ${corEmb(u)}`} onClick={() => setSel(u.id)} aria-label={`Embrião ${u.cod}, ${st[0]}`}>
                     <span className="rp-ecard-l"><b>{u.cod}</b><small>{[ORIGEM_CURTA[u.origem], u.propriedade, u.local].filter(Boolean).join(" · ") || "local não informado"}</small></span>
                     <Badge tone={st[1]}>{st[0]}</Badge>
                   </button>); })}</div>
               </div>); })}
-            {ordem.length === 0 && <div className="empty">Nenhum embrião {filtro === "saldo" ? "em estoque" : filtro === "arquivados" ? "arquivado" : ""}.</div>}
+            {ordem.length === 0 && <div className="empty">Nenhum embrião {filtro === "saldo" ? "em estoque" : filtro === "fora" ? "inativo" : filtro === "arquivados" ? "arquivado" : ""}.</div>}
             <p className="muted small rp-diag">{todos.length} registro(s) no banco{antigos ? ` · ${antigos} ainda no formato antigo (sem entradas para converter)` : " · todos individuais"}
               {conv.map((m) => ` · conversão de ${dataBR((m.data || "").slice(0, 10))}: ${m.lotes} cadastro(s) antigo(s) → ${m.embrioes} embriões${(m.inconsistencias || []).length ? ` (${m.inconsistencias.length} aviso(s))` : ""}`).join("")}</p>
           </div>
@@ -4337,6 +4347,7 @@ function FolhaLote({ inicial, envio, onVincularClone, ativos, embrioes, animalRe
   const enviado = useRef(false);   // trava contra duplo clique: um formulário aberto envia uma vez só
   const [confExc, setConfExc] = useState(false);
   const [todos, setTodos] = useState(false);
+  const [concluirAsp, setConcluirAsp] = useState(null);   // null = sugestão automática
   const [conflitos, setConflitos] = useState([]);
   const [decisao, setDecisao] = useState({});   // escolhas do usuário nos conflitos de RGD
   const [reenviar, setReenviar] = useState(false);
@@ -4351,6 +4362,8 @@ function FolhaLote({ inicial, envio, onVincularClone, ativos, embrioes, animalRe
   const escolheAnimal = (k, rk, idk) => (x) => { setConflitos([]); setD((p) => ({ ...p, [k]: x.nome, [rk]: x.registro || "", [idk]: x.id })); };
   const asp = d.origem === "aspiracao" ? asps.find((a) => a.id === d.aspiracaoId) : null;
   const D = asp ? dadosAsp(asp, ativos, embV) : null;
+  const fechaSozinha = !!(D && D.E != null && D.disp - (Number(qtd) || 0) <= 0);
+  const concluirEf = !!(D && grupoAtivo(D.grupo) && !fechaSozinha && (concluirAsp == null ? D.E == null : concluirAsp));
   const escolheAsp = (id) => {
     const a = asps.find((x) => x.id === id);
     if (!a) { set("aspiracaoId", ""); return; }
@@ -4432,7 +4445,7 @@ function FolhaLote({ inicial, envio, onVincularClone, ativos, embrioes, animalRe
     onConfirm({ ...nd2, compra: comp, aspiracaoId: nd2.origem === "aspiracao" ? nd2.aspiracaoId || "" : "",
       criatorioOrigem: nomeCanonico(localNames, nd2.criatorioOrigem), propriedade: nomeCanonico(localNames, nd2.propriedade),
       parceiro: nd2.origem === "parceiro" ? nomeCanonico(socioNames, nd2.parceiro) : nd2.parceiro || "",
-      socios: (nd2.socios || []).map((s) => ({ ...s, nome: nomeCanonico(socioNames, s.nome) })) }, qtd, { todos, plano, envioId: envio && !editando ? envio.chave : "" });
+      socios: (nd2.socios || []).map((s) => ({ ...s, nome: nomeCanonico(socioNames, s.nome) })) }, qtd, { todos, plano, envioId: envio && !editando ? envio.chave : "", concluirAsp: concluirEf });
   };
   const ORIGENS = [["aspiracao", "Produção própria — Aspiração"], ["compra", "Compra de embriões"], ["parceiro", "Recebimento de sócio ou parceiro"], ["outra", "Outra origem"], ...(d.origem === "existente" ? [["existente", "Estoque existente"]] : [])];
   return (
@@ -4460,6 +4473,9 @@ function FolhaLote({ inicial, envio, onVincularClone, ativos, embrioes, animalRe
           {asp && D ? <div className="aviso aviso-info rp-envio-res"><b>Aspiração de origem: {asp.nome || rot(asp)}</b>
             <span>{[asp.dataAspiracao && `aspirada em ${dataBR(asp.dataAspiracao)}`, D.E != null ? `${D.E} embrião(ões) produzido(s)` : "resultado do laboratório não lançado", `${D.congelados} já enviado(s) ao banco (${D.saldoBanco} em estoque)`, `${D.frescas} transferido(s) a fresco`, D.E != null ? `${D.disp} sem destino` : ""].filter(Boolean).join(" · ")}</span></div>
             : <div className="aviso">Escolha de qual doadora / cruzamento vieram os embriões.</div>}
+          {asp && D && !String(asp.id).startsWith("pref:") && grupoAtivo(D.grupo) && (fechaSozinha
+            ? <p className="muted small" style={{ margin: "0 0 12px" }}>Com este envio todos os embriões produzidos ficam com destino: a aspiração será <b>concluída automaticamente</b> (card verde, fora da contagem de ativas).</p>
+            : <label className="rp-todos"><input type="checkbox" checked={concluirEf} onChange={(e) => setConcluirAsp(e.target.checked)} /> Concluir a aspiração após este envio <span className="muted small">— card verde e fora da contagem de ativas{D.E == null ? "; o resultado do laboratório não foi lançado" : ` · ainda restariam ${Math.max(0, D.disp - qtd)} embrião(ões) sem destino`}. Pode ser reaberta depois.</span></label>)}
         </>;
       })()}
       {d.origem === "existente" && <div className="aviso">Embrião que a SM já possuía antes do sistema, sem aspiração cadastrada.</div>}
@@ -7953,7 +7969,7 @@ export default function App() {
           movs: [{ id: uid(), grupo: gEnt, data: limpo.dataCongelamento || today(), tipo: "entrada", qtd: 1, ref, responsavel: quem, criadoEm: agora }] }));
         const socios = [...(p.socios || [])];
         campos.socios.forEach((x) => { if (!socios.some((y) => y && lc(y.nome) === lc(x.nome))) socios.push({ id: uid(), nome: x.nome, doc: "", tel: "", email: "", endereco: "", obs: "" }); });
-        const ativosN = A ? p.ativos.map((x) => (x.id === A.id ? { ...x, historico: [...(x.historico || []), { id: uid(), data: today(), tipo: "Banco de Embriões", desc: `${qtd} embrião(ões) congelado(s) · Banco de Embriões ${codEmb(cod, 1, qtd)}${qtd > 1 ? ` a ${codEmb(cod, qtd, qtd)}` : ""}`, responsavel: quem }] } : x)) : p.ativos;
+        const ativosN = A ? p.ativos.map((x) => (x.id === A.id ? { ...x, historico: [...(x.historico || []), { id: uid(), data: today(), tipo: "Banco de Embriões", desc: `${qtd} embrião(ões) congelado(s) · Banco de Embriões ${codEmb(cod, 1, qtd)}${qtd > 1 ? ` a ${codEmb(cod, qtd, qtd)}` : ""}${opc && opc.concluirAsp ? " · aspiração concluída no envio" : ""}`, responsavel: quem }], ...(opc && opc.concluirAsp && !x.concluidaManual ? { concluidaManual: { data: today(), por: quem, via: "Banco de Embriões" } } : {}) } : x)) : p.ativos;
         return { ...p, ativos: ativosN, socios, embrioes: [...(p.embrioes || []), ...novos] };
       });
       // depois de cadastrar/enviar, abre o Banco de Embriões com os embriões novos selecionados
@@ -8498,6 +8514,7 @@ export default function App() {
                 <div className="repro-kpis">
                   <button className="repro-kpi" onClick={() => setView("aspiracao")}><span>Aspirações ativas</span><b>{reprod.aspAndamento.length}</b></button>
                   <button className="repro-kpi" onClick={() => setView("prenhez")}><span>Prenhezes ativas</span><b>{reprod.prenhez.length}</b></button>
+                  <button className="repro-kpi" onClick={() => setView("embrioes")}><span>Embriões disponíveis no Banco</span><b>{saldoBancoTotal}</b></button>
                   <button className="repro-kpi" onClick={() => setView("prenhez")}><span>Prenhezes confirmadas</span><b>{reprod.confirmadas.length}</b></button>
                   <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Partos próximos</span><b className={reprod.proximas.length ? "gold" : ""}>{reprod.proximas.length}</b></button>
                   <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Partos atrasados</span><b className={reprod.atrasadas.length ? "neg" : ""}>{reprod.atrasadas.length}</b></button>
@@ -9702,7 +9719,7 @@ a{color:var(--em)}
 .rp-card.banco-faixa{box-shadow:inset 4px 0 0 var(--info),var(--sh1)}
 @media(hover:hover){.rp-card.banco-faixa:hover{box-shadow:inset 4px 0 0 var(--info),var(--sh2)}}
 .rp-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px;border:1px solid rgba(0,0,0,.12)}
-.rp-dot.e-ativos{background:#EFD99A}.rp-dot.e-concluidos{background:#9FCBB2}.rp-dot.e-sem{background:#E2ABA3}.rp-dot.e-todos{background:linear-gradient(90deg,#EFD99A 33%,#9FCBB2 33% 66%,#E2ABA3 66%)}
+.rp-dot.e-ativos{background:#EFD99A}.rp-dot.e-concluidos{background:#9FCBB2}.rp-dot.e-sem{background:#E2ABA3}.rp-dot.e-inativos{background:linear-gradient(90deg,#9FCBB2 50%,#E2ABA3 50%)}.rp-dot.e-todos{background:linear-gradient(90deg,#EFD99A 33%,#9FCBB2 33% 66%,#E2ABA3 66%)}
 .repro-hist{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:12px;padding-top:10px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted)}
 .repro-hist>span:first-child{font-weight:650;color:var(--ink);text-transform:uppercase;letter-spacing:.04em;font-size:11px}
 .repro-hist b{color:var(--ink);font-variant-numeric:tabular-nums}
@@ -9781,6 +9798,9 @@ a{color:var(--em)}
 .rp-ecard:hover{border-color:rgba(23,107,70,.3)}
 .rp-ecard.on{border-color:var(--em);box-shadow:0 0 0 2px rgba(23,107,70,.15);background:rgba(23,107,70,.04)}
 .rp-ecard.fora{opacity:.78}
+.rp-ecard.st-ok{background:linear-gradient(180deg,#E6F1EA,#F1F7F3);border-color:rgba(23,107,70,.28)}
+.rp-ecard.st-falha{background:linear-gradient(180deg,#F8E9E6,#FBF2F0);border-color:rgba(164,68,58,.26)}
+.rp-ecard.st-outro{background:#F3F2EE;border-color:var(--line)}
 .rp-ecard-l{display:flex;flex-direction:column;gap:1px;min-width:0}
 .rp-ecard-l b{font-size:13.5px;font-weight:700;letter-spacing:.01em}
 .rp-ecard-l small{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
