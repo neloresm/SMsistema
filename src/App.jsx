@@ -1,4 +1,4 @@
-/* SM-BUILD: relatorio-pacote-2026-11-23 */
+/* SM-BUILD: status-cores-2026-11-24 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -546,7 +546,7 @@ function diasAteParto(a) {
 // a prenhez ainda está "em andamento" (não pariu, não perdeu, não concluiu/vendeu)?
 function prenhezAtiva(a) {
   if (!a || a.tipo !== "prenhez" || a.arquivada) return false;
-  const g = statusPrenhez(a).grupo; if (g === "concluido" || g === "cancelado") return false;
+  const g = statusPrenhez(a).grupo; if (g === "concluido" || g === "cancelado" || g === "sem") return false;
   const s = lc(a.status);
   if (s.includes("perda") || s.includes("perdida") || s.includes("vendida") || s.includes("concluída") || s.includes("concluida") || s.includes("parida")) return false;
   if (s.includes("não confirmada") || s.includes("nao confirmada") || a.diagnostico === "negativo") return false;   // diagnóstico negativo
@@ -565,10 +565,16 @@ function alertaParto(a) {
   if (d <= 30) return "30";
   return null;
 }
+/* situação padronizada dos registros reprodutivos (aspirações e prenhezes):
+   pendente = ainda não realizada (neutro) · andamento = realizada, aguardando resultado/próxima etapa (amarelo-claro)
+   concluido = concluída com sucesso (verde-claro) · sem = encerrada sem sucesso (vermelho-claro). "cancelado" = grupo antigo, tratado como "sem". */
+const COR_GRUPO = { pendente: "st-neutro", andamento: "st-aguarda", concluido: "st-ok", sem: "st-falha", cancelado: "st-falha" };
+const GRUPO_TXT = { pendente: "A realizar", andamento: "Em andamento", concluido: "Concluído", sem: "Encerrado sem sucesso", cancelado: "Encerrado sem sucesso" };
+const grupoAtivo = (g) => g === "pendente" || g === "andamento";
 // aspiração em andamento (não finalizada/cancelada)
 function aspAtiva(a) {
   if (!a || a.tipo !== "aspiracao" || a.arquivada) return false;
-  if (a.statusGrupo === "concluido" || a.statusGrupo === "cancelado" || a.concluidaManual) return false;
+  if (a.statusGrupo === "concluido" || a.statusGrupo === "cancelado" || a.statusGrupo === "sem" || a.concluidaManual) return false;
   const s = lc(a.status);
   return !(s.includes("finalizada") || s.includes("cancelada") || s.includes("concluída") || s.includes("concluida"));
 }
@@ -800,19 +806,21 @@ function dadosAsp(a, ativos, embrioes) {
   const aguardDiag = ps.filter((x) => faseReprod(x).k === "diag").length;
   const resto = [disp ? `${disp} embrião(ões) a transferir` : "", saldoBanco ? `${saldoBanco} no Banco` : ""].filter(Boolean).join(" · ");
   let st, prox, grupo;
-  if (sa.includes("cancel")) { st = ["Cancelada", "red"]; prox = "Registro cancelado"; grupo = "cancelado"; }
+  // regra: a aspiração fica ATIVA até todos os embriões produzidos terem destino registrado (prenhez/TE ou Banco).
+  // Com tudo encaminhado ela é CONCLUÍDA — as prenhezes seguem o próprio acompanhamento e os congelados ficam no Banco.
+  const encaminhados = frescas + congelados;
+  if (sa.includes("cancel")) { st = ["Cancelada", "red"]; prox = "Registro cancelado"; grupo = "sem"; }
   else if (a.concluidaManual) { st = ["Concluída", "green"]; grupo = "concluido"; prox = [`Concluída manualmente${a.concluidaManual.data ? ` em ${dataBR(a.concluidaManual.data)}` : ""}`, saldoBanco ? `${saldoBanco} embrião(ões) continuam no Banco` : ""].filter(Boolean).join(" · "); }
-  else if (gest || (nascidas && (aguardDiag || disp > 0 || saldoBanco > 0 || E == null)) || (manual && conf > 0)) { st = ["Prenhez confirmada", "green"]; grupo = "andamento"; prox = [gest ? `${gest} prenhez(es) em gestação` : "", nasc ? `${nasc} nascimento(s)` : "", aguardDiag ? `${aguardDiag} aguardando diagnóstico` : "", resto, !gest && !aguardDiag && E == null ? "informe os embriões produzidos para concluir" : ""].filter(Boolean).join(" · "); }
-  else if (aguardDiag || (manual && transf > 0)) { st = ["Transferência realizada", "green"]; grupo = "andamento"; prox = [aguardDiag ? `${aguardDiag} receptora(s) aguardando diagnóstico` : "", resto].filter(Boolean).join(" · "); }
-  else if (disp > 0) { st = ["Embriões produzidos", "gold"]; grupo = "andamento"; prox = `Próxima ação: gerar prenhez (${disp} embrião(ões) a transferir)${saldoBanco ? ` · ${saldoBanco} no Banco` : ""}`; }
-  else if (saldoBanco > 0) { st = ["Embriões congelados", "info"]; grupo = "andamento"; prox = `${saldoBanco} embrião(ões) no Banco de Embriões`; }
-  else if (ps.length && E == null) { st = ["Transferência realizada", "green"]; grupo = "andamento"; prox = "Prenhezes encerradas · informe os embriões produzidos para saber se ainda restam embriões"; }
-  else if (E != null || ps.length || lotes.length) { st = ["Concluída", "green"]; grupo = "concluido"; prox = nasc ? `${nasc} nascimento(s) registrado(s)` : "Sem pendências"; }
-  else if (dA && dA <= hoje) { st = ["Realizada", "info"]; grupo = "andamento"; prox = "Próxima ação: lançar o resultado do laboratório (editar a ficha)"; }
-  else { st = ["Pendente", "gold"]; grupo = "pendente"; prox = dA ? `Aspiração prevista para ${dataBR(dA)}` : "Próxima ação: informar a data e o resultado da aspiração"; }
-  // verde-claro quando já houve transferência/prenhez; discreto quando cancelada
-  const destaque = grupo === "cancelado" ? "cancel" : ps.length > 0 || (manual && transf > 0) || grupo === "concluido" ? "ok" : "";
-  return { lotes, ps, manual, E, oocitos, frescas, transf, congelados, disp, conf, diag, nasc, saldoBanco, andamento, st, prox, grupo, destaque };
+  else if (sa.includes("finalizada") || sa.includes("concluída") || sa.includes("concluida")) { st = ["Concluída", "green"]; grupo = "concluido"; prox = "Marcada como concluída no cadastro"; }
+  else if (E === 0 && !ps.length && !lotes.length && !encaminhados) { st = ["Sem embriões viáveis", "red"]; grupo = "sem"; prox = `Laboratório informou 0 embrião${oocitos ? ` (${oocitos} oócito(s))` : ""}`; }
+  else if (E != null && disp === 0) { st = ["Concluída", "green"]; grupo = "concluido"; prox = [transf ? `${transf} transferido(s)` : "", gest ? `${gest} em gestação (acompanhe em Prenhezes)` : "", aguardDiag ? `${aguardDiag} aguardando diagnóstico (em Prenhezes)` : "", nasc ? `${nasc} nascimento(s)` : "", saldoBanco ? `${saldoBanco} no Banco de Embriões` : ""].filter(Boolean).join(" · ") || "Todos os embriões encaminhados"; }
+  else if (disp > 0) { st = ["Aguardando encaminhamento", "amber"]; grupo = "andamento"; prox = [`${disp} embrião(ões) sem destino: gerar prenhez ou enviar ao Banco`, transf ? `${transf} já transferido(s)` : "", saldoBanco ? `${saldoBanco} no Banco` : ""].filter(Boolean).join(" · "); }
+  else if (ps.length || lotes.length || encaminhados || (manual && conf > 0)) { st = ["Aguardando resultado", "amber"]; grupo = "andamento"; prox = [transf ? `${transf} transferido(s)` : "", saldoBanco ? `${saldoBanco} no Banco` : "", "informe os embriões produzidos para concluir (ou conclua manualmente)"].filter(Boolean).join(" · "); }
+  else if (dA && dA <= hoje) { st = ["Realizada · aguardando resultado", "amber"]; grupo = "andamento"; prox = "Próxima ação: lançar o resultado do laboratório (editar a ficha)"; }
+  else { st = ["A realizar", "gold"]; grupo = "pendente"; prox = dA ? `Aspiração prevista para ${dataBR(dA)}` : "Próxima ação: informar a data e o resultado da aspiração"; }
+  const cor = COR_GRUPO[grupo] || "";
+  const destaque = cor;   // compatibilidade
+  return { lotes, ps, manual, E, oocitos, frescas, transf, congelados, disp, conf, diag, nasc, saldoBanco, andamento, st, prox, grupo, cor, destaque };
 }
 
 /* -------------------------------- seed --------------------------------- */
@@ -3508,7 +3516,7 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote, onAcao }) {
       : diagEstimado(a) ? `não informado · estimado ${dataBR(diagEstimado(a))}` : "não informado (opcional)";
     return (
       <div className="fsec rp-sec" id="fx-repro"><div className="fsec-h">Reprodução</div>
-        <div className="rp-linha">{(() => { const sp = statusPrenhez(a); return <Badge tone={sp.tone}>{sp.destaque === "ok" ? "✓ " : ""}{sp.txt}</Badge>; })()}{qtdTotal(a) > 1 && <Badge tone="gold">Ficha com {qtdTotal(a)} prenhezes · restam {qtdRest(a)}</Badge>}</div>
+        <div className="rp-linha">{(() => { const sp = statusPrenhez(a); return <Badge tone={sp.tone}>{sp.grupo === "concluido" ? "✓ " : ""}{sp.txt}</Badge>; })()}{qtdTotal(a) > 1 && <Badge tone="gold">Ficha com {qtdTotal(a)} prenhezes · restam {qtdRest(a)}</Badge>}</div>
         <CadeiaRepro itens={itens} />
         <div className="info-grid">
           <InfoR l="Receptora" v={a.receptora} />
@@ -3579,38 +3587,47 @@ function SecaoRepro({ a, ativos, embrioes, onAbrir, onIrLote, onAcao }) {
 }
 
 /* ---------- situação dos registros reprodutivos (calculada pelos fatos e gravada em statusAuto) ---------- */
-// grupos: pendente · andamento · concluido · cancelado   |   destaque: "ok" (verde-claro) · "atencao" · "cancel" · ""
+// grupos: pendente · andamento · concluido · sem (encerrada sem sucesso)   |   cor: COR_GRUPO[grupo]   |   atraso: parto previsto já passou
 function statusPrenhez(p) {
   const f = faseReprod(p), nasc = qtdConvertidos(p);
-  if (f.cancel) return { txt: "Cancelada", tone: "red", grupo: "cancelado", destaque: "cancel" };
+  const R = (txt, tone, grupo, extra) => ({ txt, tone, grupo, cor: COR_GRUPO[grupo], destaque: COR_GRUPO[grupo], ...(extra || {}) });
+  if (f.cancel) return R("Cancelada", "red", "sem", { sub: "cancel", motivo: "registro cancelado" });
   if (f.k === "enc") {
-    if (nasc > 0) return { txt: nasc > 1 ? `Nascimentos registrados (${nasc})` : "Nascimento registrado", tone: "green", grupo: "concluido", destaque: "ok" };
-    if (f.txt === "Sem prenhez") return { txt: "Encerrada sem nascimento", motivo: "quantidade 0 (não deu prenhez)", tone: "red", grupo: "concluido", destaque: "atencao" };
-    if (f.txt === "Perda gestacional" || f.txt === "Não confirmada") return { txt: "Encerrada sem nascimento", motivo: f.txt === "Perda gestacional" ? "perda gestacional" : "diagnóstico negativo", tone: "red", grupo: "concluido", destaque: "atencao" };
-    if (f.txt === "Encerrada") return { txt: "Encerrada sem nascimento", tone: "gold", grupo: "concluido", destaque: "" };
-    return { txt: f.txt, tone: "gold", grupo: "concluido", destaque: "" };
+    if (nasc > 0) return R(nasc > 1 ? `Nascimentos registrados (${nasc})` : "Nascimento registrado", "green", "concluido", { sub: "nasc" });
+    if (f.txt === "Vendida") return R("Vendida", "green", "concluido", { sub: "vend" });
+    if (f.txt === "Sem prenhez") return R("Sem prenhez", "red", "sem", { sub: "zero", motivo: "quantidade 0 (não deu prenhez)" });
+    if (f.txt === "Perda gestacional") return R("Perda gestacional", "red", "sem", { sub: "perda", motivo: "perda gestacional" });
+    if (f.txt === "Não confirmada") return R("Diagnóstico negativo", "red", "sem", { sub: "neg", motivo: "diagnóstico negativo" });
+    if (f.txt === "Encerrada") return R("Encerrada sem nascimento", "red", "sem", { sub: "enc" });
+    return R(f.txt, "green", "concluido", { sub: "conc" });   // "Concluída"/"Parida" informados no cadastro
   }
-  if (f.k === "diag") return { txt: f.txt, tone: f.tone, grupo: "pendente", destaque: "" };
-  if (nasc > 0) return { txt: `${f.txt} · ${nasc} nascido(s)`, tone: f.tone, grupo: "andamento", destaque: "" };
-  return { txt: f.txt, tone: f.tone, grupo: "andamento", destaque: f.d != null && f.d < 0 ? "atencao" : "" };
+  if (f.k === "diag") return R(f.txt, "amber", "pendente", { cor: COR_GRUPO.andamento, destaque: COR_GRUPO.andamento });   // TE feita: já aguarda resultado
+  if (nasc > 0) return R(`${f.txt} · ${nasc} nascido(s)`, f.tone, "andamento");
+  return R(f.txt, f.tone, "andamento", { atraso: f.d != null && f.d < 0 });
 }
-const ESCOPOS = [["ativos", "Ativos"], ["inativos", "Inativos"], ["todos", "Todos"]];
+// "Concluídos" em vez de "Inativos": a operação não deixou de existir, só avançou de etapa
+const ESCOPOS = [["ativos", "Ativos"], ["concluidos", "Concluídos"], ["sem", "Encerrados sem sucesso"], ["todos", "Todos"]];
 const ABAS_SIT = {
-  ativos: () => [["todos", "Todos os ativos"], ["pendente", "Pendentes"], ["andamento", "Em andamento"]],
-  inativos: (tipo) => (tipo === "pren" ? [["todos", "Todos os inativos"], ["nasc", "Nascimento registrado"], ["sem", "Encerradas sem nascimento"], ["cancelado", "Canceladas"]] : [["todos", "Todos os inativos"], ["concluido", "Concluídas"], ["cancelado", "Canceladas"]]),
-  todos: () => [["todos", "Todos"], ["pendente", "Pendentes"], ["andamento", "Em andamento"], ["concluido", "Concluídos"], ["cancelado", "Cancelados"]],
+  ativos: (tipo) => (tipo === "pren" ? [["todos", "Todas as ativas"], ["pendente", "Aguardando diagnóstico"], ["andamento", "Em gestação"]] : [["todos", "Todas as ativas"], ["pendente", "A realizar"], ["andamento", "Aguardando resultado"]]),
+  concluidos: (tipo) => (tipo === "pren" ? [["todos", "Todas as concluídas"], ["nasc", "Nascimento registrado"], ["vend", "Vendidas / outras"]] : []),
+  sem: (tipo) => (tipo === "pren" ? [["todos", "Todas"], ["perda", "Perda gestacional"], ["neg", "Diagnóstico negativo"], ["zero", "Sem prenhez"], ["cancel", "Canceladas"], ["enc", "Outros encerramentos"]] : []),
+  todos: () => [],
 };
-const noEscopo = (x, e) => (e === "todos" ? true : e === "inativos" ? x.grupo === "concluido" || x.grupo === "cancelado" : x.grupo === "pendente" || x.grupo === "andamento");
-const naAba = (x, v) => (v === "todos" ? true : v === "nasc" || v === "sem" ? x.grupo === "concluido" && x.sub === v : x.grupo === v);
+const grupoSem = (g) => g === "sem" || g === "cancelado";
+const grupoAtivoEsc = (e) => e === "ativos" || e === "todos";
+const ESC_TXT_F = { ativos: "ativa ", concluidos: "concluída ", sem: "encerrada sem sucesso " };
+const noEscopo = (x, e) => (e === "todos" ? true : e === "concluidos" ? x.grupo === "concluido" : e === "sem" ? grupoSem(x.grupo) : grupoAtivo(x.grupo));
+const naAba = (x, v) => (v === "todos" ? true : v === "pendente" || v === "andamento" ? x.grupo === v : v === "vend" ? x.grupo === "concluido" && x.sub !== "nasc" : x.sub === v);
 function FiltroSituacao({ itens, escopo, setEscopo, valor, setValor, tipo }) {
   const doEsc = (e) => itens.filter((x) => noEscopo(x, e));
   const base = doEsc(escopo);
+  const abas = ABAS_SIT[escopo](tipo).filter(([k]) => k === "todos" || k === valor || base.some((x) => naAba(x, k)));
   return (
     <div className="rp-sitbar">
-      <div className="seg-group rp-escopo" role="tablist" aria-label="Ativos ou inativos">{ESCOPOS.map(([k, l]) => (
-        <button key={k} type="button" role="tab" aria-selected={escopo === k} className={`seg ${escopo === k ? "on" : ""}`} onClick={() => { setEscopo(k); setValor("todos"); }}>{l} <b>{doEsc(k).length}</b></button>))}</div>
-      <div className="rp-tabs" role="tablist" aria-label="Situação">{ABAS_SIT[escopo](tipo).map(([k, l]) => (
-        <button key={k} type="button" role="tab" aria-selected={valor === k} className={valor === k ? "on" : ""} onClick={() => setValor(k)}>{l}<b>{base.filter((x) => naAba(x, k)).length}</b></button>))}</div>
+      <div className="seg-group rp-escopo" role="tablist" aria-label="Situação: ativos, concluídos ou encerrados">{ESCOPOS.map(([k, l]) => (
+        <button key={k} type="button" role="tab" aria-selected={escopo === k} className={`seg ${escopo === k ? "on" : ""}`} onClick={() => { setEscopo(k); setValor("todos"); }}><i className={`rp-dot e-${k}`} aria-hidden="true" />{l} <b>{doEsc(k).length}</b></button>))}</div>
+      {abas.length > 1 && <div className="rp-tabs" role="tablist" aria-label="Detalhe da situação">{abas.map(([k, l]) => (
+        <button key={k} type="button" role="tab" aria-selected={valor === k} className={valor === k ? "on" : ""} onClick={() => setValor(k)}>{l}<b>{base.filter((x) => naAba(x, k)).length}</b></button>))}</div>}
     </div>
   );
 }
@@ -3706,11 +3723,13 @@ function agrupaPacotes(lst, rec) {
 function CardPacote({ pacoteId, ativos, embrioes, onAbrir, desab }) {
   const pac = (ativos || []).find((x) => x && x.id === pacoteId);
   const filhos = doPacote(ativos, pacoteId);
-  const sit = (x) => { if (x.tipo === "prenhez") return statusPrenhez(x); const D = dadosAsp(x, ativos, embrioes); return { txt: D.st[0], tone: D.st[1] }; };
+  const sit = (x) => { if (x.tipo === "prenhez") return statusPrenhez(x); const D = dadosAsp(x, ativos, embrioes); return { txt: D.st[0], tone: D.st[1], grupo: D.grupo }; };
+  const gs = filhos.map((x) => sit(x).grupo);
+  const gPac = gs.some((g) => g === "andamento") ? "andamento" : gs.some((g) => g === "pendente") ? "pendente" : gs.some((g) => g === "concluido") ? "concluido" : gs.length ? "sem" : "pendente";
   const noBanco = (x) => (x.tipo === "aspiracao" ? dadosAsp(x, ativos, embrioes).saldoBanco : 0);
   const totBanco = filhos.reduce((s, x) => s + noBanco(x), 0);
   return (
-    <button type="button" className={`rp-card rp-pac ${totBanco > 0 ? "banco-faixa" : ""} ${desab ? "rp-desab" : ""}`} disabled={!!desab} title={desab ? "Já é um pacote" : ""} onClick={() => onAbrir(pac || filhos[0])}>
+    <button type="button" className={`rp-card rp-pac ${COR_GRUPO[gPac]} ${totBanco > 0 ? "banco-faixa" : ""} ${desab ? "rp-desab" : ""}`} disabled={!!desab} title={desab ? "Já é um pacote" : ""} onClick={() => onAbrir(pac || filhos[0])}>
       <div className="rp-card-h"><span className="rp-t">{pac ? rotuloPacote(pac) : "Pacote"}</span><Badge tone="gold">{filhos.length} doadora(s)</Badge></div>
       <span className="rp-meta">{[pac && pac.dataCompra ? `compra em ${dataBR(pac.dataCompra)}` : "", pac && num(pac.porcentagemComprada) ? `SM ${pctTxt(num(pac.porcentagemComprada))}` : ""].filter(Boolean).join(" · ") || "pacote"}</span>
       <ul className="rp-pac-lista">
@@ -3773,47 +3792,52 @@ function PaginaPrenhezes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
   const [origem, setOrigem] = useState("");
   const [cri, setCri] = useState("");
   const [ordem, setOrdem] = useState("parto");
-  const base = (lista || []).filter((p) => p && p.tipo === "prenhez" && p.origem !== "genealogia").map((p) => { const s = statusPrenhez(p); return { p, f: faseReprod(p), s, grupo: s.grupo, sub: s.grupo === "concluido" ? (qtdConvertidos(p) > 0 ? "nasc" : "sem") : "" }; });
+  const base = (lista || []).filter((p) => p && p.tipo === "prenhez" && p.origem !== "genealogia").map((p) => { const s = statusPrenhez(p); return { p, f: faseReprod(p), s, grupo: s.grupo, sub: s.sub || "" }; });
   const criatorios = [...new Set(base.map(({ p }) => p.ondeEsta).filter(Boolean))].sort();
   const filt = base.filter(({ p }) => (!origem || origemPrenhez(p) === origem) && (!cri || p.ondeEsta === cri));
   const prevDe = (p) => p.previsaoParto || previsaoEstimada(p) || "9999";
-  const ord = escopo === "inativos" ? (a, b) => (b.p.dataParto || b.p.dataTE || "").localeCompare(a.p.dataParto || a.p.dataTE || "")
-    : ordem === "te" ? (a, b) => (b.p.dataTE || "").localeCompare(a.p.dataTE || "") : (a, b) => (a.grupo === "concluido" || a.grupo === "cancelado") - (b.grupo === "concluido" || b.grupo === "cancelado") || prevDe(a.p).localeCompare(prevDe(b.p));
+  const ord = escopo === "concluidos" || escopo === "sem" ? (a, b) => (b.p.dataParto || b.p.dataTE || "").localeCompare(a.p.dataParto || a.p.dataTE || "")
+    : ordem === "te" ? (a, b) => (b.p.dataTE || "").localeCompare(a.p.dataTE || "") : (a, b) => !grupoAtivo(a.grupo) - !grupoAtivo(b.grupo) || prevDe(a.p).localeCompare(prevDe(b.p));
   const lst = filtraSituacao(filt, escopo, sit).sort(ord);
-  const ativas = base.filter((x) => x.f.k !== "enc");
+  const ativas = base.filter((x) => grupoAtivo(x.grupo));
+  const geradas = base.reduce((s, { p }) => s + (qtdZero(p) ? 0 : qtdTotal(p)), 0), nConc = base.filter((x) => x.grupo === "concluido").length, nSem = base.filter((x) => grupoSem(x.grupo)).length;
   return (
     <section className="wrap rp-pag">
       <div className="rp-kpis">
-        <KPI label="Prenhezes ativas" value={ativas.length} sub={`${ativas.filter(({ p }) => p.loteOrigemId).length} de embrião congelado · ${ativas.filter(({ p }) => origemPrenhez(p) === "compra").length} adquirida(s)/direta(s)`} />
+        <KPI label="Prenhezes ativas" value={ativas.length} sub={`aguardando nascimento · ${ativas.filter(({ p }) => p.loteOrigemId).length} de embrião congelado · ${ativas.filter(({ p }) => origemPrenhez(p) === "compra").length} adquirida(s)/direta(s)`} />
         <KPI label="Aguardando diagnóstico" value={base.filter((x) => x.f.k === "diag").length} sub="sugerido 30 dias após a TE" />
         <KPI label="Partos em até 30 dias" value={base.filter((x) => x.f.k === "parto" && x.f.d >= 0).length} sub="pela previsão de parto" />
         <KPI label="Partos atrasados" value={base.filter((x) => x.f.d < 0).length} tone={base.some((x) => x.f.d < 0) ? "neg" : ""} sub="previsão já passou" />
         <KPI label="Nascimentos registrados" value={base.reduce((s, { p }) => s + qtdConvertidos(p), 0)} sub="animais cadastrados a partir de prenhezes" />
+        <KPI label="Histórico" value={geradas} sub={`prenhez(es) geradas · ${nConc} concluída(s) · ${nSem} encerrada(s) sem sucesso`} />
       </div>
       <FiltroSituacao itens={filt} escopo={escopo} setEscopo={setEscopo} valor={sit} setValor={setSit} tipo="pren" />
       <div className="rp-filtros">
         <select value={origem} onChange={(e) => setOrigem(e.target.value)} aria-label="Origem"><option value="">Todas as origens</option><option value="aspiracao">Aspiração da SM</option><option value="banco">Banco de Embriões</option><option value="compra">Adquirida / direta</option></select>
         <select value={cri} onChange={(e) => setCri(e.target.value)} aria-label="Criatório"><option value="">Todos os criatórios</option>{criatorios.map((c) => <option key={c} value={c}>{c}</option>)}</select>
-        {escopo !== "inativos" && <select value={ordem} onChange={(e) => setOrdem(e.target.value)} aria-label="Ordenar"><option value="parto">Ordenar por previsão de parto</option><option value="te">Ordenar pela TE mais recente</option></select>}
+        {grupoAtivoEsc(escopo) && <select value={ordem} onChange={(e) => setOrdem(e.target.value)} aria-label="Ordenar"><option value="parto">Ordenar por previsão de parto</option><option value="te">Ordenar pela TE mais recente</option></select>}
         <BarraAgrupar agr={agr} setAgr={setAgr} onAgrupar={onAgrupar} regs={base.map((x) => x.p)} />
       </div>
       <div className="cards-grid rp-grid">
         {agrupaPacotes(lst, (x) => x.p).map(({ pacoteId, it: { p, f, s } }) => pacoteId ? <CardPacote key={"pac-" + pacoteId} pacoteId={pacoteId} ativos={ativos || lista} embrioes={embrioes} onAbrir={onAbrir} desab={!!agr} /> : (
-          <button type="button" className={`rp-card ${s.destaque} ${agr && agr.has(p.id) ? "rp-sel" : ""}`} key={p.id} aria-pressed={agr ? agr.has(p.id) : undefined} onClick={() => (agr ? marcaAgr(setAgr, p.id) : onAbrir(p))}>
+          <button type="button" className={`rp-card ${s.cor}${s.atraso ? " atraso" : ""} ${agr && agr.has(p.id) ? "rp-sel" : ""}`} key={p.id} aria-pressed={agr ? agr.has(p.id) : undefined} onClick={() => (agr ? marcaAgr(setAgr, p.id) : onAbrir(p))}>
             {agr && <span className="rp-check" aria-hidden="true">{agr.has(p.id) ? "✓" : ""}</span>}
-            <div className="rp-card-h"><span className="rp-t">{p.doadora || "Doadora não informada"}{p.pai || p.touro ? ` × ${p.pai || p.touro}` : ""}</span><Badge tone={s.tone}>{s.destaque === "ok" ? "✓ " : ""}{s.txt}</Badge></div>
+            <div className="rp-card-h"><span className="rp-t">{p.doadora || "Doadora não informada"}{p.pai || p.touro ? ` × ${p.pai || p.touro}` : ""}</span><Badge tone={s.tone}>{s.grupo === "concluido" ? "✓ " : ""}{s.txt}</Badge></div>
             <span className="rp-meta">{[p.receptora ? `Receptora ${p.receptora}` : "Receptora não informada", p.ondeEsta].filter(Boolean).join(" · ")}</span>
             <div className="rp-chips">
               <span className={`rp-chip o-${origemPrenhez(p)}`}>{ORIGEM_PREN_TXT[origemPrenhez(p)]}</span>
               {p.sexagem && <span className="rp-chip">{p.sexagem === "Fêmea" ? "♀" : "♂"} {p.sexagem}</span>}
               {qtdTotal(p) > 1 && <span className="rp-chip">ficha com {qtdTotal(p)} · restam {qtdRest(p)}</span>}
             </div>
+            {grupoAtivo(s.grupo) && (() => { const pos = p.diagnostico === "positivo" || (p.dataConfirmacao && p.dataConfirmacaoOrigem !== "estimada"); const prev = p.previsaoParto || previsaoEstimada(p);
+              const t = [pos ? `Diagnóstico positivo${p.dataConfirmacao ? ` em ${dataBR(p.dataConfirmacao)}` : ""}` : "Diagnóstico ainda não informado", !p.dataTE && prev ? `previsão de parto ${dataBR(prev)}` : "", "aguardando nascimento"].filter(Boolean).join(" · ");
+              return <span className="rp-meta">{t}</span>; })()}
             {(f.k === "conf" || f.k === "parto") ? <BarraGestacao p={p} />
               : f.k === "diag" ? <span className="rp-prox">{p.dataTE ? `Próxima ação: lançar diagnóstico (estimado ${dataBR(diagPorTE(p.dataTE))})` : "Próxima ação: lançar diagnóstico"}</span>
               : <span className="rp-meta">{p.dataParto ? `Nascimento em ${dataBR(p.dataParto)}` : p.perda ? `Perda em ${dataBR(p.perda.data)} · ${p.perda.motivo}` : s.motivo ? `Motivo: ${s.motivo}` : p.dataTE ? `TE em ${dataBR(p.dataTE)}` : ""}</span>}
           </button>
         ))}
-        {lst.length === 0 && <div className="empty">Nenhuma prenhez {escopo === "ativos" ? "ativa " : escopo === "inativos" ? "inativa " : ""}nesta situação{origem || cri ? " com esses filtros" : ""}.</div>}
+        {lst.length === 0 && <div className="empty">Nenhuma prenhez {ESC_TXT_F[escopo] || ""}nesta situação{origem || cri ? " com esses filtros" : ""}.</div>}
       </div>
     </section>
   );
@@ -3825,13 +3849,14 @@ function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
   const [sit, setSit] = useState("todos");
   const [escopo, setEscopo] = useState("ativos");
   const base = (lista || []).filter((a) => a && a.tipo === "aspiracao" && a.origem !== "genealogia").map((a) => { const D = dadosAsp(a, ativos, embrioes); return { a, D, grupo: D.grupo }; });
-  const lst = filtraSituacao(base, escopo, sit).sort((x, y) => (x.grupo === "concluido" || x.grupo === "cancelado") - (y.grupo === "concluido" || y.grupo === "cancelado") || (y.a.dataAspiracao || y.a.dataAsp || "").localeCompare(x.a.dataAspiracao || x.a.dataAsp || ""));
+  const lst = filtraSituacao(base, escopo, sit).sort((x, y) => !grupoAtivo(x.grupo) - !grupoAtivo(y.grupo) || (x.grupo === "pendente") - (y.grupo === "pendente") || (y.a.dataAspiracao || y.a.dataAsp || "").localeCompare(x.a.dataAspiracao || x.a.dataAsp || ""));
   const soma = (k) => base.reduce((s, x) => s + (x.D[k] || 0), 0);
   const ooComE = base.filter((x) => x.D.E != null).reduce((s, x) => s + x.D.oocitos, 0);
   return (
     <section className="wrap rp-pag">
       <div className="rp-kpis">
-        <KPI label="Aspirações em andamento" value={base.filter((x) => x.grupo === "andamento").length} sub={`${base.length} no total · ${base.filter((x) => x.grupo === "pendente").length} pendente(s)`} />
+        <KPI label="Aspirações ativas" value={base.filter((x) => grupoAtivo(x.grupo)).length} sub={`${base.filter((x) => x.grupo === "andamento").length} aguardando resultado · ${base.filter((x) => x.grupo === "pendente").length} a realizar`} />
+        <KPI label="Histórico" value={base.filter((x) => x.grupo !== "pendente" && !lc(x.a.status).includes("cancel")).length} sub={`aspiração(ões) realizadas · ${base.filter((x) => x.grupo === "concluido").length} concluída(s) · ${base.filter((x) => grupoSem(x.grupo)).length} sem sucesso`} />
         <KPI label="Embriões produzidos" value={soma("E")} sub={ooComE ? `aproveitamento ${Math.round((soma("E") / ooComE) * 100)}%` : "embriões ÷ oócitos"} />
         <KPI label="Embriões a transferir" value={soma("disp")} sub="frescos, aguardando TE" />
         <KPI label="No Banco de Embriões" value={soma("saldoBanco")} sub="congelados destas aspirações" />
@@ -3844,9 +3869,9 @@ function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
           if (pacoteId) return <CardPacote key={"pac-" + pacoteId} pacoteId={pacoteId} ativos={ativos} embrioes={embrioes} onAbrir={onAbrir} desab={!!agr} />;
           const w = (v) => `${D.E ? (v / D.E) * 100 : 0}%`;
           return (
-            <button type="button" className={`rp-card ${D.destaque} ${D.saldoBanco > 0 && D.destaque !== "cancel" ? (D.destaque === "ok" ? "banco-faixa" : "banco") : ""} ${agr && agr.has(a.id) ? "rp-sel" : ""}`} key={a.id} aria-pressed={agr ? agr.has(a.id) : undefined} onClick={() => (agr ? marcaAgr(setAgr, a.id) : onAbrir(a))}>
+            <button type="button" className={`rp-card ${D.cor} ${D.saldoBanco > 0 ? "banco-faixa" : ""} ${agr && agr.has(a.id) ? "rp-sel" : ""}`} key={a.id} aria-pressed={agr ? agr.has(a.id) : undefined} onClick={() => (agr ? marcaAgr(setAgr, a.id) : onAbrir(a))}>
               {agr && <span className="rp-check" aria-hidden="true">{agr.has(a.id) ? "✓" : ""}</span>}
-              <div className="rp-card-h"><span className="rp-t">{a.doadora || a.nome}{a.pai || a.touro ? ` × ${a.pai || a.touro}` : ""}</span><Badge tone={D.st[1]}>{D.destaque === "ok" ? "✓ " : ""}{D.st[0]}</Badge></div>
+              <div className="rp-card-h"><span className="rp-t">{a.doadora || a.nome}{a.pai || a.touro ? ` × ${a.pai || a.touro}` : ""}</span><Badge tone={D.st[1]}>{D.grupo === "concluido" ? "✓ " : ""}{D.st[0]}</Badge></div>
               <span className="rp-meta">{[a.dataAspiracao || a.dataAsp ? dataBR(a.dataAspiracao || a.dataAsp) : "data não informada", a.ondeEsta].filter(Boolean).join(" · ")}</span>
               {D.saldoBanco > 0 && <span className="rp-banco-selo">🧊 {D.saldoBanco} {D.saldoBanco > 1 ? "embriões" : "embrião"} no banco</span>}
               {D.E != null && <div className="rp-dest" aria-hidden="true"><i style={{ width: w(D.transf), background: "var(--em)" }} /><i style={{ width: w(D.congelados), background: "#C9AE74" }} /><i style={{ width: w(D.disp), background: "#9CC5AF" }} /></div>}
@@ -3855,7 +3880,7 @@ function PaginaAspiracoes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
             </button>
           );
         })}
-        {lst.length === 0 && <div className="empty">Nenhuma aspiração {escopo === "ativos" ? "ativa " : escopo === "inativos" ? "inativa " : ""}nesta situação.</div>}
+        {lst.length === 0 && <div className="empty">Nenhuma aspiração {ESC_TXT_F[escopo] || ""}nesta situação.</div>}
       </div>
       {base.some((x) => x.D.E != null) && <div className="rp-legenda"><span><i style={{ background: "var(--em)" }} />transferidos</span><span><i style={{ background: "#C9AE74" }} />congelados</span><span><i style={{ background: "#9CC5AF" }} />a transferir</span></div>}
     </section>
@@ -5707,7 +5732,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   // monta uma linha (objeto) para o animal conforme campos marcados
   const linhaDe = (a) => {
     const fr = finRel(a); const f = fr.f; const row = {};
-    if (campos.basico) { row["Tipo"] = a.tipo; row["Nome"] = a.nome; row["Registro"] = a.registro || ""; row["Sexo"] = a.sexo || ""; row["Categoria"] = a.categoria || a.raca || ""; if (a.tipo === "animal") row["Situação"] = ehAtivo(a) ? "Ativo" : "Inativo"; row["Criatório responsável"] = a.ondeEsta || ""; row["Nascimento"] = a.nascimento ? dataBR(a.nascimento) : ""; }
+    if (campos.basico) { row["Tipo"] = a.tipo; row["Nome"] = a.nome; row["Registro"] = a.registro || ""; row["Sexo"] = a.sexo || ""; row["Categoria"] = a.categoria || a.raca || ""; if (a.tipo === "animal") row["Situação"] = ehAtivo(a) ? "Ativo" : "Inativo"; else if (!ehPacote(a) && (a.tipo === "aspiracao" || a.tipo === "prenhez")) { const g = a.tipo === "prenhez" ? statusPrenhez(a).grupo : a.statusGrupo || (aspAtiva(a) ? "andamento" : "concluido"); row["Situação"] = [grupoAtivo(g) ? "Ativo" : GRUPO_TXT[g] || "", a.tipo === "prenhez" ? statusPrenhez(a).txt : a.statusAuto || ""].filter(Boolean).join(" · "); } row["Criatório responsável"] = a.ondeEsta || ""; row["Nascimento"] = a.nascimento ? dataBR(a.nascimento) : ""; }
     else { row["Nome"] = a.nome; }
     if (campos.idade) row["Idade"] = idadeTexto(a.nascimento); // sempre logo após o Nascimento (ou após o Nome, se Básicos estiver off)
     // pacote: uma linha só, com as doadoras (e a situação de cada uma)
@@ -5999,7 +6024,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
           <div className="rep-campo"><label>Situação</label>
             <select className="rep-sel" value={adv.situacao} onChange={(e) => setAdv((p) => ({ ...p, situacao: e.target.value }))}>
               <option value="ativos">Ativos</option>
-              <option value="inativos">Inativos</option>
+              <option value="inativos">Inativos / concluídos</option>
               <option value="todos">Todos</option>
             </select>
           </div>
@@ -7664,15 +7689,16 @@ export default function App() {
       let txt, grupo;
       if (a.tipo === "aspiracao") { const D = dadosAsp(a, lista, embrioes); txt = D.st[0]; grupo = D.grupo; }
       else { const sp = statusPrenhez(a); grupo = sp.grupo; txt = /^Parto em|^Parto previsto hoje/.test(sp.txt) ? "Confirmada" : /^Parto atrasado/.test(sp.txt) ? "Parto atrasado" : sp.txt; }
-      const inativo = grupo === "concluido" || grupo === "cancelado";
+      const inativo = !grupoAtivo(grupo);
       if (a.statusAuto !== txt || a.statusGrupo !== grupo || !!a.inativo !== inativo) mud.set(a.id, [txt, grupo, inativo]);
     });
     if (mud.size) setDb((p) => ({ ...p, ativos: (p.ativos || []).map((a) => {
       const m = a && mud.get(a.id); if (!m) return a;
       const [txt, grupo, inativo] = m, eraIn = !!a.inativo, conhecido = a.statusGrupo != null;
       const n = { ...a, statusAuto: txt, statusGrupo: grupo, inativo };
-      if (inativo && !eraIn) { n.inativadoEm = conhecido ? today() : ""; if (conhecido) n.historico = [...(a.historico || []), { id: uid(), data: today(), tipo: "Inativação automática", desc: `${txt} — registro passou para os inativos`, responsavel: "Sistema" }]; }
-      if (!inativo && eraIn) { n.inativadoEm = ""; n.historico = [...(a.historico || []), { id: uid(), data: today(), tipo: "Reativação automática", desc: `${txt} — registro voltou para os ativos`, responsavel: "Sistema" }]; }
+      if (inativo && !eraIn) { n.inativadoEm = today(); n.concluidoEm = today(); n.historico = [...(a.historico || []), { id: uid(), data: today(), tipo: grupo === "concluido" ? "Conclusão automática" : "Encerramento automático", desc: `${txt} — registro passou para ${grupo === "concluido" ? "os concluídos" : "os encerrados sem sucesso"} (dados preservados)`, responsavel: "Sistema" }]; }
+      else if (inativo && eraIn && grupoSem(grupo) !== grupoSem(a.statusGrupo || "") && conhecido) n.historico = [...(a.historico || []), { id: uid(), data: today(), tipo: "Situação atualizada", desc: `${txt} — agora em ${GRUPO_TXT[grupo]}`, responsavel: "Sistema" }];
+      if (!inativo && eraIn) { n.inativadoEm = ""; n.concluidoEm = ""; n.historico = [...(a.historico || []), { id: uid(), data: today(), tipo: "Reabertura automática", desc: `${txt} — conclusão revertida, registro voltou para os ativos`, responsavel: "Sistema" }]; }
       return n; }) }));
   }, [db.ativos, embrioes, dataReady]);
   const abertoAtual = aberto ? ((ativos || []).find((x) => x && x.id === aberto.id) || aberto) : null;   // ficha sempre com os dados mais recentes
@@ -7840,7 +7866,7 @@ export default function App() {
       D.saldoBanco ? `${D.saldoBanco} embrião(ões) no Banco (continuam no estoque)` : "",
       D.ps.filter((x) => prenhezAtiva(x)).length ? `${D.ps.filter((x) => prenhezAtiva(x)).length} prenhez(es) ainda em andamento (continuam ativas)` : ""].filter(Boolean);
     setConfirmar({ titulo: "Concluir esta aspiração?",
-      mensagem: pend.length ? `Ainda consta: ${pend.join("; ")}. Concluir não altera o Banco nem as prenhezes; a aspiração vai para os inativos e pode ser reaberta.` : "A aspiração vai para os inativos (concluídas) e pode ser reaberta depois.", usos: [],
+      mensagem: pend.length ? `Ainda consta: ${pend.join("; ")}. Concluir não altera o Banco nem as prenhezes; a aspiração vai para as Concluídas (sai da contagem de ativas, com histórico preservado) e pode ser reaberta.` : "A aspiração vai para as Concluídas (sai da contagem de ativas, com histórico preservado) e pode ser reaberta depois.", usos: [],
       botoes: [{ label: "Concluir aspiração", tone: "gold", onClick: () => { updateAtivo({ ...a, concluidaManual: { data: today(), por: quemReg() }, historico: [...(a.historico || []), histE("Conclusão", `Concluída manualmente${pend.length ? ` (constava: ${pend.join("; ")})` : ""}`)] }); setConfirmar(null); setToast("Aspiração concluída."); } }] });
   };
   const reabrirAsp = (a) => { const { concluidaManual, ...resto } = a; updateAtivo({ ...resto, historico: [...(a.historico || []), histE("Reabertura", "Aspiração reaberta")] }); setToast("Aspiração reaberta."); };
@@ -8094,7 +8120,13 @@ export default function App() {
     const todos = (ativos || []).filter((a) => a && a.origem !== "genealogia");
     const aspAndamento = todos.filter(aspAtiva);
     const prenhez = todos.filter(prenhezAtiva);
-    const confirmadas = prenhez.filter((a) => { const s = lc(a.status); return s.includes("confirm") || s.includes("gesta") || s.includes("próxima") || s.includes("proxima"); });
+    const confirmadas = prenhez.filter((a) => ["conf", "parto"].includes(faseReprod(a).k));
+    // histórico (não diminui quando o registro é concluído): aspirações realizadas, prenhezes geradas, nascimentos registrados
+    const asps = todos.filter((a) => a.tipo === "aspiracao" && !ehPacote(a)), prens = todos.filter((a) => a.tipo === "prenhez" && !ehPacote(a));
+    const hist = { aspRealizadas: asps.filter((a) => !lc(a.status).includes("cancel") && (a.statusGrupo ? a.statusGrupo !== "pendente" : (a.dataAspiracao || a.dataAsp || "") && (a.dataAspiracao || a.dataAsp) <= today())).length,
+      aspConcluidas: asps.filter((a) => a.statusGrupo === "concluido" || a.concluidaManual).length,
+      prenGeradas: prens.reduce((s, a) => s + (qtdZero(a) ? 0 : qtdTotal(a)), 0), prenConcluidas: prens.filter((a) => statusPrenhez(a).grupo === "concluido").length,
+      nascimentos: prens.reduce((s, a) => s + qtdConvertidos(a), 0) + asps.reduce((s, a) => s + qtdConvertidos(a), 0) };
     const proximas = prenhez.filter((a) => { const n = alertaParto(a); return n === "30" || n === "15" || n === "7" || n === "hoje"; });
     const atrasadas = prenhez.filter((a) => alertaParto(a) === "atrasado");
     // nascimentos aguardando cadastro: status "Nascimento informado" ou fila explícita
@@ -8106,7 +8138,7 @@ export default function App() {
     aguardando.forEach((a) => pend.push({ id: "ag-" + a.id, prio: 2, tipo: "Nascimento aguardando cadastro", ref: a, data: a.dataParto || "", criatorio: a.criatorio || a.ondeEsta || "—", acao: "Cadastrar o animal (botão Nasceu)" }));
     aspAndamento.filter((a) => !a.dataAspiracao).forEach((a) => pend.push({ id: "as-" + a.id, prio: 3, tipo: "Aspiração sem atualização", ref: a, data: "", criatorio: a.criatorio || a.ondeEsta || "—", acao: "Cobrar resultado do criatório" }));
     pend.sort((x, y) => x.prio - y.prio);
-    return { aspAndamento, prenhez, confirmadas, proximas, atrasadas, aguardando, pendencias: pend };
+    return { aspAndamento, prenhez, confirmadas, proximas, atrasadas, aguardando, pendencias: pend, hist };
   }, [ativos]);
   // Idade do plantel: só animais com cadastro próprio, ativos (participação > 0), com nascimento válido
   const plantel = useMemo(() => {
@@ -8348,7 +8380,7 @@ export default function App() {
                   <div className="fh-card fh-main fh-clk" {...cartao("ind-patrimonio", "Patrimônio estimado")}>
                     <span className="fh-k">Patrimônio estimado</span>
                     <MoneyViva v={fKpis.patrimonio} money={money} className="fh-v" />
-                    <span className="fh-d">{nAtivos} animais ativos · {count("prenhez")} prenhezes · {count("aspiracao")} aspirações</span>
+                    <span className="fh-d">{nAtivos} animais ativos · {count("prenhez")} prenhezes ativas · {count("aspiracao")} aspirações ativas</span>
                   </div>
                   <div className="fh-card fh-clk" {...cartao("ind-total", "Total investido")}>
                     <span className="fh-k">Total investido</span>
@@ -8377,8 +8409,8 @@ export default function App() {
             <div className="kpi-row kpi-plantel">
               <KPI label="Animais ativos" value={<ContaViva v={nAtivos} />} icon={<Ico n="animal" size={15} />} onClick={() => { setFiltroSit("ativos"); setView("animal"); }} />
               <KPI label="Animais inativos" value={<ContaViva v={nInativos} />} icon={<Ico n="animal" size={15} />} onClick={() => { setFiltroSit("inativos"); setView("animal"); }} />
-              <KPI label="Prenhezes" value={<ContaViva v={count("prenhez")} />} icon={<Ico n="prenhez" size={15} />} onClick={() => setView("prenhez")} />
-              <KPI label="Aspirações" value={<ContaViva v={count("aspiracao")} />} icon={<Ico n="aspiracao" size={15} />} onClick={() => setView("aspiracao")} />
+              <KPI label="Prenhezes ativas" value={<ContaViva v={count("prenhez")} />} icon={<Ico n="prenhez" size={15} />} onClick={() => setView("prenhez")} />
+              <KPI label="Aspirações ativas" value={<ContaViva v={count("aspiracao")} />} icon={<Ico n="aspiracao" size={15} />} onClick={() => setView("aspiracao")} />
             </div>
 
             {/* FILTROS */}
@@ -8464,13 +8496,15 @@ export default function App() {
                     {proximas.length === 0 && <tr><td colSpan={4} className="muted">Nenhuma parcela em aberto.</td></tr>}</tbody></table></div>
               <div className="card"><div className="card-h">Acompanhamento reprodutivo</div>
                 <div className="repro-kpis">
-                  <button className="repro-kpi" onClick={() => setView("aspiracao")}><span>Aspirações em andamento</span><b>{reprod.aspAndamento.length}</b></button>
+                  <button className="repro-kpi" onClick={() => setView("aspiracao")}><span>Aspirações ativas</span><b>{reprod.aspAndamento.length}</b></button>
+                  <button className="repro-kpi" onClick={() => setView("prenhez")}><span>Prenhezes ativas</span><b>{reprod.prenhez.length}</b></button>
                   <button className="repro-kpi" onClick={() => setView("prenhez")}><span>Prenhezes confirmadas</span><b>{reprod.confirmadas.length}</b></button>
                   <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Partos próximos</span><b className={reprod.proximas.length ? "gold" : ""}>{reprod.proximas.length}</b></button>
                   <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Partos atrasados</span><b className={reprod.atrasadas.length ? "neg" : ""}>{reprod.atrasadas.length}</b></button>
                   <button className="repro-kpi" onClick={() => setView("prenhez")}><span>Nascimentos aguardando</span><b className={reprod.aguardando.length ? "gold" : ""}>{reprod.aguardando.length}</b></button>
                   <button className="repro-kpi" onClick={() => setView("pendencias")}><span>Pendências totais</span><b className={reprod.pendencias.length ? "gold" : ""}>{reprod.pendencias.length}</b></button>
                 </div>
+                <div className="repro-hist" title="Histórico: não diminui quando o registro é concluído"><span>Histórico</span><span><b>{reprod.hist.aspRealizadas}</b> aspirações realizadas ({reprod.hist.aspConcluidas} concluídas)</span><span><b>{reprod.hist.prenGeradas}</b> prenhezes geradas ({reprod.hist.prenConcluidas} concluídas)</span><span><b>{reprod.hist.nascimentos}</b> nascimentos registrados</span></div>
               </div>
             </div>
 
@@ -9656,15 +9690,22 @@ a{color:var(--em)}
 .rp-tl>li.prod::before{border-color:var(--em);background:var(--em)}
 .rp-tl>li.saida::before{border-color:#C9AE74}
 .rp-tl-h{font-size:13.5px}
-.rp-card.ok{background:linear-gradient(180deg,rgba(23,107,70,.085),rgba(23,107,70,.045));border-color:rgba(23,107,70,.30);box-shadow:0 1px 2px rgba(23,107,70,.07),inset 0 1px 0 rgba(255,255,255,.65)}
-.rp-card.ok:hover{border-color:rgba(23,107,70,.45);box-shadow:0 10px 24px rgba(23,107,70,.10)}
-.rp-card.atencao{border-color:rgba(164,68,58,.26);background:rgba(164,68,58,.028)}
-.rp-card.cancel{background:#F3F2EE;border-style:dashed;box-shadow:none}
-.rp-card.cancel .rp-t{color:var(--muted)}
-.rp-card.banco{background:linear-gradient(180deg,#DCEAF4,#EAF2F8);border-color:rgba(63,110,140,.45);box-shadow:0 1px 2px rgba(63,110,140,.10),inset 0 1px 0 rgba(255,255,255,.6)}
-.rp-card.banco:hover{border-color:rgba(63,110,140,.55);box-shadow:0 10px 24px rgba(63,110,140,.12)}
+/* situação dos registros reprodutivos: o card inteiro recebe um grifo suave da cor do status */
+.rp-card.st-neutro{background:var(--surf)}
+.rp-card.st-aguarda{background:linear-gradient(180deg,#FBF4DF,#FDF9EE);border-color:rgba(176,134,40,.30);box-shadow:0 1px 2px rgba(176,134,40,.08),inset 0 1px 0 rgba(255,255,255,.7)}
+.rp-card.st-ok{background:linear-gradient(180deg,#E6F1EA,#F1F7F3);border-color:rgba(23,107,70,.28);box-shadow:0 1px 2px rgba(23,107,70,.07),inset 0 1px 0 rgba(255,255,255,.7)}
+.rp-card.st-falha{background:linear-gradient(180deg,#F8E9E6,#FBF2F0);border-color:rgba(164,68,58,.26);box-shadow:0 1px 2px rgba(164,68,58,.07),inset 0 1px 0 rgba(255,255,255,.7)}
+@media(hover:hover){.rp-card.st-aguarda:hover{border-color:rgba(176,134,40,.48);box-shadow:0 10px 24px rgba(176,134,40,.12)}
+  .rp-card.st-ok:hover{border-color:rgba(23,107,70,.45);box-shadow:0 10px 24px rgba(23,107,70,.10)}
+  .rp-card.st-falha:hover{border-color:rgba(164,68,58,.42);box-shadow:0 10px 24px rgba(164,68,58,.10)}}
+.rp-card.atraso{border-color:rgba(164,68,58,.40)}
 .rp-card.banco-faixa{box-shadow:inset 4px 0 0 var(--info),var(--sh1)}
 @media(hover:hover){.rp-card.banco-faixa:hover{box-shadow:inset 4px 0 0 var(--info),var(--sh2)}}
+.rp-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:1px;border:1px solid rgba(0,0,0,.12)}
+.rp-dot.e-ativos{background:#EFD99A}.rp-dot.e-concluidos{background:#9FCBB2}.rp-dot.e-sem{background:#E2ABA3}.rp-dot.e-todos{background:linear-gradient(90deg,#EFD99A 33%,#9FCBB2 33% 66%,#E2ABA3 66%)}
+.repro-hist{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:12px;padding-top:10px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted)}
+.repro-hist>span:first-child{font-weight:650;color:var(--ink);text-transform:uppercase;letter-spacing:.04em;font-size:11px}
+.repro-hist b{color:var(--ink);font-variant-numeric:tabular-nums}
 .rp-banco-selo{align-self:flex-start;display:inline-flex;align-items:center;gap:4px;background:var(--info-l);color:var(--info);border-radius:999px;padding:2px 9px;font-size:12px;font-weight:600}
 .rp-banco-selo.mini{margin-left:6px;padding:0 7px;font-size:11px;vertical-align:middle}
 .dt-orig{display:inline-block;margin-left:6px;padding:0 7px;border-radius:999px;font-size:10.5px;font-style:normal;font-weight:600;letter-spacing:.02em;vertical-align:middle;line-height:17px}
