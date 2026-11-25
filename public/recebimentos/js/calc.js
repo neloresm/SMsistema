@@ -556,3 +556,113 @@ export function quinzenaPorPeriodo(r) {
   return meio.getUTCDate() <= 15 ? 1 : 2;
 }
 export const competenciaTxt = (mes, q) => `${MESES_LONGOS[+mes.slice(5) - 1]} de ${mes.slice(0, 4)} — ${q === 2 ? '2ª' : '1ª'} quinzena`;
+
+// ===========================================================================
+// PREVISÃO DE RECEBIMENTOS (aba Previsão)
+//  - Cada parcela fica no mês do VENCIMENTO (regime contratual), igual ao Painel "Por vencimento".
+//  - recebido = pagamentos válidos da parcela, em qualquer data (sem duplicar: a parcela só existe em um mês).
+//  - Coluna do gráfico = previsto, dividida em recebido (até o previsto) + vencido (saldo com vencimento antes de hoje)
+//    + a receber (saldo com vencimento hoje ou depois). Meses futuros nunca têm vencido.
+//  - Taxas: as cobradas nos relatórios da contabilidade sobre cada parcela; para parcelas ainda sem relatório,
+//    estimadas pela taxa média dos relatórios (sinalizado como estimativa). Sem relatório nenhum, sem estimativa.
+//  - Entrada, "liquidada no cadastro" e paga direto ao vendedor ficam fora (mesma regra do Painel).
+// ===========================================================================
+export const mesKey = (iso) => iso.slice(0, 7);
+export function somaMeses(k, n) { let [y, m] = k.split('-').map(Number); m += n; while (m > 12) { m -= 12; y++; } while (m < 1) { m += 12; y--; } return `${y}-${String(m).padStart(2, '0')}`; }
+export const mesLongo = (k) => `${MESES_LONGOS[+k.slice(5) - 1]} de ${k.slice(0, 4)}`;
+export const mesCurto = (k) => MESES[+k.slice(5) - 1];
+const somaDiasISO = (iso, n) => { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+
+// taxa e descontos que a contabilidade lançou sobre cada parcela (linhas repetidas contam uma vez)
+export function taxasPorParcela(model) {
+  if (model._taxasParc) return model._taxasParc;
+  const porParc = new Map(); const vistas = new Set(); let base = 0, taxa = 0;
+  const add = (k, campo, v) => { if (!porParc.has(k)) porParc.set(k, { taxa: 0, desconto: 0, linhas: 0 }); const o = porParc.get(k); o[campo] += v; if (campo === 'taxa') o.linhas++; };
+  for (const r of model.repasses.filter((x) => !x.substituido).sort((a, b) => a.id - b.id)) {
+    for (const l of r.linhas) {
+      const chave = [l.tipo, l.contrato_id, (l.parcelas || []).join('+'), l.data_credito || '', cents(l.valor), cents(l.honorario), l.referencia || ''].join('|');
+      if (vistas.has(chave)) continue; vistas.add(chave);
+      const c = model.cmap.get(Number(l.contrato_id)); const nums = l.parcelas || [];
+      if (l.tipo === 'credito') {
+        const h = cents(l.honorario); base += cents(l.valor) + h; taxa += h;
+        const ps = nums.map((n) => c?.parcelas.find((p) => p.numero === n)).filter(Boolean);
+        if (!ps.length) continue;
+        // linha com várias parcelas: taxa dividida pelo valor pago de cada uma (ou em partes iguais)
+        const tot = ps.reduce((s, p) => s + p.rec, 0); let resto = h;
+        ps.forEach((p, i) => { const v = i === ps.length - 1 ? resto : tot ? Math.round(h * p.rec / tot) : Math.round(h / ps.length); resto -= v; add(p.id, 'taxa', v); });
+      } else {
+        const p = c?.parcelas.find((y) => y.numero === nums[0]);
+        if (p) add(p.id, 'desconto', cents(l.valor));
+      }
+    }
+  }
+  model._taxasParc = { porParc, media: base > 0 ? taxa / base : null };
+  return model._taxasParc;
+}
+
+function vazioMes(k) { return { key: k, previsto: 0, recebido: 0, recebidoAteP: 0, vencido: 0, aReceber: 0, qtd: 0, qPagas: 0, caixa: 0 }; }
+
+// totais por mês (vencimento) + caixa (data do pagamento) para os contratos da base
+export function previsaoMeses(model, contratos) {
+  const h = model.hoje; const M = new Map();
+  const get = (k) => { if (!M.has(k)) M.set(k, vazioMes(k)); return M.get(k); };
+  for (const c of contratos) for (const p of c.parcelas) {
+    if (p.cancelada || !p.elegivel) continue;
+    const b = get(mesKey(p.vencimento));
+    b.previsto += p.prev; b.recebido += p.rec; b.recebidoAteP += Math.min(p.rec, p.prev); b.qtd++;
+    if (p.status === 'paga') b.qPagas++;
+    if (p.vencimento < h) b.vencido += p.saldo; else b.aReceber += p.saldo;
+    for (const g of p.ativos) get(mesKey(g.data_pagamento)).caixa += g.valorC;
+  }
+  const keys = [...M.keys()].sort();
+  return { porMes: M, primeiro: keys[0] || mesKey(h), ultimo: keys[keys.length - 1] || mesKey(h), get: (k) => M.get(k) || vazioMes(k) };
+}
+
+export function indicadoresPrevisao(model, contratos) {
+  const h = model.hoje, k = mesKey(h), ate90 = somaDiasISO(h, 90);
+  const o = { prevMes: 0, recMes: 0, saldoMes: 0, vencido: 0, prox90: 0, q90: 0, futuro: 0, qFuturo: 0, qVencidas: 0 };
+  for (const c of contratos) for (const p of c.parcelas) {
+    if (p.cancelada || !p.elegivel) continue;
+    if (mesKey(p.vencimento) === k) { o.prevMes += p.prev; o.recMes += p.rec; o.saldoMes += p.saldo; }
+    if (p.vencimento < h) { o.vencido += p.saldo; if (p.saldo > 0) o.qVencidas++; }
+    else { o.futuro += p.saldo; if (p.saldo > 0) o.qFuturo++; if (p.vencimento <= ate90) { o.prox90 += p.saldo; if (p.saldo > 0) o.q90++; } }
+  }
+  return o;
+}
+
+// detalhe de um mês: indicadores + parcelas que o compõem + pagamentos que entraram no mês
+export function detalheMes(model, contratos, k) {
+  const h = model.hoje; const tx = taxasPorParcela(model);
+  const rows = []; const caixa = [];
+  for (const c of contratos) for (const p of c.parcelas) {
+    if (p.cancelada || !p.elegivel) continue;
+    if (mesKey(p.vencimento) === k) {
+      const t = tx.porParc.get(p.id); const pagoEm = p.ativos.map((g) => g.data_pagamento);
+      const foraDoMes = pagoEm.filter((d) => mesKey(d) !== k);
+      rows.push({ p, c, taxa: t?.taxa || 0, desconto: t?.desconto || 0, temRelatorio: !!t?.linhas, pagoEm, pagoOutroMes: foraDoMes.length > 0, ultimoPg: pagoEm[pagoEm.length - 1] || null,
+        encontro: p.ativos.filter((g) => /encontro/i.test(g.forma || '')).reduce((s, g) => s + g.valorC, 0) });
+    }
+    for (const g of p.ativos) if (mesKey(g.data_pagamento) === k) caixa.push({ g, p, c, deOutroMes: mesKey(p.vencimento) !== k });
+  }
+  const s = { previsto: 0, recebido: 0, recebidoAteP: 0, encargos: 0, vencido: 0, aReceber: 0, taxas: 0, descontos: 0, taxaEstimada: 0, baseSemRelatorio: 0, qtd: rows.length, qPagas: 0, qVencidas: 0, qParciais: 0,
+    pagoEmOutroMes: 0, encontro: 0, caixa: 0, caixaDeOutros: 0 };
+  for (const r of rows) {
+    const p = r.p;
+    s.previsto += p.prev; s.recebido += p.rec; s.recebidoAteP += Math.min(p.rec, p.prev); s.encargos += Math.max(0, p.rec - p.prev);
+    if (p.vencimento < h) s.vencido += p.saldo; else s.aReceber += p.saldo;
+    s.taxas += r.taxa; s.descontos += r.desconto; s.encontro += r.encontro;
+    if (!r.temRelatorio) s.baseSemRelatorio += p.prev;
+    if (p.status === 'paga') s.qPagas++; if (p.vencida) s.qVencidas++; if (p.rec > 0 && p.saldo > 0) s.qParciais++;
+    if (r.pagoOutroMes) s.pagoEmOutroMes += p.ativos.filter((g) => mesKey(g.data_pagamento) !== k).reduce((a, g) => a + g.valorC, 0);
+  }
+  s.taxaMedia = tx.media;
+  s.taxaEstimada = tx.media != null ? Math.round(s.baseSemRelatorio * tx.media) : 0;
+  s.liquido = s.previsto - s.taxas - s.descontos - s.taxaEstimada;
+  s.semTaxa = tx.media == null;
+  s.pct = s.previsto > 0 ? s.recebidoAteP / s.previsto : null;
+  for (const x of caixa) { s.caixa += x.g.valorC; if (x.deOutroMes) s.caixaDeOutros += x.g.valorC; }
+  const ordem = (r) => (r.p.vencida ? 0 : r.p.saldo > 0 ? 1 : 2);
+  rows.sort((a, b) => ordem(a) - ordem(b) || (a.p.vencimento < b.p.vencimento ? -1 : a.p.vencimento > b.p.vencimento ? 1 : 0) || a.c.comprador.nome.localeCompare(b.c.comprador.nome));
+  caixa.sort((a, b) => (a.g.data_pagamento < b.g.data_pagamento ? -1 : 1));
+  return { rows, caixa, s, fase: k < mesKey(h) ? 'passado' : k === mesKey(h) ?  'atual' : 'futuro' };
+}

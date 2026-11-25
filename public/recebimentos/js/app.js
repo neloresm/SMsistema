@@ -116,6 +116,7 @@ function App() {
   const r0 = route[0] || '';
   let page;
   if (!model) page = err ? html`<div class="banner err">Erro ao carregar dados: ${err}</div>` : html`<div class="empty">Carregando dados…</div>`;
+  else if (r0 === 'previsao') page = html`<${PrevisaoPage} ctx=${ctx} mesRota=${route[1]} />`;
   else if (r0 === 'repasses') page = html`<${RepassesPage} ctx=${ctx} mes=${route[1]} />`;
   else if (r0 === 'contrato') page = html`<${ContratoPage} ctx=${ctx} id=${route[1]} />`;
   else if (r0 === 'contratos') page = html`<${ContratosPage} ctx=${ctx} />`;
@@ -133,7 +134,7 @@ function App() {
         <div class="brand"><img class="side-logo" src="/brand/sm-logo-260.png" alt="SM Agropecuária" /><div class="brand-name">SM Agropecuária</div><div class="brand-sub">Recebimentos</div></div>
         <nav class="nav">
           ${navGrupos.map(([g, itens]) => html`<div class="nav-grp">${g ? html`<div class="nav-grp-t">${g}</div>` : ''}
-            ${itens.map(([k, ic, t, b]) => html`<a href=${'#/' + k} class=${'nav-item' + (r0 === k || (k === 'contratos' && r0 === 'contrato') || (k === 'atualizar' && (r0 === 'importar' || r0 === 'comparar')) ? ' on' : '')}><span class="nav-ic"><${Ico} n=${ic} /></span>${t}${b ? html`<span class="nav-count">${b}</span>` : ''}</a>`)}</div>`)}
+            ${itens.map(([k, ic, t, b]) => html`<a href=${'#/' + k} class=${'nav-item' + (r0 === k || (k === '' && r0 === 'previsao') || (k === 'contratos' && r0 === 'contrato') || (k === 'atualizar' && (r0 === 'importar' || r0 === 'comparar')) ? ' on' : '')}><span class="nav-ic"><${Ico} n=${ic} /></span>${t}${b ? html`<span class="nav-count">${b}</span>` : ''}</a>`)}</div>`)}
           <div class="nav-grp"><div class="nav-grp-t">SM sistema</div><a class="nav-item" href="/"><span class="nav-ic"><${Ico} n="voltar" /></span>Voltar ao sistema</a></div>
         </nav>
         <div class="side-foot">
@@ -193,7 +194,7 @@ function BarChart({ series, onPick }) {
     });
     return () => ch.current?.destroy();
   }, [series]);
-  return html`<div class="chart-box"><canvas ref=${ref}></canvas></div>`;
+  return html`<div class="chart-scroll"><div class="chart-box" style=${`--min:${series.length * 30}px`}><canvas ref=${ref}></canvas></div></div>`;
 }
 
 function FiltroBase({ model, f, setF, campos = ['leilao', 'comprador', 'contrato', 'periodo', 'base'] }) {
@@ -229,6 +230,7 @@ function Dashboard({ ctx }) {
     <div class="page-head"><div><h1>Painel financeiro</h1><p>Posição em ${C.fmtD(model.hoje)} · ${contratos.length} contratos na base selecionada</p></div>
       <div class="stack"><${Seg} value=${f.modo} onChange=${(v) => setF((o) => ({ ...o, modo: v }))} opts=${[['contratual', 'Por vencimento'], ['caixa', 'Pago pelos compradores']]} />
       <${Seg} value=${f.gran} onChange=${(v) => setF((o) => ({ ...o, gran: v }))} opts=${[['mes', 'Mensal'], ['trimestre', 'Trimestral'], ['ano', 'Anual']]} /></div></div>
+    <${AbasPainel} atual="geral" />
     ${pend > 0 && f.base === 'todos' ? html`<div class="banner warn"><span><b>${pend} contrato(s)</b> com pendências na central de revisão estão incluídos nestes números. <a href="#/revisao">Revisar</a> ou altere a base para “Somente revisados”.</span></div>` : ''}
     <${CardRepasse} ctx=${ctx} />
     <div class="card" style="margin-bottom:16px"><${FiltroBase} model=${model} f=${f} setF=${setF} /></div>
@@ -246,7 +248,7 @@ function Dashboard({ ctx }) {
     <div class="card" style="margin-top:16px">
       <div class="card-head"><div><h2>${f.modo === 'contratual' ? 'Previsto × recebido por vencimento' : 'Previsto × pago pelos compradores'}</h2>
         <div class="small muted">${f.modo === 'contratual' ? 'Cada parcela fica no período do seu vencimento; “recebido” é quanto já foi pago dessas parcelas, mesmo que depois.' : '“Recebido” é o que os compradores pagaram no período, pela data do pagamento. O que caiu na conta da SM está em Repasses da Contabilidade.'}</div></div>
-        <div class="small muted">Barras claras = períodos futuros</div></div>
+        <div class="stack"><span class="small muted">Barras claras = períodos futuros</span><a class="btn btn-sm" href="#/previsao">Detalhar por mês ›</a></div></div>
       ${ser.length ? html`<${BarChart} series=${ser} onPick=${setPick} />` : html`<div class="empty">Sem dados para o filtro.</div>`}
     </div>
     <div class="card"><div class="card-head"><h2>Resumo por período</h2><span class="small muted">Clique em uma linha para detalhar</span></div>
@@ -293,6 +295,7 @@ function PeriodoDetalhe({ ctx, contratos, modo, gran, k, onClose }) {
 // ---------------------------------------------------------------------------
 function ContratosPage({ ctx }) {
   const { model } = ctx;
+  const estreito = useEstreito();
   const [f, setF] = useStored('ctr', { q: '', leilao: '', ano: '', animal: '', situacao: '', revisao: '' });
   const s = (k) => (e) => setF((o) => ({ ...o, [k]: e.target.value }));
   const anos = [...new Set(model.contratos.map((c) => c.ano).filter(Boolean))].sort().reverse();
@@ -313,11 +316,18 @@ function ContratosPage({ ctx }) {
     <div class="card" style="margin-bottom:16px"><div class="filters">
       <label class="f">Busca (comprador, CPF/CNPJ, nº, descrição)<input value=${f.q} onInput=${s('q')} placeholder="Digite para filtrar" /></label>
       <label class="f">Leilão<select value=${f.leilao} onChange=${s('leilao')}><option value="">Todos</option>${[...model.leiloes].sort((a, b) => (b.data || '').localeCompare(a.data || '')).map((l) => html`<option value=${l.id}>${l.nome} · ${C.fmtD(l.data)}</option>`)}</select></label>
-      <label class="f" style="max-width:110px">Ano<select value=${f.ano} onChange=${s('ano')}><option value="">Todos</option>${anos.map((a) => html`<option>${a}</option>`)}</select></label>
-      <label class="f">Animal / genética<select value=${f.animal} onChange=${s('animal')}><option value="">Todos</option>${animais.map((a) => html`<option>${a}</option>`)}</select></label>
+      <label class="f" style="max-width:110px">Ano<select value=${f.ano} onChange=${s('ano')}><option value="">Todos</option>${anos.map((a) => html`<option value=${a}>${a}</option>`)}</select></label>
+      <label class="f">Animal / genética<select value=${f.animal} onChange=${s('animal')}><option value="">Todos</option>${animais.map((a) => html`<option value=${a}>${a}</option>`)}</select></label>
       <label class="f" style="max-width:170px">Situação financeira<select value=${f.situacao} onChange=${s('situacao')}><option value="">Ativos (todos)</option><option value="em_dia">Em dia</option><option value="atraso">Com atraso</option><option value="quitado">Quitados</option><option value="arquivado">Arquivados</option></select></label>
       <label class="f" style="max-width:150px">Revisão<select value=${f.revisao} onChange=${s('revisao')}><option value="">Todas</option><option value="pendente">Pendente</option><option value="aprovado">Aprovado</option></select></label>
     </div></div>
+    ${estreito ? html`<div class="ct-tot"><span>${lista.length} contratos</span><span>Recebido <b class="num">${C.brl(tot.r)}</b></span><span>Vencido <b class="num venc">${C.brl(tot.ve)}</b></span></div>
+      <ul class="rc-lista">${lista.map((c) => html`<li><a class="rc ct" href=${'#/contrato/' + c.id}>
+        <span class="rc-quem"><b>${c.comprador.nome}</b><span>${c.animal || c.descricao}</span></span>
+        <span class="rc-leilao">Contrato ${c.id} · ${c.leilao.nome}${c.lote ? ` · lote ${c.lote}` : ''}</span>
+        <span class="rc-val"><b class="num">${C.brl(c.valorC)}</b><span class="num">recebido ${C.brl(c.recC)}</span></span>
+        <span class="rc-saldo">${Badge(c.situacao, C.SITUACAO_LABEL[c.situacao])}${c.saldoVencido ? html`<span class="num venc">vencido ${C.brl(c.saldoVencido)}</span>` : ''}<span class="small muted num">${c.qPagas}/${c.nParc} pagas</span></span>
+        <span class="rc-ir" aria-hidden="true">›</span></a></li>`)}</ul>` : html`
     <div class="tbl-wrap"><table>
       <thead><tr><th>Contrato</th><th>Comprador</th><th>Leilão</th><th>Lote</th><th>Animal / objeto</th><th class="num">Valor</th><th class="num">Recebido</th><th class="num">Vencido</th><th class="num">A vencer</th><th>Pagas</th><th>Situação</th><th>Revisão</th></tr></thead>
       <tbody>${lista.map((c) => html`<tr class="click" onClick=${() => go('#/contrato/' + c.id)}>
@@ -329,7 +339,7 @@ function ContratosPage({ ctx }) {
         <td><span class="small num">${c.qPagas}/${c.nParc}</span><${Progress} v=${c.nParc ? c.qPagas / c.nParc : 0} /></td>
         <td>${Badge(c.situacao, C.SITUACAO_LABEL[c.situacao])}</td><td>${Badge(c.revisao_status, c.revisao_status === 'aprovado' ? 'Aprovado' : 'Pendente')}</td></tr>`)}</tbody>
       <tfoot><tr><td colspan="5">Total</td><td class="num">${C.brl(tot.v)}</td><td class="num">${C.brl(tot.r)}</td><td class="num">${C.brl(tot.ve)}</td><td class="num">${C.brl(tot.fu)}</td><td colspan="3"></td></tr></tfoot>
-    </table></div>`;
+    </table></div>`}`;
 }
 
 function ContratoPage({ ctx, id }) {
@@ -401,11 +411,11 @@ function ContratoPage({ ctx, id }) {
       <div class="timeline">${[...c.parcelas].sort((a, b) => (a.vencimento < b.vencimento ? -1 : 1)).map((p) => html`<div class=${'tl ' + p.status} title=${`${p.numero}ª · venc. ${C.fmtD(p.vencimento)} · ${C.brl(p.prev)} · ${C.STATUS_LABEL[p.status]}`}></div>`)}</div>
       <div class="small muted">Ordenado por vencimento. ${pagos.filter((g) => !g.estornado).length} pagamento(s) registrado(s); último em ${C.fmtD(pagos.filter((g) => !g.estornado).slice(-1)[0]?.data_pagamento)}.</div></div>
     <div class="card"><div class="card-head"><h2>Parcelas</h2><span class="small muted">Clique em uma parcela para ver os lançamentos</span></div>
-      <div class="tbl-wrap"><table><thead><tr><th>Nº</th><th>Vencimento</th><th class="num">Previsto</th><th class="num">Recebido</th><th class="num">Saldo</th><th>Data pgto.</th><th>Status</th><th class="no-print"></th></tr></thead>
+      <div class="tbl-wrap"><table class="tbl-cards"><thead><tr><th>Nº</th><th>Vencimento</th><th class="num">Previsto</th><th class="num">Recebido</th><th class="num">Saldo</th><th>Data pgto.</th><th>Status</th><th class="no-print"></th></tr></thead>
       <tbody>${c.parcelas.map((p) => html`
         <tr class="click" onClick=${() => setAberta(aberta === p.id ? null : p.id)}>
-          <td class="num">${p.numero}/${c.nParc}</td><td class="num">${C.fmtD(p.vencimento)}</td><td class="num">${C.brl(p.prev)}</td><td class="num">${C.brl(p.rec)}</td><td class="num">${C.brl(p.saldo)}</td>
-          <td class="num small">${p.ativos.map((g) => C.fmtD(g.data_pagamento)).join(', ') || (p.data_liquidacao_externa ? C.fmtD(p.data_liquidacao_externa) + ' (origem)' : '—')}</td>
+          <td class="num tc-n" data-l="Parcela">${p.numero}/${c.nParc}</td><td class="num" data-l="Vencimento">${C.fmtD(p.vencimento)}</td><td class="num" data-l="Previsto">${C.brl(p.prev)}</td><td class="num" data-l="Recebido">${C.brl(p.rec)}</td><td class="num" data-l="Saldo">${C.brl(p.saldo)}</td>
+          <td class="num small" data-l="Data pgto.">${p.ativos.map((g) => C.fmtD(g.data_pagamento)).join(', ') || (p.data_liquidacao_externa ? C.fmtD(p.data_liquidacao_externa) + ' (origem)' : '—')}</td>
           <td>${p.elegivel ? stBadge(p.status) : Badge('cancelada', C.TIPO_PARCELA_LABEL[p.tipo])}${p.dias ? html` <span class="small muted">${p.dias}d</span>` : ''}</td>
           <td class="no-print right">${isAdmin && !p.cancelada ? html`<button class="btn-sm btn-primary" onClick=${(e) => { e.stopPropagation(); setModal({ t: 'pagar', p }); }}>Registrar pagamento</button>` : ''}</td></tr>
         ${aberta === p.id ? html`<tr><td colspan="8" style="background:#fafbfa">
@@ -470,7 +480,7 @@ function PagamentoModal({ ctx, c, p, onClose }) {
     <div class="form-grid">
       <label class="f">Data real do pagamento<input type="date" value=${f.data} max=${ctx.model.hoje} onInput=${s('data')} /></label>
       <label class="f">Valor recebido (R$)<input inputmode="decimal" value=${f.valor} onInput=${s('valor')} /></label>
-      <label class="f">Forma<select value=${f.forma} onChange=${s('forma')}>${formas.map((x) => html`<option>${x}</option>`)}</select></label>
+      <label class="f">Forma<select value=${f.forma} onChange=${s('forma')}>${formas.map((x) => html`<option value=${x} selected=${x === f.forma}>${x}</option>`)}</select></label>
       <label class="f span3">Observação<input value=${f.obs} onInput=${s('obs')} placeholder="Ex.: pagamento parcial, comprovante enviado por WhatsApp…" /></label>
       <label class="f span3">Comprovante (opcional)<input type="file" onChange=${(e) => setFile(e.target.files[0])} /></label>
     </div>
@@ -498,7 +508,7 @@ function CorrigirModal({ ctx, g, onClose }) {
     <p class="small muted">A correção estorna o lançamento original e cria um novo, preservando o histórico.</p>
     <div class="form-grid"><label class="f">Data<input type="date" value=${f.data} max=${ctx.model.hoje} onInput=${s('data')} /></label>
       <label class="f">Valor (R$)<input inputmode="decimal" value=${f.valor} onInput=${s('valor')} /></label>
-      <label class="f">Forma<select value=${f.forma} onChange=${s('forma')}>${formas.map((x) => html`<option>${x}</option>`)}</select></label>
+      <label class="f">Forma<select value=${f.forma} onChange=${s('forma')}>${formas.map((x) => html`<option value=${x} selected=${x === f.forma}>${x}</option>`)}</select></label>
       <label class="f span3">Motivo (obrigatório)<input value=${f.motivo} onInput=${s('motivo')} /></label></div>
     <div class="modal-actions"><button onClick=${onClose}>Cancelar</button><button class="btn-primary" onClick=${salvar}>Salvar correção</button></div><//>`;
 }
@@ -1485,13 +1495,221 @@ function RelatoriosPage({ ctx }) {
     <div class="card" style="margin-bottom:16px"><div class="filters">
       <label class="f">Relatório<select value=${f.tipo} onChange=${s('tipo')}>${RELATORIOS.map(([k, t]) => html`<option value=${k}>${t}</option>`)}</select></label>
       ${f.tipo === 'mensal' ? html`<label class="f" style="max-width:160px">Mês<input type="month" value=${f.mes} onInput=${s('mes')} /></label>` : ''}
-      ${f.tipo === 'anual' ? html`<label class="f" style="max-width:120px">Ano<select value=${f.ano} onChange=${s('ano')}>${anos.map((a) => html`<option>${a}</option>`)}</select></label>` : ''}
+      ${f.tipo === 'anual' ? html`<label class="f" style="max-width:120px">Ano<select value=${f.ano} onChange=${s('ano')}>${anos.map((a) => html`<option value=${a}>${a}</option>`)}</select></label>` : ''}
     </div><div class="sep"></div><${FiltroBase} model=${model} f=${f} setF=${setF} campos=${['leilao', 'comprador', 'base', ...(['fluxo_previsto', 'fluxo_realizado', 'comparativo'].includes(f.tipo) ? ['periodo'] : [])]} /></div>
     <div class="card"><div class="card-head"><div><h2>${rel.titulo}</h2><div class="small muted">${rel.subtitulo}</div></div><span class="small muted">${rel.linhas.length} linha(s)</span></div>
       <div class="tbl-wrap" style="max-height:60vh"><table><thead><tr>${rel.colunas.map((c) => html`<th class=${['money', 'pct', 'int'].includes(c.tipo) ? 'num' : ''}>${c.t}</th>`)}</tr></thead>
         <tbody>${rel.linhas.map((l) => html`<tr>${rel.colunas.map((c) => html`<td class=${['money', 'pct', 'int', 'date'].includes(c.tipo) ? 'num' : ''}>${fmt(c, l[c.k])}</td>`)}</tr>`)}</tbody>
         ${rel.total ? html`<tfoot><tr>${rel.colunas.map((c) => html`<td class=${['money', 'pct', 'int'].includes(c.tipo) ? 'num' : ''}>${fmt(c, rel.total[c.k])}</td>`)}</tr></tfoot>` : ''}</table></div></div>`;
 }
+
+// ---------------------------------------------------------------------------
+// Previsão de Recebimentos (aba do Painel)
+// ---------------------------------------------------------------------------
+function useEstreito(q = '(max-width: 820px)') {
+  const [v, setV] = useState(() => matchMedia(q).matches);
+  useEffect(() => { const m = matchMedia(q); const f = () => setV(m.matches); m.addEventListener('change', f); return () => m.removeEventListener('change', f); }, [q]);
+  return v;
+}
+// abas do Painel: Visão geral | Previsão de Recebimentos
+function AbasPainel({ atual }) {
+  return html`<div class="abas-painel" role="tablist" aria-label="Painel">
+    <a role="tab" aria-selected=${atual === 'geral'} class=${'aba' + (atual === 'geral' ? ' on' : '')} href="#/">Visão geral</a>
+    <a role="tab" aria-selected=${atual === 'previsao'} class=${'aba' + (atual === 'previsao' ? ' on' : '')} href="#/previsao"><span class="so-largo">Previsão de Recebimentos</span><span class="so-estreito">Previsão</span></a></div>`;
+}
+const JANELAS = [['padrao', '6 antes e 6 depois'], ['u6', 'Últimos 6 meses'], ['u12', 'Últimos 12 meses'], ['p6', 'Próximos 6 meses'], ['p12', 'Próximos 12 meses'], ['ano', 'Ano completo'], ['pers', 'Período personalizado']];
+function mesesDaJanela(f, hojeK) {
+  let de, ate;
+  if (f.janela === 'u6') { de = C.somaMeses(hojeK, -5); ate = hojeK; }
+  else if (f.janela === 'u12') { de = C.somaMeses(hojeK, -11); ate = hojeK; }
+  else if (f.janela === 'p6') { de = hojeK; ate = C.somaMeses(hojeK, 5); }
+  else if (f.janela === 'p12') { de = hojeK; ate = C.somaMeses(hojeK, 11); }
+  else if (f.janela === 'ano') { const y = f.ano || hojeK.slice(0, 4); de = `${y}-01`; ate = `${y}-12`; }
+  else if (f.janela === 'pers' && /^\d{4}-\d{2}$/.test(f.de || '') && /^\d{4}-\d{2}$/.test(f.ate || '')) { de = f.de <= f.ate ? f.de : f.ate; ate = f.de <= f.ate ? f.ate : f.de; }
+  else { de = C.somaMeses(hojeK, -5); ate = C.somaMeses(hojeK, 6); }
+  const out = []; for (let k = de; k <= ate && out.length < 60; k = C.somaMeses(k, 1)) out.push(k);
+  return out;
+}
+// escala "redonda" para o eixo
+function escala(max) {
+  if (max <= 0) return { topo: 1, passos: [] };
+  const bruto = max / 3, mag = 10 ** Math.floor(Math.log10(bruto)), n = bruto / mag;
+  const passo = (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * mag;
+  const topo = Math.ceil(max / passo) * passo;
+  const passos = []; for (let v = passo; v <= topo + 1e-6; v += passo) passos.push(v);
+  return { topo, passos };
+}
+const compacto = (c) => C.brlCompact(C.toReais(c)).replace('R$ ', '');
+
+function GraficoColunas({ meses, dados, sel, onSel, hojeK }) {
+  const scroller = useRef(); const [pronto, setPronto] = useState(false);
+  useEffect(() => { const t = requestAnimationFrame(() => setPronto(true)); return () => cancelAnimationFrame(t); }, []);
+  const max = Math.max(1, ...meses.map((k) => dados(k).previsto));
+  const { topo, passos } = escala(max);
+  // mantém o mês escolhido visível (rolagem só na horizontal, sem mexer na página)
+  useEffect(() => {
+    const sc = scroller.current; if (!sc) return; const el = sc.querySelector(`[data-k="${sel}"]`); if (!el) return;
+    const alvo = el.offsetLeft - (sc.clientWidth - el.offsetWidth) / 2;
+    sc.scrollTo({ left: Math.max(0, alvo), behavior: pronto ? 'smooth' : 'auto' });
+  }, [sel, meses.join(), pronto]);
+  const tecla = (e) => {
+    const i = meses.indexOf(sel);
+    if (e.key === 'ArrowRight' && i < meses.length - 1) { e.preventDefault(); onSel(meses[i + 1]); }
+    if (e.key === 'ArrowLeft' && i > 0) { e.preventDefault(); onSel(meses[i - 1]); }
+  };
+  return html`<div class="gc" style=${`--n:${meses.length}`}>
+    <div class="gc-eixo" aria-hidden="true">${passos.map((v) => html`<div class="gc-linha" style=${`bottom:${(v / topo) * 100}%`}><span>${C.brlCompact(C.toReais(v))}</span></div>`)}</div>
+    <div class="gc-scroll" ref=${scroller} role="tablist" aria-label="Meses" tabindex="0" onKeyDown=${tecla}>
+      <div class="gc-cols">${meses.map((k, i) => {
+        const d = dados(k); const fase = k < hojeK ? 'passado' : k === hojeK ? 'atual' : 'futuro';
+        const hp = (v) => (pronto ? (v / topo) * 100 : 0);
+        const ano = i === 0 || k.slice(5) === '01';
+        return html`<button type="button" role="tab" data-k=${k} aria-selected=${k === sel} class=${`gc-col ${fase}${k === sel ? ' on' : ''}${d.previsto ? '' : ' zero'}`}
+          aria-label=${`${C.mesLongo(k)}: previsto ${C.brl(d.previsto)}, recebido ${C.brl(d.recebido)}`} onClick=${() => onSel(k)}>
+          <span class="gc-area">
+            <span class="gc-pilha" style=${`height:${hp(d.previsto)}%`}>
+              ${d.previsto ? html`<span class="gc-v">${compacto(d.previsto)}</span>` : ''}
+              ${d.aReceber ? html`<i class="s-rec" style=${`flex:${d.aReceber}`}></i>` : ''}
+              ${d.vencido ? html`<i class="s-venc" style=${`flex:${d.vencido}`}></i>` : ''}
+              ${d.recebidoAteP ? html`<i class="s-ok" style=${`flex:${d.recebidoAteP}`}></i>` : ''}
+            </span>
+          </span>
+          <span class="gc-mes">${C.mesCurto(k)}</span><span class="gc-ano">${ano || fase === 'atual' ? (fase === 'atual' ? 'hoje' : k.slice(0, 4)) : ' '}</span>
+        </button>`; })}</div>
+    </div>
+    <div class="gc-leg"><span><i class="s-ok"></i>Recebido</span><span><i class="s-venc"></i>Vencido</span><span><i class="s-rec"></i>A receber</span></div>
+  </div>`;
+}
+
+function PrevisaoPage({ ctx, mesRota }) {
+  const { model } = ctx;
+  const hojeK = C.mesKey(model.hoje);
+  const estreito = useEstreito();
+  const [f, setF] = useStored('previsao', { janela: 'padrao', ano: '', de: '', ate: '', leilao: '', comprador: '', base: 'todos' });
+  const [sel, setSel0] = useState(() => (/^\d{4}-\d{2}$/.test(mesRota || '') ? mesRota : hojeK));
+  const [aba, setAba] = useState('parcelas');
+  const [filtroL, setFiltroL] = useState('todas');
+  const [verFiltros, setVerFiltros] = useState(false);
+  const contratos = useMemo(() => C.filtrarContratos(model, f), [model, f.base, f.leilao, f.comprador]);
+  const prev = useMemo(() => C.previsaoMeses(model, contratos), [model, contratos]);
+  const ind = useMemo(() => C.indicadoresPrevisao(model, contratos), [model, contratos]);
+  const meses = useMemo(() => mesesDaJanela(f, hojeK), [f.janela, f.ano, f.de, f.ate, hojeK]);
+  const det = useMemo(() => C.detalheMes(model, contratos, sel), [model, contratos, sel]);
+  const setSel = (k) => { setSel0(k); setFiltroL('todas'); try { history.replaceState(null, '', '#/previsao/' + k); } catch {} };
+  // ao trocar a janela, o mês escolhido fica dentro dela (de preferência o mês atual)
+  const escolherJanela = (j, extra = {}) => {
+    const nf = { ...f, janela: j, ...extra }; setF(nf);
+    const ms = mesesDaJanela(nf, hojeK); if (!ms.includes(sel)) setSel(ms.includes(hojeK) ? hojeK : ms[0]);
+  };
+  // ‹ › anda um mês; se sair da janela, a janela acompanha
+  const andar = (n) => {
+    const k = C.somaMeses(sel, n); setSel(k);
+    if (!meses.includes(k)) setF((o) => ({ ...o, janela: 'pers', de: C.somaMeses(meses[0], n), ate: C.somaMeses(meses[meses.length - 1], n) }));
+  };
+  const anos = []; for (let y = +prev.primeiro.slice(0, 4); y <= Math.max(+prev.ultimo.slice(0, 4), +hojeK.slice(0, 4)); y++) anos.push(String(y));
+  const todosMeses = []; for (let k = [prev.primeiro, meses[0]].sort()[0]; k <= [prev.ultimo, meses[meses.length - 1]].sort()[1] && todosMeses.length < 240; k = C.somaMeses(k, 1)) todosMeses.push(k);
+  const s = det.s; const fase = det.fase;
+  const tot = meses.reduce((a, k) => { const d = prev.get(k); return { p: a.p + d.previsto, r: a.r + d.recebido, v: a.v + d.vencido, f: a.f + d.aReceber }; }, { p: 0, r: 0, v: 0, f: 0 });
+  const filtros = [['todas', 'Todas', det.rows.length], ['abertas', 'Em aberto', det.rows.filter((r) => r.p.saldo > 0).length], ['vencidas', 'Vencidas', det.rows.filter((r) => r.p.vencida).length], ['pagas', 'Pagas', det.rows.filter((r) => r.p.saldo === 0).length]];
+  const linhas = det.rows.filter((r) => filtroL === 'todas' || (filtroL === 'abertas' ? r.p.saldo > 0 : filtroL === 'vencidas' ? r.p.vencida : r.p.saldo === 0));
+  const leiloes = [...model.leiloes].sort((a, b) => (b.data || '').localeCompare(a.data || ''));
+  const compradores = [...model.compradores].sort((a, b) => a.nome.localeCompare(b.nome));
+  const nFiltros = (f.leilao ? 1 : 0) + (f.comprador ? 1 : 0) + (f.base !== 'todos' ? 1 : 0);
+  const pctMes = ind.prevMes ? Math.min(1, ind.recMes / ind.prevMes) : 0;
+
+  return html`
+    <div class="page-head prev-head"><div><h1>Previsão de Recebimentos</h1><p>Posição em ${C.fmtD(model.hoje)} · parcelas pelo mês do vencimento</p></div></div>
+    <${AbasPainel} atual="previsao" />
+
+    <section class="prev-ind" aria-label="Indicadores">
+      <div class="pi-mes"><div class="pi-t">${C.mesLongo(hojeK)} <span>mês atual</span></div>
+        <div class="pi-nums"><div><small>Recebido</small><b class="num">${C.brl(ind.recMes)}</b></div><div class="r"><small>Previsto</small><b class="num">${C.brl(ind.prevMes)}</b></div></div>
+        <div class="pi-barra" role="progressbar" aria-valuenow=${Math.round(pctMes * 100)} aria-valuemin="0" aria-valuemax="100"><i style=${`width:${pctMes * 100}%`}></i></div>
+        <div class="pi-sub">${ind.prevMes ? `${C.pct(pctMes)} recebido · falta ${C.brl(ind.saldoMes)}` : 'Nenhuma parcela vence neste mês'}</div></div>
+      <div class="pi-lista">
+        <button class="pi-it venc" onClick=${() => go('#/inadimplencia')}><small>Total vencido</small><b class="num">${C.brl(ind.vencido)}</b><span>${ind.qVencidas} parcela(s) em atraso ›</span></button>
+        <div class="pi-it"><small>Próximos 90 dias</small><b class="num">${C.brl(ind.prox90)}</b><span>${ind.q90} parcela(s) a vencer</span></div>
+        <div class="pi-it"><small>Total futuro a receber</small><b class="num">${C.brl(ind.futuro)}</b><span>${ind.qFuturo} parcela(s) até o fim dos contratos</span></div>
+      </div>
+    </section>
+
+    <section class="card prev-graf">
+      <div class="pg-top">
+        <div class="pg-sel"><select aria-label="Período do gráfico" value=${f.janela} onChange=${(e) => escolherJanela(e.target.value, e.target.value === 'pers' && !f.de ? { de: meses[0], ate: meses[meses.length - 1] } : {})}>
+          ${JANELAS.map(([k, t]) => html`<option value=${k}>${t}</option>`)}</select>
+          ${f.janela === 'ano' ? html`<select aria-label="Ano" value=${f.ano || hojeK.slice(0, 4)} onChange=${(e) => escolherJanela('ano', { ano: e.target.value })}>${anos.map((y) => html`<option value=${y}>${y}</option>`)}</select>` : ''}
+          <button class=${'pg-filtro' + (nFiltros ? ' on' : '')} aria-expanded=${verFiltros} onClick=${() => setVerFiltros(!verFiltros)}>Filtros${nFiltros ? ` (${nFiltros})` : ''}</button></div>
+        <div class="pg-tot small muted">${meses.length} meses · previsto <b class="num">${C.brl(tot.p)}</b></div>
+      </div>
+      ${f.janela === 'pers' ? html`<div class="pg-pers"><label class="f">De<input type="month" value=${f.de} onInput=${(e) => e.target.value && escolherJanela('pers', { de: e.target.value })} /></label><label class="f">Até<input type="month" value=${f.ate} onInput=${(e) => e.target.value && escolherJanela('pers', { ate: e.target.value })} /></label></div>` : ''}
+      ${verFiltros ? html`<div class="pg-pers">
+        <label class="f">Leilão<select value=${f.leilao} onChange=${(e) => setF((o) => ({ ...o, leilao: e.target.value }))}><option value="">Todos</option>${leiloes.map((l) => html`<option value=${l.id}>${l.nome} · ${C.fmtD(l.data)}</option>`)}</select></label>
+        <label class="f">Comprador<select value=${f.comprador} onChange=${(e) => setF((o) => ({ ...o, comprador: e.target.value }))}><option value="">Todos</option>${compradores.map((c) => html`<option value=${c.id}>${c.nome}</option>`)}</select></label>
+        <label class="f">Base<select value=${f.base} onChange=${(e) => setF((o) => ({ ...o, base: e.target.value }))}><option value="todos">Todos os contratos ativos</option><option value="aprovados">Somente revisados</option></select></label>
+        ${nFiltros ? html`<button class="btn-ghost" onClick=${() => setF((o) => ({ ...o, leilao: '', comprador: '', base: 'todos' }))}>Limpar</button>` : ''}</div>` : ''}
+      <${GraficoColunas} meses=${meses} dados=${prev.get} sel=${sel} onSel=${setSel} hojeK=${hojeK} />
+      ${estreito && meses.length > 6 ? html`<div class="pg-dica">Deslize para o lado para ver outros meses · toque em um mês para detalhar</div>` : ''}
+    </section>
+
+    <div class="prev-det">
+      <section class="card pd-resumo" aria-live="polite">
+        <div class="pd-nav">
+          <button class="pd-seta" aria-label="Mês anterior" onClick=${() => andar(-1)}>‹</button>
+          <div class="pd-tit"><select aria-label="Escolher mês" value=${sel} onChange=${(e) => { const k = e.target.value; setSel(k); if (!meses.includes(k)) setF((o) => ({ ...o, janela: 'pers', de: C.somaMeses(k, -5), ate: C.somaMeses(k, 6) })); }}>
+            ${todosMeses.map((k) => html`<option value=${k}>${C.mesLongo(k)}</option>`)}</select>
+            <span class=${'pd-fase ' + fase}>${fase === 'passado' ? 'Mês encerrado' : fase === 'atual' ? 'Mês atual' : 'Previsão'}</span></div>
+          <button class="pd-seta" aria-label="Próximo mês" onClick=${() => andar(1)}>›</button>
+        </div>
+        <div class="pd-hero">
+          <div><small>${fase === 'futuro' ? 'Previsto para receber' : 'Recebido'}</small><b class="num">${C.brl(fase === 'futuro' ? s.previsto : s.recebido)}</b></div>
+          ${fase !== 'futuro' ? html`<div class="r"><small>de</small><b class="num">${C.brl(s.previsto)}</b></div>` : html`<div class="r"><small>Parcelas</small><b class="num">${s.qtd}</b></div>`}
+        </div>
+        ${fase !== 'futuro' && s.previsto ? html`<div class="pi-barra"><i style=${`width:${(s.pct || 0) * 100}%`}></i>${s.vencido ? html`<i class="v" style=${`width:${(s.vencido / s.previsto) * 100}%`}></i>` : ''}</div>
+          <div class="pi-sub">${C.pct(s.pct)} recebido · ${s.qPagas} de ${s.qtd} parcela(s) quitada(s)</div>` : ''}
+        <dl class="pd-conta">
+          <dt>Bruto previsto <em>${s.qtd} parcela(s)</em></dt><dd class="num">${C.brl(s.previsto)}</dd>
+          ${s.taxas ? html`<dt class="menos">Taxas da contabilidade <em>cobradas nos relatórios</em></dt><dd class="num menos">− ${C.brl(s.taxas)}</dd>` : ''}
+          ${s.descontos ? html`<dt class="menos">Outros descontos <em>lançados nos relatórios</em></dt><dd class="num menos">− ${C.brl(s.descontos)}</dd>` : ''}
+          ${s.taxaEstimada ? html`<dt class="menos">Taxa estimada <em>média de ${C.pctTxt(s.taxaMedia)} dos relatórios, sobre ${C.brl(s.baseSemRelatorio)} ainda sem relatório</em></dt><dd class="num menos">− ${C.brl(s.taxaEstimada)}</dd>` : ''}
+          <dt class="tot">Líquido previsto${s.semTaxa ? html` <em>sem taxa registrada até agora</em>` : ''}</dt><dd class="num tot">${C.brl(s.liquido)}</dd>
+          ${fase !== 'futuro' || s.recebido ? html`<dt>Efetivamente recebido <em>${s.pct != null ? C.pct(s.pct) + ' do previsto' : ''}${s.encargos ? ` · inclui ${C.brl(s.encargos)} de juros/multa` : ''}</em></dt><dd class="num ok">${C.brl(s.recebido)}</dd>` : ''}
+          ${s.aReceber || fase !== 'passado' ? html`<dt>Saldo a receber <em>${fase === 'passado' ? '' : 'vence a partir de hoje'}</em></dt><dd class="num">${C.brl(s.aReceber)}</dd>` : ''}
+          ${fase !== 'futuro' ? html`<dt class=${s.vencido ? 'venc' : ''}>Vencido <em>${s.qVencidas ? `${s.qVencidas} parcela(s) sem pagamento integral` : 'nenhuma parcela em atraso'}</em></dt><dd class=${'num' + (s.vencido ? ' venc' : '')}>${C.brl(s.vencido)}</dd>` : ''}
+        </dl>
+        ${s.pagoEmOutroMes || s.caixa || s.encontro ? html`<div class="pd-notas">
+          ${fase !== 'futuro' || s.caixa ? html`<p><b>Entrou no caixa em ${C.mesCurto(sel)}/${sel.slice(2, 4)}:</b> <span class="num">${C.brl(s.caixa)}</span>, pela data real dos pagamentos${s.caixaDeOutros ? html` (inclui <span class="num">${C.brl(s.caixaDeOutros)}</span> de parcelas de outros meses)` : ''}.</p>` : ''}
+          ${s.pagoEmOutroMes ? html`<p><span class="num">${C.brl(s.pagoEmOutroMes)}</span> das parcelas deste mês foram pagos em outro mês. Contam aqui uma vez só, pelo vencimento.</p>` : ''}
+          ${s.encontro ? html`<p><span class="num">${C.brl(s.encontro)}</span> recebidos por encontro de contas.</p>` : ''}
+        </div>` : ''}
+      </section>
+
+      <section class="card pd-lista">
+        <div class="pd-abas" role="tablist"><button role="tab" aria-selected=${aba === 'parcelas'} class=${aba === 'parcelas' ? 'on' : ''} onClick=${() => setAba('parcelas')}>Parcelas do mês <span>${det.rows.length}</span></button>
+          <button role="tab" aria-selected=${aba === 'caixa'} class=${aba === 'caixa' ? 'on' : ''} onClick=${() => setAba('caixa')}>Entradas no caixa <span>${det.caixa.length}</span></button></div>
+        ${aba === 'parcelas' ? html`
+          ${det.rows.length ? html`<div class="pd-chips">${filtros.filter(([k, , n]) => k === 'todas' || n).map(([k, t, n]) => html`<button class=${filtroL === k ? 'on' : ''} onClick=${() => setFiltroL(k)}>${t} <span>${n}</span></button>`)}</div>` : ''}
+          ${linhas.length ? html`<ul class="rc-lista">${linhas.map((r) => { const p = r.p, c = r.c; return html`<li><a class="rc" href=${'#/contrato/' + c.id}>
+            <span class="rc-quem"><b>${c.comprador.nome}</b><span>${c.animal || c.descricao || '—'}</span></span>
+            <span class="rc-leilao">${c.leilao.nome}${c.lote ? ` · lote ${c.lote}` : ''}</span>
+            <span class="rc-parc">Parcela ${p.numero}/${c.nParc}<span>venc. ${C.fmtD(p.vencimento)}</span></span>
+            <span class="rc-val"><b class="num">${C.brl(p.prev)}</b><span class="num">${p.rec ? `recebido ${C.brl(p.rec)}` : 'nada recebido'}</span></span>
+            <span class="rc-saldo">${p.saldo ? html`<span class="num">saldo ${C.brl(p.saldo)}</span>` : ''}${stBadge(p.status)}${p.dias ? html`<span class="rc-dias">${p.dias} dias</span>` : ''}
+              ${r.pagoOutroMes ? html`<span class="rc-obs">pago em ${r.pagoEm.map(C.fmtD).join(', ')}</span>` : ''}</span>
+            <span class="rc-ir" aria-hidden="true">›</span></a></li>`; })}</ul>`
+          : html`<div class="empty">${det.rows.length ? 'Nenhuma parcela neste filtro.' : 'Nenhuma parcela vence neste mês.'}</div>`}`
+        : det.caixa.length ? html`<ul class="rc-lista">${det.caixa.map((x) => html`<li><a class="rc" href=${'#/contrato/' + x.c.id}>
+            <span class="rc-quem"><b>${x.c.comprador.nome}</b><span>${x.c.animal || x.c.descricao || '—'}</span></span>
+            <span class="rc-leilao">${x.c.leilao.nome}</span>
+            <span class="rc-parc">Pago em ${C.fmtD(x.g.data_pagamento)}<span>parcela ${x.p.numero}/${x.c.nParc} · venc. ${C.fmtD(x.p.vencimento)}</span></span>
+            <span class="rc-val"><b class="num">${C.brl(x.g.valorC)}</b><span>${x.g.forma || (x.g.origem === 'importacao' ? 'Importado da cobrança' : '—')}</span></span>
+            <span class="rc-saldo">${x.deOutroMes ? Badge('info', `parcela de ${C.mesCurto(C.mesKey(x.p.vencimento))}/${x.p.vencimento.slice(2, 4)}`) : Badge('ok', 'do próprio mês')}</span>
+            <span class="rc-ir" aria-hidden="true">›</span></a></li>`)}</ul>`
+          : html`<div class="empty">Nenhum pagamento registrado com data neste mês.</div>`}
+        <p class="small muted pd-rodape">Entradas, parcelas “liquidadas no cadastro” e pagas direto ao vendedor não passam pela cobrança e ficam fora destes números, como no Painel.</p>
+      </section>
+    </div>`;
+}
+
 
 render(html`<${App} />`, document.getElementById('app'));
 
