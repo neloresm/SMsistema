@@ -1,4 +1,4 @@
-/* SM-BUILD: relatorio-pacote-part-2026-11-28 */
+/* SM-BUILD: filtro-socio-pren-2026-11-28 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -5685,18 +5685,19 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
     if (adv.situacao === "ativos" && !estaAtivo(a)) return false;
     if (adv.situacao === "inativos" && estaAtivo(a)) return false;
 
-    // filtros avançados — específicos de animais; só restringem registros de animais
-    // (quando filtrando prenhezes/aspirações, não bloqueiam esses registros)
+    // Sócio e "com sociedade" valem para QUALQUER tipo (animal, prenhez e aspiração) —
+    // assim filtrar por um sócio traz também as prenhezes/aspirações daquele sócio.
+    if (adv.socios.length) { const soc = (a.sociedadeAtual || a.socios || []); if (!adv.socios.some((n) => soc.some((s) => lc(s.nome) === lc(n)))) return false; }
+    if (adv.comSociedade && !((a.sociedadeAtual || a.socios || []).filter(Boolean).length > 0)) return false;
+    // Os demais filtros avançados abaixo são específicos de animais (sexo, idade, nascimento, compra…).
     if (a.tipo === "animal") {
       if (adv.sexo.length && !adv.sexo.some((x) => lc(a.sexo).startsWith(lc(x).charAt(0)))) return false;
       if (adv.faixas.length) { const m = mesesDe(a.nascimento); const ok = m != null && adv.faixas.some((fk) => { const f = FAIXAS_IDADE.find((z) => z[0] === fk); return f && m >= f[2] && m < f[3]; }); if (!ok) return false; }
       if (adv.nascDe && (!a.nascimento || a.nascimento < adv.nascDe)) return false;
       if (adv.nascAte && (!a.nascimento || a.nascimento > adv.nascAte)) return false;
-      if (adv.socios.length) { const soc = (a.sociedadeAtual || a.socios || []); if (!adv.socios.some((n) => soc.some((s) => lc(s.nome) === lc(n)))) return false; }
       const part = participacaoAtual(a);
       if (adv.partMin !== "" && part < num(adv.partMin)) return false;
       if (adv.partMax !== "" && part > num(adv.partMax)) return false;
-      if (adv.comSociedade && !((a.sociedadeAtual || a.socios || []).filter(Boolean).length > 0)) return false;
       if (adv.part100 && part !== 100) return false;
       if (adv.leiloes.length && !adv.leiloes.some((l) => lc(a.leilao) === lc(l))) return false;
       if (adv.vendedor && !norm(a.vendedor).includes(norm(adv.vendedor))) return false;
@@ -5744,9 +5745,11 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const toggleArr = (campo, valor) => setAdv((p) => ({ ...p, [campo]: p[campo].includes(valor) ? p[campo].filter((z) => z !== valor) : [...p[campo], valor] }));
 
   // Seleção CUMULATIVA por ID: a busca/filtros só mudam a LISTA VISÍVEL, nunca apagam a seleção.
-  // selecionados = exatamente os marcados (independe da busca). Começa vazia; o usuário marca o que quer.
+  // selecionados = os marcados que estão DENTRO dos filtros avançados ativos (sócio, situação, etc.).
+  // A busca por TEXTO não restringe (seleção por busca continua acumulando); os filtros sim — assim
+  // filtrar por um sócio e exportar traz só o daquele sócio, mesmo que haja seleção antiga de outros.
   const [sel, setSel] = useState(() => new Set());
-  const selecionados = base.filter((a) => sel.has(a.id));
+  const selecionados = base.filter((a) => sel.has(a.id) && matchAvancado(a));
   const toggleAnimal = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const todos = () => setSel((s) => { const n = new Set(s); listaF.forEach((a) => n.add(a.id)); return n; }); // adiciona os visíveis (acumula)
   const nenhum = () => setSel(new Set()); // limpa TODA a seleção
