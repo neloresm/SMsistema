@@ -1,4 +1,4 @@
-/* SM-BUILD: relatorio-pacote-prenhez-2026-11-28 */
+/* SM-BUILD: relatorio-pacote-doadora-2026-11-28 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -5942,29 +5942,40 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
     const ids = new Set(itens.map((x) => x.id));
     let total = 0, pago = 0, aberto = 0, est = 0;
     itens.filter((x) => contaNoTotal(x, ids)).forEach((x) => { const f = finR(x); total += f.total; pago += f.pago; aberto += f.aberto; est += f.totalEstimado; });
-    const label = `${rotuloPacote(pac) || "Pacote de aquisição"}${doadoras.length === 1 ? " · " + doadoras[0][0] : ""}`;
+    const umaDoad = doadoras.length === 1 ? doadoras[0][0] : "";
+    const tourosArr = [...tmap.keys()].filter((t) => t && t !== "—");
+    const label = pac.leilao
+      ? `${rotuloPacote(pac)}${umaDoad ? " · " + umaDoad : ""}`
+      : umaDoad
+        ? `${umaDoad}${tourosArr.length === 1 ? " × " + tourosArr[0] : ""}`
+        : (rotuloPacote(pac) || `Pacote (${tipo === "aspiracao" ? "aspirações" : "prenhezes"})`);
+    const soc = (pac.socios && pac.socios.length) ? pac.socios : ((itens[0] && (itens[0].sociedadeAtual || itens[0].socios)) || []);
     return {
       __pac: true, id: "pac:" + key, tipo, nome: label,
-      leilao: pac.leilao || "", dataCompra: pac.dataCompra || "", ondeEsta: pac.ondeEsta || (itens[0] && itens[0].ondeEsta) || "",
-      socios: pac.socios || [], sociedadeAtual: pac.sociedadeAtual || pac.socios || [],
+      leilao: pac.leilao || (itens[0] && itens[0].leilao) || "", dataCompra: pac.dataCompra || (itens[0] && itens[0].dataCompra) || "", ondeEsta: pac.ondeEsta || (itens[0] && itens[0].ondeEsta) || "",
+      socios: soc, sociedadeAtual: soc,
       __itens: itens, __doadoras: doadoras, __acas: [...tmap.entries()], __qtd: qtd,
       __sit: contagemSitPac(itens), __fin: { total, pago, aberto, est }, __vendedor: pac.vendedor || "",
     };
   };
-  // substitui N fichas de um mesmo pacote por 1 entrada consolidada; mantém as demais individuais
+  // substitui N fichas da mesma aquisição por 1 entrada consolidada; mantém as demais individuais.
+  // 1º tenta o vínculo de pacote (pacoteId); quando não há pacote, junta as fichas soltas pela DOADORA.
   const consolidarPacotes = (itensSel) => {
-    const grupos = new Map(), soltos = [], pacRecs = new Map();
+    const porPac = new Map(), porDoad = new Map(), soltos = [], pacRecs = new Map();
     itensSel.forEach((a) => {
       if (a && a.tipo === "pacote") { pacRecs.set(a.id, a); return; }   // registro de pacote: decide depois
-      const k = (a && (a.tipo === "prenhez" || a.tipo === "aspiracao") && a.pacoteId) ? a.pacoteId : "";
-      if (k) { if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(a); } else soltos.push(a);
+      const ehPA = a && (a.tipo === "prenhez" || a.tipo === "aspiracao");
+      if (ehPA && a.pacoteId) { if (!porPac.has(a.pacoteId)) porPac.set(a.pacoteId, []); porPac.get(a.pacoteId).push(a); return; }
+      if (ehPA) { const d = (a.doadora || "").trim().toLowerCase(); if (d) { if (!porDoad.has(d)) porDoad.set(d, []); porDoad.get(d).push(a); return; } }
+      soltos.push(a);
     });
     const entradas = [...soltos];
-    grupos.forEach((arr, k) => {
+    porPac.forEach((arr, k) => {
       if (arr.length < 2) { entradas.push(arr[0]); return; }   // 1 só: não precisa consolidar
       entradas.push(montarPacote(k, arr));
       pacRecs.delete(k);   // o registro de pacote já está representado no bloco consolidado — não repete
     });
+    porDoad.forEach((arr, d) => { if (arr.length < 2) entradas.push(arr[0]); else entradas.push(montarPacote("doad:" + d, arr)); });
     pacRecs.forEach((p) => entradas.push(p));   // pacotes não consolidados voltam como estavam
     return entradas;
   };
