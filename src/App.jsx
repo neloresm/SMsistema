@@ -1,4 +1,4 @@
-/* SM-BUILD: asp-verde-2026-11-24 */
+/* SM-BUILD: relatorio-pacote-prenhez-2026-11-28 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -3750,6 +3750,42 @@ function CardPacote({ pacoteId, ativos, embrioes, onAbrir, desab }) {
   );
 }
 
+/* agrupa prenhezes SOLTAS (sem pacote) por doadora, pra tela ficar compacta: um card por animal
+ * com as prenhezes dele dentro. Pacotes continuam pelo pacoteId; doadora com 1 prenhez fica individual. */
+function agrupaPrenhezDoadora(lst, rec) {
+  const vistosPac = new Set(), idxDoad = new Map(), out = [];
+  lst.forEach((it) => {
+    const r = rec(it);
+    if (r && r.pacoteId) { if (vistosPac.has(r.pacoteId)) return; vistosPac.add(r.pacoteId); out.push({ pacoteId: r.pacoteId, it }); return; }
+    const d = ((r && r.doadora) || "").trim().toLowerCase();
+    if (!d) { out.push({ it }); return; }
+    if (idxDoad.has(d)) { out[idxDoad.get(d)].its.push(it); return; }
+    idxDoad.set(d, out.length); out.push({ doadoraGrupo: ((r && r.doadora) || "").trim(), its: [it] });
+  });
+  return out.map((e) => (e.doadoraGrupo && e.its.length < 2 ? { it: e.its[0] } : e));
+}
+/* card de uma doadora com as prenhezes dela dentro (cada linha abre a prenhez) */
+function CardDoadora({ doadora, itens, onAbrir }) {
+  const gs = itens.map((x) => statusPrenhez(x).grupo);
+  const gD = gs.some((g) => g === "andamento") ? "andamento" : gs.some((g) => g === "pendente") ? "pendente" : gs.some((g) => g === "concluido") ? "concluido" : "sem";
+  const touros = [...new Set(itens.map((x) => (x.pai || x.touro || "").trim()).filter(Boolean))];
+  const ativas = itens.filter((x) => grupoAtivo(statusPrenhez(x).grupo)).length;
+  return (
+    <div className={`rp-card rp-pac ${COR_GRUPO[gD]}`}>
+      <div className="rp-card-h"><span className="rp-t">{doadora || "Doadora não informada"}{touros.length === 1 ? ` × ${touros[0]}` : ""}</span><Badge tone="gold">{itens.length} prenhez(es)</Badge></div>
+      <span className="rp-meta">{[ativas ? `${ativas} ativa(s)` : "", touros.length > 1 ? `${touros.length} touros` : "", "toque numa linha para abrir"].filter(Boolean).join(" · ")}</span>
+      <ul className="rp-pac-lista">
+        {itens.map((x) => { const s = statusPrenhez(x); return (
+          <li key={x.id}><button type="button" className="rp-li-btn" onClick={() => onAbrir(x)}>
+            <span>{(x.pai || x.touro) ? `× ${x.pai || x.touro}` : "touro não informado"}{x.receptora ? ` · Rec. ${x.receptora}` : ""}{qtdTotal(x) > 1 ? ` · ficha com ${qtdTotal(x)}` : ""}</span>
+            <Badge tone={s.tone}>{s.grupo === "concluido" ? "✓ " : ""}{s.txt}</Badge>
+          </button></li>
+        ); })}
+      </ul>
+    </div>
+  );
+}
+
 /* ---------- agrupar fichas já cadastradas num pacote (correção de cadastro) ---------- */
 const marcaAgr = (setAgr, id) => setAgr((s) => { const n = new Set(s || []); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 function BarraAgrupar({ agr, setAgr, onAgrupar, regs }) {
@@ -3829,7 +3865,7 @@ function PaginaPrenhezes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
         <BarraAgrupar agr={agr} setAgr={setAgr} onAgrupar={onAgrupar} regs={base.map((x) => x.p)} />
       </div>
       <div className="cards-grid rp-grid">
-        {agrupaPacotes(lst, (x) => x.p).map(({ pacoteId, it: { p, f, s } }) => pacoteId ? <CardPacote key={"pac-" + pacoteId} pacoteId={pacoteId} ativos={ativos || lista} embrioes={embrioes} onAbrir={onAbrir} desab={!!agr} /> : (
+        {(agr ? agrupaPacotes(lst, (x) => x.p) : agrupaPrenhezDoadora(lst, (x) => x.p)).map((e) => e.pacoteId ? <CardPacote key={"pac-" + e.pacoteId} pacoteId={e.pacoteId} ativos={ativos || lista} embrioes={embrioes} onAbrir={onAbrir} desab={!!agr} /> : e.doadoraGrupo ? <CardDoadora key={"doad-" + e.doadoraGrupo} doadora={e.doadoraGrupo} itens={e.its.map((x) => x.p)} onAbrir={onAbrir} /> : (() => { const { p, f, s } = e.it; return (
           <button type="button" className={`rp-card ${s.cor}${s.atraso ? " atraso" : ""} ${agr && agr.has(p.id) ? "rp-sel" : ""}`} key={p.id} aria-pressed={agr ? agr.has(p.id) : undefined} onClick={() => (agr ? marcaAgr(setAgr, p.id) : onAbrir(p))}>
             {agr && <span className="rp-check" aria-hidden="true">{agr.has(p.id) ? "✓" : ""}</span>}
             <div className="rp-card-h"><span className="rp-t">{p.doadora || "Doadora não informada"}{p.pai || p.touro ? ` × ${p.pai || p.touro}` : ""}</span><Badge tone={s.tone}>{s.grupo === "concluido" ? "✓ " : ""}{s.txt}</Badge></div>
@@ -3846,7 +3882,7 @@ function PaginaPrenhezes({ lista, ativos, embrioes, onAbrir, onAgrupar }) {
               : f.k === "diag" ? <span className="rp-prox">{p.dataTE ? `Próxima ação: lançar diagnóstico (estimado ${dataBR(diagPorTE(p.dataTE))})` : "Próxima ação: lançar diagnóstico"}</span>
               : <span className="rp-meta">{p.dataParto ? `Nascimento em ${dataBR(p.dataParto)}` : p.perda ? `Perda em ${dataBR(p.perda.data)} · ${p.perda.motivo}` : s.motivo ? `Motivo: ${s.motivo}` : p.dataTE ? `TE em ${dataBR(p.dataTE)}` : ""}</span>}
           </button>
-        ))}
+        ); })())}
         {lst.length === 0 && <div className="empty">Nenhuma prenhez {ESC_TXT_F[escopo] || ""}nesta situação{origem || cri ? " com esses filtros" : ""}.</div>}
       </div>
     </section>
@@ -5748,6 +5784,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
 
   // monta uma linha (objeto) para o animal conforme campos marcados
   const linhaDe = (a) => {
+    if (a && a.__pac) return linhaPacote(a);
     const fr = finRel(a); const f = fr.f; const row = {};
     if (campos.basico) { row["Tipo"] = a.tipo; row["Nome"] = a.nome; row["Registro"] = a.registro || ""; row["Sexo"] = a.sexo || ""; row["Categoria"] = a.categoria || a.raca || ""; if (a.tipo === "animal") row["Situação"] = ehAtivo(a) ? "Ativo" : "Inativo"; else if (!ehPacote(a) && (a.tipo === "aspiracao" || a.tipo === "prenhez")) { const g = a.tipo === "prenhez" ? statusPrenhez(a).grupo : a.statusGrupo || (aspAtiva(a) ? "andamento" : "concluido"); row["Situação"] = [grupoAtivo(g) ? "Ativo" : GRUPO_TXT[g] || "", a.tipo === "prenhez" ? statusPrenhez(a).txt : a.statusAuto || ""].filter(Boolean).join(" · "); } row["Criatório responsável"] = a.ondeEsta || ""; row["Nascimento"] = a.nascimento ? dataBR(a.nascimento) : ""; }
     else { row["Nome"] = a.nome; }
@@ -5785,7 +5822,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
 
   /* ---- opções de exportação (janela única): agrupamento + ordenação ---- */
   const [showExport, setShowExport] = useState(false);
-  const EXP_PADRAO = { formato: "pdf", agrupar: "socio", ordenar: "nomeAZ", titulos: true };
+  const EXP_PADRAO = { formato: "pdf", agrupar: "socio", ordenar: "nomeAZ", titulos: true, consolidar: true };
   const [exp, setExp] = useState(EXP_PADRAO);
   const [pdfDoc, setPdfDoc] = useState(null);   // HTML do relatório em pré-visualização (null = visualizador fechado)
   const pdfFrame = useRef(null);
@@ -5851,7 +5888,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
       case "socio": { const s = (a.sociedadeAtual || a.socios || []).filter(Boolean).map((x) => x.nome).filter(Boolean); return s.length ? s : ["Sem sócio informado"]; }
       case "idade": { const m = mesesDe(a.nascimento); if (m == null) return ["Idade não informada"]; if (m <= 12) return ["Até 12 meses"]; if (m <= 24) return ["13 a 24 meses"]; if (m <= 36) return ["25 a 36 meses"]; if (m <= 48) return ["37 a 48 meses"]; if (m <= 60) return ["49 a 60 meses"]; return ["Acima de 60 meses"]; }
       case "leilao": return [a.leilao ? a.leilao : "Sem leilão informado"];
-      case "situacao": return [estaAtivo(a) ? "Ativos" : "Inativos"];
+      case "situacao": return [(a.__pac ? a.__sit.ativas > 0 : estaAtivo(a)) ? "Ativos" : "Inativos"];
       case "ondeEsta": return [a.ondeEsta ? a.ondeEsta : "Sem criatório informado"];
       case "participacao": { const p = participacaoAtual(a); const f = FAIXAS_PART.find((z) => z[1](p)); return [f ? f[0] : "0% (sem participação)"]; }
       default: return ["Todos os registros"];
@@ -5861,7 +5898,7 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const ordenarLista = (arr, modo) => {
     const c = [...arr];
     const mes = (a) => { const m = mesesDe(a.nascimento); return m == null ? null : m; };
-    const est = (a) => finR(a).totalEstimado;
+    const est = (a) => (a.__pac ? a.__fin.est : finR(a).totalEstimado);
     const cmpNome = (a, b) => lc(a.nome).localeCompare(lc(b.nome), "pt-BR");
     switch (modo) {
       case "nomeZA": c.sort((a, b) => cmpNome(b, a)); break;
@@ -5874,6 +5911,82 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
       default: c.sort(cmpNome); // nomeAZ
     }
     return c;
+  };
+
+  /* ---- Consolidação por PACOTE DE AQUISIÇÃO (negociação única) ----
+   * Prenhezes/aspirações que compartilham o MESMO pacoteId (o registro de compra onde
+   * leilão, data, parcelas, comissão e sociedade ficam uma única vez) viram UM bloco só.
+   * NUNCA multiplica valores: o financeiro consolidado é a soma dos rateios (finR) com o
+   * mesmo dedupe dos totais gerais — a soma dos N rateios volta exatamente ao total do pacote.
+   * Quem não tem pacoteId continua individual (não inventa agrupamento). */
+  const contagemSitPac = (itens) => {
+    let ativas = 0, nascidas = 0, encerradas = 0;
+    itens.forEach((p) => {
+      if (p.tipo !== "prenhez") return;
+      const q = Math.max(1, qtdTotal(p)), nasc = qtdConvertidos(p), s = statusPrenhez(p);
+      if (grupoAtivo(s.grupo)) ativas += q;
+      else if (s.sub === "nasc" || nasc > 0) nascidas += (nasc || q);
+      else encerradas += q;
+    });
+    return { ativas, nascidas, encerradas };
+  };
+  const montarPacote = (key, itens) => {
+    const pac = pacoteDe(ativos, itens[0]) || {};
+    const tipo = itens.every((x) => x.tipo === "aspiracao") ? "aspiracao" : "prenhez";
+    const dmap = new Map();
+    itens.forEach((x) => { const d = (x.doadora || x.nome || "").trim(); if (d && !dmap.has(d)) dmap.set(d, x.regDoadora || ""); });
+    const doadoras = [...dmap.entries()];
+    const tmap = new Map();
+    itens.forEach((x) => { const t = (x.touro || x.pai || "").trim() || "—"; tmap.set(t, (tmap.get(t) || 0) + Math.max(1, qtdTotal(x))); });
+    const qtd = itens.reduce((s, x) => s + Math.max(1, qtdTotal(x)), 0);
+    const ids = new Set(itens.map((x) => x.id));
+    let total = 0, pago = 0, aberto = 0, est = 0;
+    itens.filter((x) => contaNoTotal(x, ids)).forEach((x) => { const f = finR(x); total += f.total; pago += f.pago; aberto += f.aberto; est += f.totalEstimado; });
+    const label = `${rotuloPacote(pac) || "Pacote de aquisição"}${doadoras.length === 1 ? " · " + doadoras[0][0] : ""}`;
+    return {
+      __pac: true, id: "pac:" + key, tipo, nome: label,
+      leilao: pac.leilao || "", dataCompra: pac.dataCompra || "", ondeEsta: pac.ondeEsta || (itens[0] && itens[0].ondeEsta) || "",
+      socios: pac.socios || [], sociedadeAtual: pac.sociedadeAtual || pac.socios || [],
+      __itens: itens, __doadoras: doadoras, __acas: [...tmap.entries()], __qtd: qtd,
+      __sit: contagemSitPac(itens), __fin: { total, pago, aberto, est }, __vendedor: pac.vendedor || "",
+    };
+  };
+  // substitui N fichas de um mesmo pacote por 1 entrada consolidada; mantém as demais individuais
+  const consolidarPacotes = (itensSel) => {
+    const grupos = new Map(), soltos = [], pacRecs = new Map();
+    itensSel.forEach((a) => {
+      if (a && a.tipo === "pacote") { pacRecs.set(a.id, a); return; }   // registro de pacote: decide depois
+      const k = (a && (a.tipo === "prenhez" || a.tipo === "aspiracao") && a.pacoteId) ? a.pacoteId : "";
+      if (k) { if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(a); } else soltos.push(a);
+    });
+    const entradas = [...soltos];
+    grupos.forEach((arr, k) => {
+      if (arr.length < 2) { entradas.push(arr[0]); return; }   // 1 só: não precisa consolidar
+      entradas.push(montarPacote(k, arr));
+      pacRecs.delete(k);   // o registro de pacote já está representado no bloco consolidado — não repete
+    });
+    pacRecs.forEach((p) => entradas.push(p));   // pacotes não consolidados voltam como estavam
+    return entradas;
+  };
+  // linha (objeto) de uma entrada consolidada de pacote — respeita os campos marcados
+  const linhaPacote = (P) => {
+    const row = {}; const d = P.__doadoras;
+    row["Tipo"] = P.tipo; row["Nome"] = P.nome;
+    row[d.length > 1 ? "Doadoras" : "Doadora"] = d.map(([n, rg]) => (rg ? `${n} (${rgdTxt(rg)})` : n)).join("; ") || "—";
+    row["Quantidade"] = `${P.__qtd} ${P.tipo === "aspiracao" ? "aspiração(ões)" : "prenhez(es)"}`;
+    row[P.__acas.length > 1 ? "Acasalamentos" : "Touro"] = P.__acas.map(([t, q]) => (P.__acas.length > 1 ? `${t} (${q})` : t)).join("; ") || "—";
+    if (P.leilao) row["Leilão de origem"] = P.leilao;
+    if (P.dataCompra) row["Data da aquisição"] = dataBR(P.dataCompra);
+    if (P.__vendedor) row["Vendedor"] = P.__vendedor;
+    if (P.ondeEsta) row["Criatório"] = P.ondeEsta;
+    if (P.tipo === "prenhez") row["Situação das prenhezes"] = `${P.__sit.ativas} ativa(s) · ${P.__sit.nascidas} nascida(s) · ${P.__sit.encerradas} encerrada(s)`;
+    if (campos.sociedade) row["Sociedade"] = socioStr(P);
+    if (campos.participacao) row["Participação atual (%)"] = participacaoAtual(P);
+    if (campos.estimado) row["Valor estimado"] = P.__fin.est;
+    if (campos.investido) row["Total investido"] = P.__fin.total;
+    if (campos.pago) row["Valor pago"] = P.__fin.pago;
+    if (campos.aberto) row["Valor em aberto"] = P.__fin.aberto;
+    return row;
   };
 
   // monta os grupos ordenados (chaves em ordem lógica) já com os itens ordenados
@@ -5925,10 +6038,11 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const exportarExcel = async (opts) => {
     if (!selecionados.length) return;
     const o = opts || exp;
-    const grupos = montarGrupos(selecionados, o.agrupar, o.ordenar);
+    const entradas = o.consolidar === false ? selecionados : consolidarPacotes(selecionados);
+    const grupos = montarGrupos(entradas, o.agrupar, o.ordenar);
     const M = metaRel(o);
     const linhasPorId = new Map(); const colset = [];
-    selecionados.forEach((a) => { const r = linhaDe(a); linhasPorId.set(a.id, r); Object.keys(r).forEach((k) => { if (!colset.includes(k)) colset.push(k); }); });
+    entradas.forEach((a) => { const r = linhaDe(a); linhasPorId.set(a.id, r); Object.keys(r).forEach((k) => { if (!colset.includes(k)) colset.push(k); }); });
     const agrupado = o.agrupar !== "nenhum";
     const colGrupo = agrupado ? (PREFIXO_GRUPO[o.agrupar] ? M.agr : "Grupo") : null;
     // uma tabela contínua (com filtro e cabeçalho congelado); o agrupamento vira a primeira coluna
@@ -5970,11 +6084,24 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
   const exportarPDF = (opts) => {
     if (!selecionados.length) return;
     const o = opts || exp;
+    const entradas = o.consolidar === false ? selecionados : consolidarPacotes(selecionados);
     const M = metaRel(o);
     const LONGOS = /Histórico|Sociedade|Vendas|Compras adicionais|Observações|vinculadas|Obs\. genealógicas/;
     const genKeys = ["Pai", "Mãe", "Registro da mãe", "Avô paterno", "Avó paterna", "Avô materno", "Avó materna", "Obs. genealógicas"];
     // registro: cabeçalho (nome, tipo, RGD, situação) + todas as informações marcadas + genealogia (materna à esquerda, paterna à direita)
     const blocoDe = (a) => {
+      if (a.__pac) {
+        const row = linhaPacote(a);
+        const fora = new Set(["Tipo", "Nome", "Quantidade"]);
+        const kv = Object.entries(row).filter(([k, v]) => !fora.has(k) && v !== "" && v != null).map(([k, v]) => {
+          const fin = ehMoeda(k) || ehPct(k); const tom = k === "Valor em aberto" && num(v) > 0 ? " alerta" : (k === "Valor estimado" && v ? " pos" : "");
+          return `<div><span>${relEsc(k)}</span><b class="${fin ? "fin" : ""}${tom}">${relEsc(valorTxt(k, v))}</b></div>`;
+        }).join("");
+        return `<div data-blk data-keep><article class="reg"><div class="reg-h"><div><h3>${relEsc(a.nome)}</h3>`
+          + `<div class="reg-sub">${relEsc(TIPO_LBL[a.tipo] || a.tipo)} · pacote de aquisição</div></div>`
+          + `<span class="pill">${a.__qtd} ${a.tipo === "aspiracao" ? "aspiração(ões)" : "prenhez(es)"}</span></div>`
+          + `<div class="kv">${kv}</div></article></div>`;
+      }
       const row = linhaDe(a);
       const sub = [TIPO_LBL[a.tipo] || a.tipo, row["Registro"] ? rgdTxt(row["Registro"]) : "", row["Sexo"], row["Categoria"]].filter(Boolean).join(" · ");
       const sit = row["Situação"];
@@ -6002,11 +6129,11 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
       ...(campos.participacao ? [["Participação", (a, r) => relEsc(valorTxt("Participação atual (%)", r["Participação atual (%)"])), "n"]] : []),
       ...(campos.estimado ? [["Valor estimado", (a, r) => relEsc(valorTxt("Valor estimado", r["Valor estimado"])), "n"]] : []),
       ...(campos.aberto ? [["Em aberto", (a, r) => relEsc(valorTxt("Valor em aberto", r["Valor em aberto"])), "n"]] : [])];
-    const ordemIdx = ordenarLista(selecionados, o.ordenar);
+    const ordemIdx = ordenarLista(entradas, o.ordenar);
     const partes = [];
     for (let i = 0; i < ordemIdx.length; i += 18) partes.push(ordemIdx.slice(i, i + 18));
     const indice = partes.map((pt, pi) => `<section data-blk>${pi === 0 ? `<div class="sec">Registros incluídos (${ordemIdx.length})</div>` : ""}<table class="t"><thead><tr>${colsIdx.map(([h, , n]) => `<th class="${n || ""}">${h}</th>`).join("")}</tr></thead><tbody>${pt.map((a) => { const r = linhaDe(a); return `<tr>${colsIdx.map(([, f, n]) => `<td class="${n || ""}">${f(a, r)}</td>`).join("")}</tr>`; }).join("")}</tbody></table></section>`);
-    const grupos = montarGrupos(selecionados, o.agrupar, o.ordenar);
+    const grupos = montarGrupos(entradas, o.agrupar, o.ordenar);
     const detalhe = [`<div data-blk data-keep><div class="sec" style="margin-top:8px">Detalhamento</div></div>`];
     grupos.forEach((g) => {
       if (o.agrupar !== "nenhum") detalhe.push(`<div data-blk data-keep><div class="grupo${o.titulos ? "" : " plano"}"><b>${relEsc(g.titulo)}</b><span>${g.itens.length} registro(s)</span></div></div>`);
@@ -6193,6 +6320,11 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
 
               <div className="exp-campo"><label>Formato</label>
                 <div className="seg-group">{[["pdf", "PDF"], ["excel", "Excel"]].map(([k, l]) => <button key={k} className={`seg ${exp.formato === k ? "on" : ""}`} onClick={() => setExp((p) => ({ ...p, formato: k }))}>{l}</button>)}</div>
+              </div>
+
+              <div className="exp-campo"><label>Prenhezes/aspirações do mesmo pacote</label>
+                <div className="seg-group">{[["Agrupado por pacote", true], ["Individualizado", false]].map(([l, v]) => <button key={l} className={`seg ${exp.consolidar === v ? "on" : ""}`} onClick={() => setExp((p) => ({ ...p, consolidar: v }))}>{l}</button>)}</div>
+                <p className="muted small" style={{ margin: "6px 0 0" }}>{exp.consolidar ? "Cada pacote de aquisição aparece como um bloco único (doadora, quantidade, acasalamentos, leilão, valores) — relatório compacto." : "Cada prenhez/aspiração aparece separadamente — relatório detalhado."}</p>
               </div>
 
               <div className="exp-campo"><label>Agrupar por</label>
@@ -10013,6 +10145,9 @@ button.rp-elo:hover{background:var(--surf2);border-color:rgba(23,107,70,.3)}
 .rp-pac-lista{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
 .rp-pac-lista li{display:flex;justify-content:space-between;gap:8px;align-items:center;font-size:13px}
 .rp-pac-lista li span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rp-li-btn{display:flex;justify-content:space-between;gap:8px;align-items:center;width:100%;background:none;border:0;padding:4px 6px;margin:-2px -4px;border-radius:8px;cursor:pointer;font:inherit;color:inherit;text-align:left}
+.rp-li-btn:hover{background:rgba(0,0,0,.05)}
+.rp-li-btn span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .imp-badge.pacote{background:var(--em-l);color:var(--em)}
 .com-novo{border:1px solid var(--line);border-radius:var(--r2,12px);padding:12px 14px;background:var(--surf2);margin-top:8px}
 .com-novo-acts{display:flex;gap:10px;align-items:center;justify-content:flex-end;flex-wrap:wrap;margin-top:8px}
