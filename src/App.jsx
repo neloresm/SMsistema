@@ -1,4 +1,4 @@
-/* SM-BUILD: relatorio-pacote-doadora-2026-11-28 */
+/* SM-BUILD: relatorio-pacote-part-2026-11-28 */
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -5949,11 +5949,17 @@ function RelatoriosView({ lista, ativos, db, onRestaurar, isAdmin, usuario }) {
       : umaDoad
         ? `${umaDoad}${tourosArr.length === 1 ? " × " + tourosArr[0] : ""}`
         : (rotuloPacote(pac) || `Pacote (${tipo === "aspiracao" ? "aspirações" : "prenhezes"})`);
-    const soc = (pac.socios && pac.socios.length) ? pac.socios : ((itens[0] && (itens[0].sociedadeAtual || itens[0].socios)) || []);
+    // participação e sociedade herdam da ORIGEM do valor (o pacote, ou a aspiração de origem via finRel),
+    // porque na ficha da prenhez elas ficam em branco (0%) — o custo e a % moram no registro de origem.
+    const raiz = (pac && num(pac.porcentagemComprada) > 0) ? pac : (((finRel(itens[0]) || {}).root) || itens[0] || {});
+    const pct = num(raiz.porcentagemComprada) || num(itens[0] && itens[0].porcentagemComprada) || 0;
+    const soc = (pac.socios && pac.socios.length) ? pac.socios
+      : ((raiz.sociedadeAtual || raiz.socios || (itens[0] && (itens[0].sociedadeAtual || itens[0].socios))) || []);
     return {
       __pac: true, id: "pac:" + key, tipo, nome: label,
-      leilao: pac.leilao || (itens[0] && itens[0].leilao) || "", dataCompra: pac.dataCompra || (itens[0] && itens[0].dataCompra) || "", ondeEsta: pac.ondeEsta || (itens[0] && itens[0].ondeEsta) || "",
+      leilao: pac.leilao || raiz.leilao || (itens[0] && itens[0].leilao) || "", dataCompra: pac.dataCompra || raiz.dataCompra || (itens[0] && itens[0].dataCompra) || "", ondeEsta: pac.ondeEsta || (itens[0] && itens[0].ondeEsta) || "",
       socios: soc, sociedadeAtual: soc,
+      porcentagemComprada: pct, comprasAdic: (raiz.comprasAdic && raiz.comprasAdic.length) ? raiz.comprasAdic : ((itens[0] && itens[0].comprasAdic) || []),
       __itens: itens, __doadoras: doadoras, __acas: [...tmap.entries()], __qtd: qtd,
       __sit: contagemSitPac(itens), __fin: { total, pago, aberto, est }, __vendedor: pac.vendedor || "",
     };
